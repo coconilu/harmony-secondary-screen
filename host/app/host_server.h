@@ -29,8 +29,8 @@ class HostServer final {
   std::string pairing_code() const;
 
  private:
-  void ControlLoop(std::vector<std::string> addresses);
-  void HandleClient(SOCKET client, sockaddr_in peer);
+  void ControlLoop();
+  void HandleClient(SOCKET client, sockaddr_in peer, std::string localAddress);
   void PipeLoop();
   void StatusLoop();
   bool SendControl(SOCKET client, std::string_view json);

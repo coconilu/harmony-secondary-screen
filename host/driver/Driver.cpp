@@ -22,6 +22,10 @@ constexpr std::uint32_t kWidth = 1920;
 constexpr std::uint32_t kHeight = 1200;
 constexpr std::uint32_t kFps = 60;
 constexpr std::uint32_t kBitrate = 16'000'000;
+constexpr GUID kMonitorContainerId = {0x75ef52a4,
+                                      0x40d6,
+                                      0x47ca,
+                                      {0xa9, 0x16, 0x55, 0xa2, 0xa2, 0x99, 0x41, 0x5f}};
 
 struct DeviceContextWrapper {
   hss::driver::DeviceContext* value = nullptr;
@@ -211,8 +215,6 @@ SwapChainProcessor::SwapChainProcessor(IDDCX_SWAPCHAIN swapChain,
                                        HANDLE newFrameEvent)
     : swap_chain_(swapChain), device_(std::move(device)), new_frame_event_(newFrameEvent) {
   stop_event_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-  keyframe_event_ = OpenEventW(SYNCHRONIZE, FALSE,
-                              L"Global\\HarmonySecondaryScreen.RequestKeyframe");
   acquire_thread_ = std::thread(&SwapChainProcessor::AcquireLoop, this);
   encoder_thread_ = std::thread(&SwapChainProcessor::EncoderLoop, this);
 }
@@ -304,8 +306,20 @@ void SwapChainProcessor::EncoderLoop() {
       frame = std::move(queue_.back());
       queue_.clear();
     }
-    bool forceKeyframe = keyframe_event_ != nullptr &&
-                         WaitForSingleObject(keyframe_event_, 0) == WAIT_OBJECT_0;
+    // The service can start after the driver; retry until its event exists.
+    if (keyframe_event_ == nullptr) {
+      keyframe_event_ = OpenEventW(SYNCHRONIZE, FALSE,
+                                   L"Global\\HarmonySecondaryScreen.RequestKeyframe");
+    }
+    bool forceKeyframe = false;
+    if (keyframe_event_ != nullptr) {
+      const DWORD waitResult = WaitForSingleObject(keyframe_event_, 0);
+      forceKeyframe = waitResult == WAIT_OBJECT_0;
+      if (waitResult == WAIT_FAILED) {
+        CloseHandle(keyframe_event_);
+        keyframe_event_ = nullptr;
+      }
+    }
     graphics::EncodedFrame encoded;
     const HRESULT result = encoder.Encode(frame.texture.Get(), frame.timestampUs,
                                           forceKeyframe, &encoded);
@@ -370,11 +384,13 @@ void DeviceContext::FinishAdapterInitialization() {
   };
   IDDCX_MONITOR_INFO info{};
   info.Size = sizeof(info);
-  info.MonitorType = IDDCX_MONITOR_TYPE_HDMI;
+  info.MonitorType = DISPLAYCONFIG_OUTPUT_TECHNOLOGY_OTHER;
   info.ConnectorIndex = 0;
+  info.MonitorDescription.Size = sizeof(info.MonitorDescription);
   info.MonitorDescription.Type = IDDCX_MONITOR_DESCRIPTION_TYPE_EDID;
   info.MonitorDescription.DataSize = 0;
   info.MonitorDescription.pData = nullptr;
+  info.MonitorContainerId = kMonitorContainerId;
   IDARG_IN_MONITORCREATE input{};
   input.ObjectAttributes = &attributes;
   input.pMonitorInfo = &info;

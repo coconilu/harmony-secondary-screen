@@ -145,5 +145,7 @@ XComponent 坐标归一化到 `[0,1]`，只接受 `pointerId=0`。Host 映射到
 - 六位码只用于首次可信局域网配对，不是互联网级认证；
 - 会话 ID 使用系统 CSPRNG，断连恢复同时校验原 IP 与 5 秒期限；
 - 控制监听只绑定 Windows 专用网络适配器；公共网络默认拒绝；
+- Host 在 bind、accept 以及已连接会话循环中重新查询 Network List Manager；网络从“专用”切换为
+  “公共”时发送 `{"type":"error","code":"network_not_private"}` 并关闭控制连接；
 - v0.1 明确不提供加密、持久设备身份、公网访问或端口转发支持；
 - Host 与 Receiver 对长度、坐标、分片数和会话标识做边界检查。

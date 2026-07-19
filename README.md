@@ -21,7 +21,7 @@
 | 检查 | 本仓库当前结果 |
 | --- | --- |
 | Windows Host Service / Input Agent / D3D11 / MF 源码 | 本机 MSVC `/W4 /WX` 构建通过 |
-| 协议单元测试与 Host/Receiver 线格式兼容测试 | 通过 |
+| Host CTest：协议/跨端线格式、ACL、网络门禁、显示映射、连接取消策略、编码与 ffmpeg 解码 | 本机 8/8 通过 |
 | HarmonyOS Receiver | DevEco CLI 原生 CMake/Ninja + ArkTS + unsigned HAP 构建通过 |
 | IddCx 驱动构建/安装 | 本机缺 Windows Driver Kit，**未运行、未声称通过** |
 | Windows 显示设置出现独立屏幕 | 需要 WDK、测试签名与 Windows 11 测试机，尚未验证 |
@@ -55,7 +55,7 @@ Visual Studio 集成的 Windows Driver Kit（需包含 UMDF 2 / IddCx）。
 
 测试驱动必须在隔离的 Windows 11 测试机完成测试签名和安装；正式分发必须使用正式驱动签名。
 启动 Host 前把家庭 Wi-Fi 的 Windows 网络配置文件设为“专用”。如果只有公共网络，Host 会拒绝监听，
-不会回退到 `0.0.0.0`。
+不会回退到 `0.0.0.0`；运行中切换为“公共”也会关闭 listener 和现有控制连接。
 
 ### HarmonyOS Receiver
 

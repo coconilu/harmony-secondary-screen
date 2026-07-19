@@ -15,6 +15,7 @@ class PointerInjector final {
   };
 
   bool HandleControlMessage(std::string_view json, std::string* error) const;
+  static bool IsHarmonyAdapterPath(std::wstring_view path);
 
  private:
   static bool FindHarmonyDisplay(DisplayRect* result);

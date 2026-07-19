@@ -6,58 +6,99 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cwchar>
+#include <cwctype>
+#include <string>
+#include <vector>
 
 namespace hss::host {
 namespace {
 
-struct EnumContext {
-  PointerInjector::DisplayRect* rect;
-  bool found;
-};
+constexpr std::wstring_view kAdapterHardwareId = L"root#harmonysecondaryscreenidd";
 
-BOOL CALLBACK EnumMonitor(HMONITOR monitor, HDC, LPRECT, LPARAM data) {
-  auto* context = reinterpret_cast<EnumContext*>(data);
-  MONITORINFOEXW info{};
-  info.cbSize = sizeof(info);
-  if (!GetMonitorInfoW(monitor, &info)) {
-    return TRUE;
-  }
-  DISPLAY_DEVICEW device{};
-  device.cb = sizeof(device);
-  if (!EnumDisplayDevicesW(info.szDevice, 0, &device, 0)) {
-    return TRUE;
-  }
-  if (std::wcsstr(device.DeviceString, L"Harmony Secondary Screen") == nullptr) {
-    return TRUE;
-  }
-  context->rect->left = info.rcMonitor.left;
-  context->rect->top = info.rcMonitor.top;
-  context->rect->right = info.rcMonitor.right;
-  context->rect->bottom = info.rcMonitor.bottom;
-  context->found = true;
-  return FALSE;
+bool EqualsIgnoreCase(std::wstring_view left, std::wstring_view right) {
+  return left.size() == right.size() &&
+         std::equal(left.begin(), left.end(), right.begin(), [](wchar_t lhs, wchar_t rhs) {
+           return std::towlower(lhs) == std::towlower(rhs);
+         });
+}
+
+bool MonitorRectForGdiName(std::wstring_view gdiName, PointerInjector::DisplayRect* rect) {
+  struct Context {
+    std::wstring_view gdiName;
+    PointerInjector::DisplayRect* rect;
+    bool found = false;
+  } context{gdiName, rect};
+  EnumDisplayMonitors(
+      nullptr, nullptr,
+      [](HMONITOR monitor, HDC, LPRECT, LPARAM data) -> BOOL {
+        auto* context = reinterpret_cast<Context*>(data);
+        MONITORINFOEXW info{};
+        info.cbSize = sizeof(info);
+        if (!GetMonitorInfoW(monitor, &info) ||
+            !EqualsIgnoreCase(info.szDevice, context->gdiName)) {
+          return TRUE;
+        }
+        context->rect->left = info.rcMonitor.left;
+        context->rect->top = info.rcMonitor.top;
+        context->rect->right = info.rcMonitor.right;
+        context->rect->bottom = info.rcMonitor.bottom;
+        context->found = true;
+        return FALSE;
+      },
+      reinterpret_cast<LPARAM>(&context));
+  return context.found;
 }
 
 }  // namespace
 
+bool PointerInjector::IsHarmonyAdapterPath(std::wstring_view path) {
+  std::wstring normalized(path);
+  std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                 [](wchar_t value) { return std::towlower(value); });
+  return normalized.find(kAdapterHardwareId) != std::wstring::npos;
+}
+
 bool PointerInjector::FindHarmonyDisplay(DisplayRect* result) {
-  if (result == nullptr) {
-    return false;
+  if (result == nullptr) return false;
+
+  UINT32 pathCount = 0;
+  UINT32 modeCount = 0;
+  LONG status = GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &pathCount, &modeCount);
+  if (status != ERROR_SUCCESS) return false;
+  std::vector<DISPLAYCONFIG_PATH_INFO> paths(pathCount);
+  std::vector<DISPLAYCONFIG_MODE_INFO> modes(modeCount);
+  status = QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &pathCount, paths.data(), &modeCount,
+                              modes.data(), nullptr);
+  if (status != ERROR_SUCCESS) return false;
+  paths.resize(pathCount);
+
+  for (const auto& path : paths) {
+    DISPLAYCONFIG_ADAPTER_NAME adapter{};
+    adapter.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_ADAPTER_NAME;
+    adapter.header.size = sizeof(adapter);
+    adapter.header.adapterId = path.targetInfo.adapterId;
+    if (DisplayConfigGetDeviceInfo(&adapter.header) != ERROR_SUCCESS ||
+        !IsHarmonyAdapterPath(adapter.adapterDevicePath) || path.targetInfo.id != 0) {
+      continue;
+    }
+
+    DISPLAYCONFIG_SOURCE_DEVICE_NAME source{};
+    source.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+    source.header.size = sizeof(source);
+    source.header.adapterId = path.sourceInfo.adapterId;
+    source.header.id = path.sourceInfo.id;
+    if (DisplayConfigGetDeviceInfo(&source.header) == ERROR_SUCCESS &&
+        MonitorRectForGdiName(source.viewGdiDeviceName, result)) {
+      return true;
+    }
   }
-  EnumContext context{result, false};
-  EnumDisplayMonitors(nullptr, nullptr, EnumMonitor, reinterpret_cast<LPARAM>(&context));
-  return context.found;
+  return false;
 }
 
 bool PointerInjector::HandleControlMessage(std::string_view json, std::string* error) const {
-  if (error == nullptr) {
-    return false;
-  }
+  if (error == nullptr) return false;
   const auto type = protocol::JsonString(json, "type");
-  if (type != "pointer") {
-    return true;
-  }
+  if (type != "pointer") return true;
   const auto action = protocol::JsonString(json, "action");
   const auto x = protocol::JsonNumber(json, "x");
   const auto y = protocol::JsonNumber(json, "y");
@@ -108,7 +149,8 @@ bool PointerInjector::HandleControlMessage(std::string_view json, std::string* e
       return false;
     }
     input.mi.dwFlags |= MOUSEEVENTF_WHEEL;
-    input.mi.mouseData = static_cast<DWORD>(static_cast<LONG>(std::llround(-*deltaY * WHEEL_DELTA * 3.0)));
+    input.mi.mouseData =
+        static_cast<DWORD>(static_cast<LONG>(std::llround(-*deltaY * WHEEL_DELTA * 3.0)));
   } else {
     *error = "unsupported pointer action";
     return false;

@@ -9,3 +9,8 @@
 
 构建与测试签名步骤见仓库根目录 README。生产分发必须使用正式驱动签名；测试签名只允许在
 隔离测试机上使用。
+
+`IDDCX_MONITOR_INFO` 初始化与 EDID-less monitor 模式以微软
+[IddSample](https://github.com/microsoft/Windows-driver-samples/tree/main/video/IndirectDisplay/IddSampleDriver)
+及 [IDDCX_MONITOR_INFO 文档](https://learn.microsoft.com/windows-hardware/drivers/ddi/iddcx/ns-iddcx-iddcx_monitor_info)
+为核对基线。当前机器缺少 WDK，因此静态核对不能替代真实 WDK 编译和安装。

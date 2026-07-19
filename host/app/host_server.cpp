@@ -1,6 +1,7 @@
 #include "host_server.h"
 
 #include "hss_protocol.h"
+#include "local_security.h"
 #include "network_gate.h"
 
 #include <bcrypt.h>
@@ -108,8 +109,11 @@ std::filesystem::path MetricsPath(std::string_view filename) {
 
 HostServer::HostServer() {
   stop_event_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-  keyframe_event_ = CreateEventW(nullptr, FALSE, FALSE,
-                                L"Global\\HarmonySecondaryScreen.RequestKeyframe");
+  LocalSecurityAttributes keyframeSecurity(kKeyframeEventSddl);
+  keyframe_event_ = keyframeSecurity.valid()
+                        ? CreateEventW(keyframeSecurity.get(), FALSE, FALSE,
+                                       L"Global\\HarmonySecondaryScreen.RequestKeyframe")
+                        : nullptr;
 }
 
 HostServer::~HostServer() {
@@ -161,7 +165,7 @@ bool HostServer::Start(std::string* error) {
     return false;
   }
   RotatePairingCode();
-  control_thread_ = std::thread(&HostServer::ControlLoop, this, std::move(addresses));
+  control_thread_ = std::thread(&HostServer::ControlLoop, this);
   pipe_thread_ = std::thread(&HostServer::PipeLoop, this);
   status_thread_ = std::thread(&HostServer::StatusLoop, this);
   return true;
@@ -273,13 +277,20 @@ void HostServer::RecordReceiverTelemetry(std::string_view json) {
          << *decoded << ',' << *dropped << '\n';
 }
 
-void HostServer::ControlLoop(std::vector<std::string> addresses) {
+void HostServer::ControlLoop() {
   while (WaitForSingleObject(stop_event_, 0) != WAIT_OBJECT_0) {
     ExpireResumeWindow();
+    std::string gateError;
+    const auto addresses = NetworkGate::PrivateIpv4Addresses(&gateError);
+    if (addresses.empty()) {
+      WaitForSingleObject(stop_event_, 500);
+      continue;
+    }
     for (const auto& address : addresses) {
       if (WaitForSingleObject(stop_event_, 0) == WAIT_OBJECT_0) {
         return;
       }
+      if (!NetworkGate::IsPrivateIpv4(address, &gateError)) continue;
       const SOCKET listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
       if (listener == INVALID_SOCKET) {
         continue;
@@ -304,13 +315,15 @@ void HostServer::ControlLoop(std::vector<std::string> addresses) {
       FD_SET(listener, &readSet);
       timeval timeout{0, 500000};
       const int ready = select(0, &readSet, nullptr, nullptr, &timeout);
-      if (ready > 0) {
+      // Revalidate immediately before accepting. A Private -> Public profile
+      // transition therefore closes this listener instead of accepting a peer.
+      if (ready > 0 && NetworkGate::IsPrivateIpv4(address, &gateError)) {
         sockaddr_in peer{};
         int peerLength = sizeof(peer);
         const SOCKET client = accept(listener, reinterpret_cast<sockaddr*>(&peer), &peerLength);
         if (client != INVALID_SOCKET) {
           active_client_ = client;
-          HandleClient(client, peer);
+          HandleClient(client, peer, address);
           active_client_ = INVALID_SOCKET;
           closesocket(client);
           MarkDisconnected();
@@ -340,7 +353,7 @@ bool HostServer::SendControl(SOCKET client, std::string_view json) {
   return true;
 }
 
-void HostServer::HandleClient(SOCKET client, sockaddr_in peer) {
+void HostServer::HandleClient(SOCKET client, sockaddr_in peer, std::string localAddress) {
   DWORD timeoutMs = 1000;
   setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeoutMs),
              sizeof(timeoutMs));
@@ -352,6 +365,11 @@ void HostServer::HandleClient(SOCKET client, sockaddr_in peer) {
   bool authenticated = false;
 
   while (WaitForSingleObject(stop_event_, 0) != WAIT_OBJECT_0) {
+    std::string gateError;
+    if (!NetworkGate::IsPrivateIpv4(localAddress, &gateError)) {
+      SendControl(client, R"({"type":"error","code":"network_not_private"})");
+      break;
+    }
     const int received = recv(client, reinterpret_cast<char*>(receiveBuffer.data()),
                               static_cast<int>(receiveBuffer.size()), 0);
     if (received == 0) {
@@ -464,10 +482,15 @@ void HostServer::HandleClient(SOCKET client, sockaddr_in peer) {
 
 void HostServer::PipeLoop() {
   while (WaitForSingleObject(stop_event_, 0) != WAIT_OBJECT_0) {
+    LocalSecurityAttributes frameSecurity(kFramesPipeSddl);
+    if (!frameSecurity.valid()) {
+      WaitForSingleObject(stop_event_, 500);
+      continue;
+    }
     HANDLE pipe = CreateNamedPipeW(
         L"\\\\.\\pipe\\HarmonySecondaryScreen.Frames", PIPE_ACCESS_INBOUND,
         PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_NOWAIT | PIPE_REJECT_REMOTE_CLIENTS, 1,
-        64U * 1024U, 64U * 1024U, 1000, nullptr);
+        64U * 1024U, 64U * 1024U, 1000, frameSecurity.get());
     if (pipe == INVALID_HANDLE_VALUE) {
       WaitForSingleObject(stop_event_, 500);
       continue;

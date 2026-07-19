@@ -38,6 +38,10 @@ class MfH264Encoder final {
   HRESULT CreateEncoder(bool hardware);
   HRESULT ConfigureEncoder();
   HRESULT ConvertToNv12(ID3D11Texture2D* source);
+  HRESULT EncodeCurrentNv12(std::uint64_t timestampUs, bool forceKeyframe,
+                            EncodedFrame* output);
+  HRESULT WaitForAsyncEvent(MediaEventType expected, DWORD timeoutMs);
+  HRESULT FallbackToSoftware();
   HRESULT DrainOutput(std::uint64_t timestampUs, EncodedFrame* output);
   void RefreshCodecConfig();
   void Shutdown();
@@ -45,6 +49,9 @@ class MfH264Encoder final {
   std::mutex mutex_;
   bool mf_started_ = false;
   bool using_hardware_ = false;
+  bool asynchronous_ = false;
+  std::uint32_t pending_input_requests_ = 0;
+  std::uint32_t pending_outputs_ = 0;
   std::uint32_t width_ = 0;
   std::uint32_t height_ = 0;
   std::uint32_t fps_ = 0;
@@ -60,6 +67,7 @@ class MfH264Encoder final {
   Microsoft::WRL::ComPtr<ID3D11Texture2D> nv12_texture_;
   Microsoft::WRL::ComPtr<IMFDXGIDeviceManager> device_manager_;
   Microsoft::WRL::ComPtr<IMFTransform> encoder_;
+  Microsoft::WRL::ComPtr<IMFMediaEventGenerator> event_generator_;
   std::vector<std::byte> codec_config_;
 };
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace hss::host {
@@ -10,6 +11,7 @@ class NetworkGate final {
   // Returns only IPv4 addresses attached to Windows networks categorized as Private.
   // An empty result is a hard refusal to listen.
   static std::vector<std::string> PrivateIpv4Addresses(std::string* error);
+  static bool IsPrivateIpv4(std::string_view address, std::string* error);
 };
 
 }  // namespace hss::host

@@ -1,6 +1,9 @@
 #include "receiver_session.h"
 
+#include "connect_policy.h"
+
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -148,15 +151,66 @@ bool ReceiverSession::ConnectControl(bool resume) {
 
   const int tcp = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
   if (tcp < 0) return false;
+  control_socket_ = tcp;
   sockaddr_in server{};
   server.sin_family = AF_INET;
   server.sin_port = htons(kControlPort);
-  if (!ValidIpv4(host, &server.sin_addr) ||
-      connect(tcp, reinterpret_cast<sockaddr*>(&server), sizeof(server)) != 0) {
-    close(tcp);
+  if (!ValidIpv4(host, &server.sin_addr)) {
+    CloseSocket(&control_socket_);
     return false;
   }
-  control_socket_ = tcp;
+  const int originalFlags = fcntl(tcp, F_GETFL, 0);
+  if (originalFlags < 0 || fcntl(tcp, F_SETFL, originalFlags | O_NONBLOCK) != 0) {
+    CloseSocket(&control_socket_);
+    return false;
+  }
+  bool connected = connect(tcp, reinterpret_cast<sockaddr*>(&server), sizeof(server)) == 0;
+  if (!connected && errno != EINPROGRESS) {
+    CloseSocket(&control_socket_);
+    return false;
+  }
+  const auto connectDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!connected) {
+    const bool expired = std::chrono::steady_clock::now() >= connectDeadline;
+    const auto initialDecision = EvaluateConnectWait(desired_.load(), expired, false, 0);
+    if (initialDecision == ConnectWaitDecision::kCancelled ||
+        initialDecision == ConnectWaitDecision::kTimedOut) {
+      CloseSocket(&control_socket_);
+      return false;
+    }
+    fd_set writeSet;
+    fd_set errorSet;
+    FD_ZERO(&writeSet);
+    FD_ZERO(&errorSet);
+    FD_SET(tcp, &writeSet);
+    FD_SET(tcp, &errorSet);
+    timeval timeout{0, 50'000};
+    const int ready = select(tcp + 1, nullptr, &writeSet, &errorSet, &timeout);
+    if (ready < 0) {
+      if (errno == EINTR) continue;
+      CloseSocket(&control_socket_);
+      return false;
+    }
+    int socketError = 0;
+    socklen_t errorSize = sizeof(socketError);
+    const bool socketReady = ready > 0 &&
+                             (FD_ISSET(tcp, &writeSet) || FD_ISSET(tcp, &errorSet));
+    if (socketReady && getsockopt(tcp, SOL_SOCKET, SO_ERROR, &socketError, &errorSize) != 0) {
+      socketError = errno == 0 ? EIO : errno;
+    }
+    const auto decision = EvaluateConnectWait(desired_.load(), false, socketReady, socketError);
+    if (decision == ConnectWaitDecision::kConnected) {
+      connected = true;
+    } else if (decision == ConnectWaitDecision::kFailed ||
+               decision == ConnectWaitDecision::kCancelled) {
+      CloseSocket(&control_socket_);
+      return false;
+    }
+  }
+  if (!desired_ || fcntl(tcp, F_SETFL, originalFlags) != 0) {
+    CloseSocket(&control_socket_);
+    return false;
+  }
 
   std::ostringstream auth;
   if (resume) {

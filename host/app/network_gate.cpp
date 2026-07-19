@@ -178,4 +178,9 @@ std::vector<std::string> NetworkGate::PrivateIpv4Addresses(std::string* error) {
   return {unique.begin(), unique.end()};
 }
 
+bool NetworkGate::IsPrivateIpv4(std::string_view address, std::string* error) {
+  const auto addresses = PrivateIpv4Addresses(error);
+  return std::find(addresses.begin(), addresses.end(), address) != addresses.end();
+}
+
 }  // namespace hss::host
