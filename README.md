@@ -18,6 +18,11 @@
 
 当前代码还不是可用副屏产品。完整的第一版范围与验收标准由 GitHub Issue 和 Project 跟踪。
 
+## 项目管理
+
+- [v0.1 原生 Wi-Fi 扩展屏 MVP](https://github.com/coconilu/harmony-secondary-screen/issues/1)
+- [Product & Development Board](https://github.com/users/coconilu/projects/7)
+
 ## 目标架构
 
 ```text
