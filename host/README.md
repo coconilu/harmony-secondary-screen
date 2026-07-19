@@ -14,8 +14,9 @@
 调用 `SendInput`。`\\.\pipe\HarmonySecondaryScreen.Status` 只向本机客户端返回配对状态。
 
 Frames 管道使用受保护 DACL：UMDF 的 LocalService 主体只有写权限，LocalSystem Host 和管理员有
-完全权限，同时启用 `PIPE_REJECT_REMOTE_CLIENTS`。硬件 H.264 MFT 按
-`METransformNeedInput` / `METransformHaveOutput` 事件驱动；运行时错误或超时会重建同步软件 MFT。
+完全权限，同时启用 `PIPE_REJECT_REMOTE_CLIENTS`。硬件 H.264 MFT 由独立事件泵分别消费
+`METransformNeedInput` / `METransformHaveOutput`，并使用有界输入/输出队列适配预热和多入多出；
+运行时错误会重建同步软件 MFT。编码线程入口负责建立 COM MTA。
 输入代理使用 `QueryDisplayConfig` 的 adapter device path、驱动 Hardware ID 与固定 target 0 映射
 虚拟屏，不依赖本地化或驱动版本可能改变的 `DeviceString`。
 

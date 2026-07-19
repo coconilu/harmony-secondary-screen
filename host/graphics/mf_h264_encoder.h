@@ -6,8 +6,13 @@
 #include <wrl/client.h>
 
 #include <cstdint>
+#include <condition_variable>
+#include <deque>
 #include <mutex>
+#include <thread>
 #include <vector>
+
+#include "async_mft_schedule.h"
 
 namespace hss::graphics {
 
@@ -34,13 +39,32 @@ class MfH264Encoder final {
   bool using_hardware() const noexcept { return using_hardware_; }
 
  private:
+  struct PendingInput {
+    Microsoft::WRL::ComPtr<IMFSample> sample;
+    std::uint64_t timestampUs = 0;
+    bool forceKeyframe = false;
+  };
+
   HRESULT CreateVideoProcessor();
   HRESULT CreateEncoder(bool hardware);
   HRESULT ConfigureEncoder();
-  HRESULT ConvertToNv12(ID3D11Texture2D* source);
-  HRESULT EncodeCurrentNv12(std::uint64_t timestampUs, bool forceKeyframe,
+  HRESULT ConvertToNv12(ID3D11Texture2D* source,
+                         Microsoft::WRL::ComPtr<ID3D11Texture2D>* converted);
+  HRESULT EncodeCurrentNv12(ID3D11Texture2D* texture, std::uint64_t timestampUs,
+                            bool forceKeyframe, EncodedFrame* output);
+  HRESULT CreateInputSample(ID3D11Texture2D* texture, std::uint64_t timestampUs,
+                            Microsoft::WRL::ComPtr<IMFSample>* sample);
+  HRESULT SubmitSynchronous(Microsoft::WRL::ComPtr<IMFSample> sample,
+                            std::uint64_t timestampUs, bool forceKeyframe,
                             EncodedFrame* output);
-  HRESULT WaitForAsyncEvent(MediaEventType expected, DWORD timeoutMs);
+  HRESULT EnqueueAsynchronous(Microsoft::WRL::ComPtr<IMFSample> sample,
+                              std::uint64_t timestampUs, bool forceKeyframe,
+                              EncodedFrame* output);
+  HRESULT StartAsyncPump();
+  void StopAsyncPump();
+  void AsyncEventLoop();
+  void SetAsyncError(HRESULT error);
+  void ForceKeyframe();
   HRESULT FallbackToSoftware();
   HRESULT DrainOutput(std::uint64_t timestampUs, EncodedFrame* output);
   void RefreshCodecConfig();
@@ -50,8 +74,6 @@ class MfH264Encoder final {
   bool mf_started_ = false;
   bool using_hardware_ = false;
   bool asynchronous_ = false;
-  std::uint32_t pending_input_requests_ = 0;
-  std::uint32_t pending_outputs_ = 0;
   std::uint32_t width_ = 0;
   std::uint32_t height_ = 0;
   std::uint32_t fps_ = 0;
@@ -64,11 +86,19 @@ class MfH264Encoder final {
   Microsoft::WRL::ComPtr<ID3D11VideoContext> video_context_;
   Microsoft::WRL::ComPtr<ID3D11VideoProcessorEnumerator> processor_enumerator_;
   Microsoft::WRL::ComPtr<ID3D11VideoProcessor> processor_;
-  Microsoft::WRL::ComPtr<ID3D11Texture2D> nv12_texture_;
   Microsoft::WRL::ComPtr<IMFDXGIDeviceManager> device_manager_;
   Microsoft::WRL::ComPtr<IMFTransform> encoder_;
   Microsoft::WRL::ComPtr<IMFMediaEventGenerator> event_generator_;
   std::vector<std::byte> codec_config_;
+
+  std::mutex async_mutex_;
+  std::condition_variable async_ready_;
+  std::deque<PendingInput> pending_inputs_;
+  std::deque<EncodedFrame> ready_outputs_;
+  AsyncMftSchedule async_schedule_;
+  std::thread async_thread_;
+  bool async_stopping_ = false;
+  HRESULT async_error_ = S_OK;
 };
 
 }  // namespace hss::graphics

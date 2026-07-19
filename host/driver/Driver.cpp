@@ -1,5 +1,7 @@
 #include "Driver.h"
 
+#include "../graphics/com_apartment.h"
+
 #include <avrt.h>
 
 #include <algorithm>
@@ -294,6 +296,8 @@ void SwapChainProcessor::AcquireLoop() {
 }
 
 void SwapChainProcessor::EncoderLoop() {
+  graphics::ComMtaApartment comApartment;
+  if (!comApartment.ready()) return;
   graphics::MfH264Encoder encoder;
   if (FAILED(encoder.Initialize(device_->device.Get(), kWidth, kHeight, kFps, kBitrate))) return;
   graphics::PipeSink sink;

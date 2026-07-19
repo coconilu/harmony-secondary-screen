@@ -1,3 +1,4 @@
+#include "com_apartment.h"
 #include "mf_h264_encoder.h"
 
 #include <d3d11.h>
@@ -8,6 +9,7 @@
 #include <cstdint>
 #include <fstream>
 #include <iostream>
+#include <thread>
 #include <vector>
 
 using Microsoft::WRL::ComPtr;
@@ -40,11 +42,7 @@ bool FindNalTypes(const std::vector<std::byte>& bytes, bool* sps, bool* pps, boo
 
 }  // namespace
 
-int main(int argc, char** argv) {
-  if (argc != 2) return 2;
-  const HRESULT comResult = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-  if (FAILED(comResult) && comResult != RPC_E_CHANGED_MODE) return 1;
-
+int RunEncoderSmoke(const char* outputPath) {
   constexpr UINT width = 320;
   constexpr UINT height = 240;
   constexpr UINT fps = 30;
@@ -105,12 +103,33 @@ int main(int argc, char** argv) {
     std::cerr << "Encoded stream lacks Annex-B SPS/PPS/IDR\n";
     return 1;
   }
-  std::ofstream file(argv[1], std::ios::binary | std::ios::trunc);
+  std::ofstream file(outputPath, std::ios::binary | std::ios::trunc);
   file.write(reinterpret_cast<const char*>(stream.data()),
              static_cast<std::streamsize>(stream.size()));
   if (!file) return 1;
   std::cout << "Produced decodable Annex-B candidate: " << stream.size() << " bytes; "
             << (encoder.using_hardware() ? "hardware" : "software/fallback") << '\n';
-  if (SUCCEEDED(comResult)) CoUninitialize();
   return 0;
+}
+
+int main(int argc, char** argv) {
+  if (argc != 2) return 2;
+  int result = 1;
+  // The production encoder also starts on a fresh std::thread. Do not
+  // initialize COM on this main thread; prove the thread entry owns its MTA.
+  std::thread encoderThread([&] {
+    hss::graphics::ComMtaApartment apartment;
+    APTTYPE apartmentType = APTTYPE_CURRENT;
+    APTTYPEQUALIFIER qualifier = APTTYPEQUALIFIER_NONE;
+    if (!apartment.ready() || FAILED(CoGetApartmentType(&apartmentType, &qualifier)) ||
+        apartmentType != APTTYPE_MTA) {
+      std::cerr << "Encoder worker did not establish an MTA: 0x" << std::hex
+                << apartment.result() << '\n';
+      result = 1;
+      return;
+    }
+    result = RunEncoderSmoke(argv[1]);
+  });
+  encoderThread.join();
+  return result;
 }

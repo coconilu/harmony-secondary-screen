@@ -119,6 +119,23 @@ target_include_directories(hss_receiver_connect_policy_tests PRIVATE
 target_compile_options(hss_receiver_connect_policy_tests PRIVATE /W4 /WX /permissive- /utf-8)
 add_test(NAME hss_receiver_connect_policy_tests COMMAND hss_receiver_connect_policy_tests)
 
+add_executable(hss_decoder_state_tests tests/decoder_state_tests.cpp)
+target_include_directories(hss_decoder_state_tests PRIVATE
+  ../receiver/entry/src/main/cpp
+)
+target_compile_options(hss_decoder_state_tests PRIVATE /W4 /WX /permissive- /utf-8)
+add_test(NAME hss_decoder_state_tests COMMAND hss_decoder_state_tests)
+
+add_executable(hss_async_mft_schedule_tests tests/async_mft_schedule_tests.cpp)
+target_include_directories(hss_async_mft_schedule_tests PRIVATE graphics)
+target_compile_options(hss_async_mft_schedule_tests PRIVATE /W4 /WX /permissive- /utf-8)
+add_test(NAME hss_async_mft_schedule_tests COMMAND hss_async_mft_schedule_tests)
+
+add_executable(hss_data_plane_gate_tests tests/data_plane_gate_tests.cpp)
+target_include_directories(hss_data_plane_gate_tests PRIVATE app)
+target_compile_options(hss_data_plane_gate_tests PRIVATE /W4 /WX /permissive- /utf-8)
+add_test(NAME hss_data_plane_gate_tests COMMAND hss_data_plane_gate_tests)
+
 add_executable(hss_encoder_smoke_tests tests/encoder_smoke_tests.cpp)
 target_include_directories(hss_encoder_smoke_tests PRIVATE graphics)
 target_link_libraries(hss_encoder_smoke_tests PRIVATE hss_graphics)

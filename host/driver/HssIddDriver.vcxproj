@@ -51,6 +51,8 @@
     <ClCompile Include="..\graphics\mf_h264_encoder.cpp" />
     <ClCompile Include="..\graphics\pipe_sink.cpp" />
     <ClInclude Include="Driver.h" />
+    <ClInclude Include="..\graphics\com_apartment.h" />
+    <ClInclude Include="..\graphics\async_mft_schedule.h" />
     <ClInclude Include="..\graphics\mf_h264_encoder.h" />
     <ClInclude Include="..\graphics\pipe_sink.h" />
     <Inf Include="HssIddDriver.inf" />

@@ -206,6 +206,7 @@ void HostServer::RotatePairingCode() {
 }
 
 void HostServer::ClearSession() {
+  data_plane_gate_.Revoke();
   {
     std::scoped_lock lock(state_mutex_);
     paired_ = false;
@@ -367,6 +368,7 @@ void HostServer::HandleClient(SOCKET client, sockaddr_in peer, std::string local
   while (WaitForSingleObject(stop_event_, 0) != WAIT_OBJECT_0) {
     std::string gateError;
     if (!NetworkGate::IsPrivateIpv4(localAddress, &gateError)) {
+      ClearSession();
       SendControl(client, R"({"type":"error","code":"network_not_private"})");
       break;
     }
@@ -426,6 +428,7 @@ void HostServer::HandleClient(SOCKET client, sockaddr_in peer, std::string local
           }
           if (!SendControl(client, SessionMessage())) return;
           authenticated = true;
+          data_plane_gate_.Open();
           SetEvent(keyframe_event_);
           std::cout << "会话已在 5 秒窗口内恢复\n";
           continue;
@@ -452,6 +455,7 @@ void HostServer::HandleClient(SOCKET client, sockaddr_in peer, std::string local
           return;
         }
         authenticated = true;
+        data_plane_gate_.Open();
         SetEvent(keyframe_event_);
         std::cout << "配对成功，会话锁定到 " << SocketAddress(peer) << '\n';
         continue;
@@ -565,6 +569,8 @@ void HostServer::StatusLoop() {
 
 void HostServer::SendVideoFrame(std::uint32_t frame, std::uint64_t timestampUs,
                                 std::uint32_t flags, const std::vector<std::byte>& payload) {
+  const auto dataPlaneToken = data_plane_gate_.Capture();
+  if (!dataPlaneToken) return;
   sockaddr_in peer{};
   std::uint32_t session = 0;
   {
@@ -605,11 +611,16 @@ void HostServer::SendVideoFrame(std::uint32_t frame, std::uint64_t timestampUs,
     std::array<std::byte, protocol::kVideoHeaderSize + protocol::kMaxUdpPayload> datagram{};
     std::memcpy(datagram.data(), encodedHeader.data(), encodedHeader.size());
     std::memcpy(datagram.data() + encodedHeader.size(), payload.data() + offset, length);
-    sendto(udp_socket_, reinterpret_cast<const char*>(datagram.data()),
-           static_cast<int>(encodedHeader.size() + length), 0,
-           reinterpret_cast<const sockaddr*>(&peer), sizeof(peer));
+    const bool sent = data_plane_gate_.RunIfAllowed(*dataPlaneToken, [&] {
+      sendto(udp_socket_, reinterpret_cast<const char*>(datagram.data()),
+             static_cast<int>(encodedHeader.size() + length), 0,
+             reinterpret_cast<const sockaddr*>(&peer), sizeof(peer));
+    });
+    if (!sent) return;
   }
-  RecordHostFrame(frame, timestampUs, payload.size(), fragmentCount, (flags & 1U) != 0);
+  if (data_plane_gate_.CanSend(*dataPlaneToken)) {
+    RecordHostFrame(frame, timestampUs, payload.size(), fragmentCount, (flags & 1U) != 0);
+  }
 }
 
 }  // namespace hss::host

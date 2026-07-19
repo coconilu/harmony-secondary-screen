@@ -1,5 +1,7 @@
 #include "mf_h264_encoder.h"
 
+#include "com_apartment.h"
+
 #include <codecapi.h>
 #include <icodecapi.h>
 #include <mfapi.h>
@@ -9,7 +11,9 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstring>
+#include <system_error>
 
 #ifndef RETURN_IF_FAILED
 #define RETURN_IF_FAILED(expression)             \
@@ -150,18 +154,7 @@ HRESULT MfH264Encoder::CreateVideoProcessor() {
   content.OutputFrameRate = {fps_, 1};
   content.Usage = D3D11_VIDEO_USAGE_PLAYBACK_NORMAL;
   RETURN_IF_FAILED(video_device_->CreateVideoProcessorEnumerator(&content, &processor_enumerator_));
-  RETURN_IF_FAILED(video_device_->CreateVideoProcessor(processor_enumerator_.Get(), 0, &processor_));
-
-  D3D11_TEXTURE2D_DESC texture{};
-  texture.Width = width_;
-  texture.Height = height_;
-  texture.MipLevels = 1;
-  texture.ArraySize = 1;
-  texture.Format = DXGI_FORMAT_NV12;
-  texture.SampleDesc.Count = 1;
-  texture.Usage = D3D11_USAGE_DEFAULT;
-  texture.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
-  return device_->CreateTexture2D(&texture, nullptr, &nv12_texture_);
+  return video_device_->CreateVideoProcessor(processor_enumerator_.Get(), 0, &processor_);
 }
 
 HRESULT MfH264Encoder::CreateEncoder(bool hardware) {
@@ -187,13 +180,12 @@ HRESULT MfH264Encoder::CreateEncoder(bool hardware) {
   RETURN_IF_FAILED(result);
   using_hardware_ = hardware;
   asynchronous_ = hardware;
-  pending_input_requests_ = 0;
-  pending_outputs_ = 0;
   event_generator_.Reset();
   if (asynchronous_) {
     RETURN_IF_FAILED(encoder_.As(&event_generator_));
   }
-  return ConfigureEncoder();
+  RETURN_IF_FAILED(ConfigureEncoder());
+  return asynchronous_ ? StartAsyncPump() : S_OK;
 }
 
 HRESULT MfH264Encoder::ConfigureEncoder() {
@@ -240,7 +232,9 @@ HRESULT MfH264Encoder::ConfigureEncoder() {
   return S_OK;
 }
 
-HRESULT MfH264Encoder::ConvertToNv12(ID3D11Texture2D* source) {
+HRESULT MfH264Encoder::ConvertToNv12(ID3D11Texture2D* source,
+                                     ComPtr<ID3D11Texture2D>* converted) {
+  if (converted == nullptr) return E_POINTER;
   D3D11_TEXTURE2D_DESC sourceDesc{};
   source->GetDesc(&sourceDesc);
   if (sourceDesc.Width != width_ || sourceDesc.Height != height_) {
@@ -255,12 +249,23 @@ HRESULT MfH264Encoder::ConvertToNv12(ID3D11Texture2D* source) {
   RETURN_IF_FAILED(video_device_->CreateVideoProcessorInputView(
       source, processor_enumerator_.Get(), &inputDesc, &inputView));
 
+  D3D11_TEXTURE2D_DESC texture{};
+  texture.Width = width_;
+  texture.Height = height_;
+  texture.MipLevels = 1;
+  texture.ArraySize = 1;
+  texture.Format = DXGI_FORMAT_NV12;
+  texture.SampleDesc.Count = 1;
+  texture.Usage = D3D11_USAGE_DEFAULT;
+  texture.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+  RETURN_IF_FAILED(device_->CreateTexture2D(&texture, nullptr, converted->ReleaseAndGetAddressOf()));
+
   D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC outputDesc{};
   outputDesc.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
   outputDesc.Texture2D.MipSlice = 0;
   ComPtr<ID3D11VideoProcessorOutputView> outputView;
   RETURN_IF_FAILED(video_device_->CreateVideoProcessorOutputView(
-      nv12_texture_.Get(), processor_enumerator_.Get(), &outputDesc, &outputView));
+      converted->Get(), processor_enumerator_.Get(), &outputDesc, &outputView));
 
   D3D11_VIDEO_PROCESSOR_STREAM stream{};
   stream.Enable = TRUE;
@@ -277,93 +282,206 @@ HRESULT MfH264Encoder::Encode(ID3D11Texture2D* bgraTexture, std::uint64_t timest
   output->bytes.clear();
   output->keyframe = false;
   output->timestampUs = timestampUs;
-  RETURN_IF_FAILED(ConvertToNv12(bgraTexture));
+  ComPtr<ID3D11Texture2D> converted;
+  RETURN_IF_FAILED(ConvertToNv12(bgraTexture, &converted));
 
-  HRESULT result = EncodeCurrentNv12(timestampUs, forceKeyframe, output);
+  HRESULT result = EncodeCurrentNv12(converted.Get(), timestampUs, forceKeyframe, output);
   if (FAILED(result) && using_hardware_) {
     const HRESULT fallback = FallbackToSoftware();
     if (FAILED(fallback)) return result;
-    result = EncodeCurrentNv12(timestampUs, forceKeyframe, output);
+    result = EncodeCurrentNv12(converted.Get(), timestampUs, forceKeyframe, output);
   }
   return result;
 }
 
-HRESULT MfH264Encoder::EncodeCurrentNv12(std::uint64_t timestampUs, bool forceKeyframe,
+HRESULT MfH264Encoder::EncodeCurrentNv12(ID3D11Texture2D* texture,
+                                         std::uint64_t timestampUs, bool forceKeyframe,
                                          EncodedFrame* output) {
-  if (forceKeyframe) {
-    ComPtr<ICodecAPI> codecApi;
-    if (SUCCEEDED(encoder_.As(&codecApi))) {
-      VARIANT value;
-      VariantInit(&value);
-      value.vt = VT_BOOL;
-      value.boolVal = VARIANT_TRUE;
-      SetCodecValue(codecApi.Get(), CODECAPI_AVEncVideoForceKeyFrame, value);
-      VariantClear(&value);
-    }
-  }
-
-  ComPtr<IMFMediaBuffer> buffer;
-  RETURN_IF_FAILED(MFCreateDXGISurfaceBuffer(__uuidof(ID3D11Texture2D), nv12_texture_.Get(), 0,
-                                             FALSE, &buffer));
   ComPtr<IMFSample> sample;
-  RETURN_IF_FAILED(MFCreateSample(&sample));
-  RETURN_IF_FAILED(sample->AddBuffer(buffer.Get()));
-  RETURN_IF_FAILED(sample->SetSampleTime(static_cast<LONGLONG>(timestampUs * 10ULL)));
-  RETURN_IF_FAILED(sample->SetSampleDuration(10'000'000LL / fps_));
-  if (asynchronous_) {
-    RETURN_IF_FAILED(WaitForAsyncEvent(METransformNeedInput, 250));
-  }
+  RETURN_IF_FAILED(CreateInputSample(texture, timestampUs, &sample));
+  return asynchronous_ ? EnqueueAsynchronous(sample, timestampUs, forceKeyframe, output)
+                       : SubmitSynchronous(sample, timestampUs, forceKeyframe, output);
+}
+
+HRESULT MfH264Encoder::CreateInputSample(ID3D11Texture2D* texture,
+                                         std::uint64_t timestampUs,
+                                         ComPtr<IMFSample>* sample) {
+  if (texture == nullptr || sample == nullptr) return E_POINTER;
+  ComPtr<IMFMediaBuffer> buffer;
+  RETURN_IF_FAILED(MFCreateDXGISurfaceBuffer(__uuidof(ID3D11Texture2D), texture, 0,
+                                             FALSE, &buffer));
+  RETURN_IF_FAILED(MFCreateSample(sample->ReleaseAndGetAddressOf()));
+  RETURN_IF_FAILED((*sample)->AddBuffer(buffer.Get()));
+  RETURN_IF_FAILED((*sample)->SetSampleTime(static_cast<LONGLONG>(timestampUs * 10ULL)));
+  return (*sample)->SetSampleDuration(10'000'000LL / fps_);
+}
+
+void MfH264Encoder::ForceKeyframe() {
+  ComPtr<ICodecAPI> codecApi;
+  if (FAILED(encoder_.As(&codecApi))) return;
+  VARIANT value;
+  VariantInit(&value);
+  value.vt = VT_BOOL;
+  value.boolVal = VARIANT_TRUE;
+  SetCodecValue(codecApi.Get(), CODECAPI_AVEncVideoForceKeyFrame, value);
+  VariantClear(&value);
+}
+
+HRESULT MfH264Encoder::SubmitSynchronous(ComPtr<IMFSample> sample,
+                                         std::uint64_t timestampUs, bool forceKeyframe,
+                                         EncodedFrame* output) {
+  if (forceKeyframe) ForceKeyframe();
   RETURN_IF_FAILED(encoder_->ProcessInput(0, sample.Get(), 0));
-  if (asynchronous_) {
-    RETURN_IF_FAILED(WaitForAsyncEvent(METransformHaveOutput, 250));
-  }
   return DrainOutput(timestampUs, output);
 }
 
-HRESULT MfH264Encoder::WaitForAsyncEvent(MediaEventType expected, DWORD timeoutMs) {
-  if (!asynchronous_ || event_generator_ == nullptr) return E_UNEXPECTED;
-  auto consumeCredit = [&]() -> bool {
-    auto* credit = expected == METransformNeedInput ? &pending_input_requests_ : &pending_outputs_;
-    if (*credit == 0) return false;
-    --*credit;
-    return true;
-  };
-  if (consumeCredit()) return S_OK;
+HRESULT MfH264Encoder::EnqueueAsynchronous(ComPtr<IMFSample> sample,
+                                           std::uint64_t timestampUs, bool forceKeyframe,
+                                           EncodedFrame* output) {
+  std::unique_lock lock(async_mutex_);
+  if (FAILED(async_error_)) return async_error_;
+  while (pending_inputs_.size() >= 3) {
+    forceKeyframe = forceKeyframe || pending_inputs_.front().forceKeyframe;
+    pending_inputs_.pop_front();
+  }
+  pending_inputs_.push_back({std::move(sample), timestampUs, forceKeyframe});
+  async_ready_.notify_all();
+  async_ready_.wait_for(lock, std::chrono::milliseconds(50),
+                        [&] { return !ready_outputs_.empty() || FAILED(async_error_); });
+  if (FAILED(async_error_)) return async_error_;
+  if (ready_outputs_.empty()) return S_FALSE;
+  *output = std::move(ready_outputs_.front());
+  ready_outputs_.pop_front();
+  return S_OK;
+}
 
-  const ULONGLONG deadline = GetTickCount64() + timeoutMs;
-  while (GetTickCount64() < deadline) {
+HRESULT MfH264Encoder::StartAsyncPump() {
+  {
+    std::scoped_lock lock(async_mutex_);
+    pending_inputs_.clear();
+    ready_outputs_.clear();
+    async_schedule_ = {};
+    async_stopping_ = false;
+    async_error_ = S_OK;
+  }
+  try {
+    async_thread_ = std::thread(&MfH264Encoder::AsyncEventLoop, this);
+  } catch (const std::system_error&) {
+    std::scoped_lock lock(async_mutex_);
+    async_stopping_ = true;
+    async_error_ = E_FAIL;
+    return E_FAIL;
+  }
+  return S_OK;
+}
+
+void MfH264Encoder::StopAsyncPump() {
+  {
+    std::scoped_lock lock(async_mutex_);
+    async_stopping_ = true;
+    async_ready_.notify_all();
+  }
+  if (async_thread_.joinable()) async_thread_.join();
+  std::scoped_lock lock(async_mutex_);
+  pending_inputs_.clear();
+  ready_outputs_.clear();
+  async_schedule_ = {};
+}
+
+void MfH264Encoder::SetAsyncError(HRESULT error) {
+  std::scoped_lock lock(async_mutex_);
+  if (SUCCEEDED(async_error_)) async_error_ = error;
+  async_ready_.notify_all();
+}
+
+void MfH264Encoder::AsyncEventLoop() {
+  ComMtaApartment apartment;
+  if (!apartment.ready()) {
+    SetAsyncError(apartment.result());
+    return;
+  }
+  for (;;) {
+    PendingInput input;
+    bool haveInput = false;
+    {
+      std::scoped_lock lock(async_mutex_);
+      if (async_stopping_) return;
+      if (async_schedule_.TryConsumeInputCredit(!pending_inputs_.empty())) {
+        input = std::move(pending_inputs_.front());
+        pending_inputs_.pop_front();
+        haveInput = true;
+      }
+    }
+    if (haveInput) {
+      if (input.forceKeyframe) ForceKeyframe();
+      const HRESULT inputResult = encoder_->ProcessInput(0, input.sample.Get(), 0);
+      if (FAILED(inputResult)) {
+        SetAsyncError(inputResult);
+        return;
+      }
+      continue;
+    }
+
     ComPtr<IMFMediaEvent> event;
     const HRESULT getResult = event_generator_->GetEvent(MF_EVENT_FLAG_NO_WAIT, &event);
     if (getResult == MF_E_NO_EVENTS_AVAILABLE) {
-      Sleep(1);
+      std::unique_lock lock(async_mutex_);
+      async_ready_.wait_for(lock, std::chrono::milliseconds(2), [&] {
+        return async_stopping_ ||
+               (async_schedule_.input_credits() > 0 && !pending_inputs_.empty());
+      });
       continue;
     }
-    RETURN_IF_FAILED(getResult);
-    HRESULT eventStatus = S_OK;
-    RETURN_IF_FAILED(event->GetStatus(&eventStatus));
-    RETURN_IF_FAILED(eventStatus);
-    MediaEventType type = MEUnknown;
-    RETURN_IF_FAILED(event->GetType(&type));
-    if (type == METransformNeedInput) {
-      ++pending_input_requests_;
-    } else if (type == METransformHaveOutput) {
-      ++pending_outputs_;
-    } else if (type == MEError) {
-      return E_FAIL;
+    if (FAILED(getResult)) {
+      SetAsyncError(getResult);
+      return;
     }
-    if (consumeCredit()) return S_OK;
+    HRESULT eventStatus = S_OK;
+    if (FAILED(event->GetStatus(&eventStatus)) || FAILED(eventStatus)) {
+      SetAsyncError(FAILED(eventStatus) ? eventStatus : E_FAIL);
+      return;
+    }
+    MediaEventType type = MEUnknown;
+    if (FAILED(event->GetType(&type))) {
+      SetAsyncError(E_FAIL);
+      return;
+    }
+    if (type == METransformNeedInput) {
+      std::scoped_lock lock(async_mutex_);
+      async_schedule_.OnNeedInput();
+      async_ready_.notify_all();
+    } else if (type == METransformHaveOutput) {
+      {
+        std::scoped_lock lock(async_mutex_);
+        async_schedule_.OnHaveOutput();
+        if (!async_schedule_.TryConsumeOutputCredit()) continue;
+      }
+      EncodedFrame output;
+      const HRESULT outputResult = DrainOutput(0, &output);
+      if (FAILED(outputResult)) {
+        SetAsyncError(outputResult);
+        return;
+      }
+      if (outputResult == S_OK && !output.bytes.empty()) {
+        std::scoped_lock lock(async_mutex_);
+        while (ready_outputs_.size() >= 4) ready_outputs_.pop_front();
+        ready_outputs_.push_back(std::move(output));
+        async_ready_.notify_all();
+      }
+    } else if (type == MEError) {
+      SetAsyncError(E_FAIL);
+      return;
+    }
   }
-  return HRESULT_FROM_WIN32(WAIT_TIMEOUT);
 }
 
 HRESULT MfH264Encoder::FallbackToSoftware() {
+  StopAsyncPump();
   if (encoder_ != nullptr) encoder_->ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0);
   event_generator_.Reset();
   encoder_.Reset();
   asynchronous_ = false;
   using_hardware_ = false;
-  pending_input_requests_ = 0;
-  pending_outputs_ = 0;
   codec_config_.clear();
   return CreateEncoder(false);
 }
@@ -437,6 +555,7 @@ void MfH264Encoder::RefreshCodecConfig() {
 }
 
 void MfH264Encoder::Shutdown() {
+  StopAsyncPump();
   if (encoder_ != nullptr) {
     encoder_->ProcessMessage(MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0);
     encoder_->ProcessMessage(MFT_MESSAGE_NOTIFY_END_STREAMING, 0);
@@ -444,11 +563,8 @@ void MfH264Encoder::Shutdown() {
   encoder_.Reset();
   event_generator_.Reset();
   asynchronous_ = false;
-  pending_input_requests_ = 0;
-  pending_outputs_ = 0;
   codec_config_.clear();
   device_manager_.Reset();
-  nv12_texture_.Reset();
   processor_.Reset();
   processor_enumerator_.Reset();
   video_context_.Reset();

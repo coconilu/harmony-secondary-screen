@@ -1,5 +1,6 @@
 #pragma once
 
+#include "decoder_state.h"
 #include "native_protocol.h"
 
 #include <ace/xcomponent/native_interface_xcomponent.h>
@@ -76,13 +77,16 @@ class ReceiverSession final {
   void SetState(std::string state, std::string detail, bool connected);
 
   bool StartDecoder();
+  bool CreateDecoderLocked();
+  void DestroyDecoderLocked();
+  void ClearDecoderQueues();
   void StopDecoder();
-  void FlushDecoder();
+  bool FlushDecoder();
   void SubmitFrame(DecodedInput frame);
-  void PumpDecoderLocked();
+  void PumpDecoderLocked(OH_AVCodec* decoder);
   void DecoderError(int32_t errorCode);
-  void DecoderNeedInput(std::uint32_t index, OH_AVBuffer* buffer);
-  void DecoderOutput(std::uint32_t index, OH_AVBuffer* buffer);
+  void DecoderNeedInput(OH_AVCodec* decoder, std::uint32_t index, OH_AVBuffer* buffer);
+  void DecoderOutput(OH_AVCodec* decoder, std::uint32_t index, OH_AVBuffer* buffer);
 
   static void OnCodecError(OH_AVCodec*, int32_t errorCode, void* userData);
   static void OnCodecStreamChanged(OH_AVCodec*, OH_AVFormat*, void*) {}
@@ -107,8 +111,11 @@ class ReceiverSession final {
   protocol::ControlDecoder control_decoder_;
   std::map<std::uint32_t, Assembly> assemblies_;
 
-  std::recursive_mutex decoder_mutex_;
-  OH_AVCodec* decoder_ = nullptr;
+  std::mutex decoder_lifecycle_mutex_;
+  std::mutex decoder_queue_mutex_;
+  std::atomic<DecoderLifecycleState> decoder_state_{DecoderLifecycleState::kStopped};
+  std::atomic<OH_AVCodec*> decoder_{nullptr};
+  std::atomic<bool> needs_codec_config_{true};
   void* native_window_ = nullptr;
   std::deque<InputSlot> input_slots_;
   std::deque<DecodedInput> decode_queue_;

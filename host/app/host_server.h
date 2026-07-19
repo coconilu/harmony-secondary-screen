@@ -1,5 +1,6 @@
 #pragma once
 
+#include "data_plane_gate.h"
 #include "pointer_relay.h"
 
 #include <winsock2.h>
@@ -66,6 +67,7 @@ class HostServer final {
   std::uint32_t session_short_ = 0;
   sockaddr_in video_peer_{};
   SOCKET udp_socket_ = INVALID_SOCKET;
+  DataPlaneGate data_plane_gate_;
   PointerRelay pointer_relay_;
 };
 
