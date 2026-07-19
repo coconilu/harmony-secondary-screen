@@ -1,17 +1,52 @@
+import hssReceiver, { ReceiverStatus } from 'libhss_receiver.so';
+
 @Entry
 @Component
 struct Index {
   @State hostAddress: string = '';
+  @State pairingCode: string = '';
   @State statusText: string = '等待 Windows Host';
   @State isConnected: boolean = false;
+  @State inputMode: string = 'pointer';
+  @State framesDecoded: number = 0;
+  @State framesDropped: number = 0;
+  private statusTimer: number = -1;
+
+  aboutToAppear(): void {
+    this.statusTimer = setInterval(() => {
+      const status: ReceiverStatus = hssReceiver.getStatus();
+      this.statusText = status.detail;
+      this.isConnected = status.connected;
+      this.framesDecoded = status.framesDecoded;
+      this.framesDropped = status.framesDropped;
+    }, 250);
+  }
+
+  aboutToDisappear(): void {
+    if (this.statusTimer >= 0) {
+      clearInterval(this.statusTimer);
+      this.statusTimer = -1;
+    }
+    hssReceiver.disconnect();
+  }
 
   private connect(): void {
     if (this.hostAddress.trim().length === 0) {
       this.statusText = '请输入 Windows 主机 IP';
       return;
     }
+    if (!/^\d{6}$/.test(this.pairingCode)) {
+      this.statusText = '请输入 Windows Host 显示的六位一次性配对码';
+      return;
+    }
+    if (!hssReceiver.connect(this.hostAddress.trim(), this.pairingCode)) {
+      this.statusText = '连接参数无效';
+    }
+  }
 
-    this.statusText = '原生传输模块将在 v0.1 里程碑中接入';
+  private toggleInputMode(): void {
+    this.inputMode = this.inputMode === 'pointer' ? 'scroll' : 'pointer';
+    hssReceiver.setInputMode(this.inputMode === 'pointer' ? 'pointer' : 'scroll');
   }
 
   build() {
@@ -35,23 +70,18 @@ struct Index {
       }
       .width('100%')
 
-      Column() {
-        Text('原生 AVCodec Surface')
-          .fontSize(18)
-          .fontColor('#AAB6C5')
-        Text('等待接收 Windows 虚拟显示器画面')
-          .fontSize(14)
-          .fontColor('#718096')
-          .margin({ top: 8 })
-      }
+      XComponent({
+        id: 'hssVideoSurface',
+        type: XComponentType.SURFACE,
+        libraryname: 'hss_receiver'
+      })
       .width('100%')
       .layoutWeight(1)
-      .justifyContent(FlexAlign.Center)
       .backgroundColor('#0B111A')
       .borderRadius(20)
       .border({ width: 1, color: '#2D3748' })
 
-      Row({ space: 12 }) {
+      Row({ space: 10 }) {
         TextInput({ placeholder: 'Windows 主机 IP，例如 192.168.1.20', text: this.hostAddress })
           .layoutWeight(1)
           .height(48)
@@ -62,6 +92,17 @@ struct Index {
             this.hostAddress = value;
           })
 
+        TextInput({ placeholder: '六位配对码', text: this.pairingCode })
+          .width(150)
+          .height(48)
+          .maxLength(6)
+          .backgroundColor('#202A38')
+          .fontColor('#F7FAFC')
+          .placeholderColor('#718096')
+          .onChange((value: string) => {
+            this.pairingCode = value;
+          })
+
         Button('连接')
           .height(48)
           .fontColor('#07130C')
@@ -70,10 +111,23 @@ struct Index {
       }
       .width('100%')
 
-      Text(this.statusText)
+      Row({ space: 12 }) {
+        Text(this.statusText)
+          .layoutWeight(1)
+          .fontSize(14)
+          .fontColor('#AAB6C5')
+
+        Text(`解码 ${this.framesDecoded} · 丢弃 ${this.framesDropped}`)
+          .fontSize(13)
+          .fontColor('#718096')
+
+        Button(this.inputMode === 'pointer' ? '指针模式' : '滚动模式')
+          .height(38)
+          .fontSize(13)
+          .backgroundColor('#2D3748')
+          .onClick(() => this.toggleInputMode())
+      }
         .width('100%')
-        .fontSize(14)
-        .fontColor('#AAB6C5')
     }
     .width('100%')
     .height('100%')

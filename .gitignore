@@ -3,6 +3,8 @@
 oh_modules/
 node_modules/
 **/build/
+**/.cxx/
+out/
 local.properties
 *.hap
 *.app

@@ -1,0 +1,64 @@
+; Harmony Secondary Screen IddCx UMDF driver
+
+[Version]
+PnpLockDown=1
+Signature="$Windows NT$"
+Class=Display
+ClassGUID={4D36E968-E325-11CE-BFC1-08002BE10318}
+ClassVer=2.0
+Provider=%ManufacturerName%
+CatalogFile=HssIddDriver.cat
+DriverVer=07/19/2026,0.1.0.0
+
+[Manufacturer]
+%ManufacturerName%=Standard,NTamd64.10.0...22000
+
+[Standard.NTamd64.10.0...22000]
+%DeviceName%=Hss_Install,Root\HarmonySecondaryScreenIdd
+
+[SourceDisksFiles]
+HssIddDriver.dll=1
+
+[SourceDisksNames]
+1=%DiskName%
+
+[Hss_Install.NT]
+Include=WUDFRD.inf
+Needs=WUDFRD.NT
+CopyFiles=UMDriverCopy
+
+[Hss_Install.NT.hw]
+Include=WUDFRD.inf
+Needs=WUDFRD.NT.HW
+AddReg=Hss_HardwareSettings
+
+[Hss_HardwareSettings]
+HKR,,"UpperFilters",%REG_MULTI_SZ%,"IndirectKmd"
+HKR,"WUDF","DeviceGroupId",%REG_SZ%,"HarmonySecondaryScreenIdd-5e52118f"
+
+[Hss_Install.NT.Services]
+Include=WUDFRD.inf
+Needs=WUDFRD.NT.Services
+
+[Hss_Install.NT.Wdf]
+UmdfService=HssIddDriver,HssIddDriver_Install
+UmdfServiceOrder=HssIddDriver
+UmdfKernelModeClientPolicy=AllowKernelModeClients
+
+[HssIddDriver_Install]
+UmdfLibraryVersion=$UMDFVERSION$
+ServiceBinary=%12%\UMDF\HssIddDriver.dll
+UmdfExtensions=IddCx0104
+
+[DestinationDirs]
+UMDriverCopy=12,UMDF
+
+[UMDriverCopy]
+HssIddDriver.dll
+
+[Strings]
+ManufacturerName="Harmony Secondary Screen"
+DiskName="Harmony Secondary Screen Driver"
+DeviceName="Harmony Secondary Screen Virtual Display"
+REG_MULTI_SZ=0x00010000
+REG_SZ=0x00000000
