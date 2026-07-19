@@ -33,8 +33,12 @@ if ($null -eq $iddHeader) {
 
 $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
 if (-not (Test-Path -LiteralPath $vswhere)) { throw 'vswhere.exe is missing.' }
-$msbuild = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' |
+$msbuild = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\amd64\MSBuild.exe' |
   Select-Object -First 1
+if (-not $msbuild) {
+  $msbuild = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' |
+    Select-Object -First 1
+}
 if (-not $msbuild) { throw 'MSBuild with the WDK toolset is missing.' }
 
 $driverProject = Join-Path $hostRoot 'driver\HssIddDriver.vcxproj'
