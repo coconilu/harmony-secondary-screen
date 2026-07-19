@@ -3,6 +3,17 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Push-Location $projectRoot
 try {
+  $parseTokens = $null
+  $parseErrors = $null
+  [System.Management.Automation.Language.Parser]::ParseFile(
+    (Join-Path $projectRoot 'scripts\install-host-service.ps1'),
+    [ref]$parseTokens,
+    [ref]$parseErrors) | Out-Null
+  if ($parseErrors.Count -ne 0) {
+    throw "Host service installer contains PowerShell syntax errors:`n$($parseErrors | Out-String)"
+  }
+  & (Join-Path $projectRoot 'scripts\install-host-service.ps1') -ValidateFirewallLookup
+
   $forbidden = & rg -n -i '(@ohos\.web\.webview|\bWebView\b|<html|android\.intent|androidx\.|\.apk\b)' receiver 2>$null
   if ($LASTEXITCODE -eq 0) {
     throw "Receiver contains a forbidden WebView/HTML5/Android dependency:`n$forbidden"
@@ -39,7 +50,14 @@ try {
     @{ Path = 'host\app\local_security.h'; Pattern = 'GW;;;LS' },
     @{ Path = 'host\app\host_server.cpp'; Pattern = 'PIPE_REJECT_REMOTE_CLIENTS' },
     @{ Path = 'host\app\network_gate.cpp'; Pattern = 'NLM_NETWORK_CATEGORY_PRIVATE' },
-    @{ Path = 'host\app\host_server.cpp'; Pattern = 'IsPrivateIpv4(localAddress' },
+    @{ Path = 'host\app\network_gate.cpp'; Pattern = 'adapter->IfType != IF_TYPE_IEEE80211' },
+    @{ Path = 'host\app\network_gate.cpp'; Pattern = 'SetCategory(NLM_NETWORK_CATEGORY_PRIVATE)' },
+    @{ Path = 'host\app\host_server.cpp'; Pattern = 'IsTrustedWifiIpv4(localAddress' },
+    @{ Path = 'host\app\main.cpp'; Pattern = 'LaunchElevatedWifiTrust' },
+    @{ Path = 'scripts\install-host-service.ps1'; Pattern = '-Profile Private -InterfaceType Wireless' },
+    @{ Path = 'scripts\install-host-service.ps1'; Pattern = '-LocalPort 47100 -RemoteAddress LocalSubnet' },
+    @{ Path = 'scripts\install-host-service.ps1'; Pattern = 'Remove-NetFirewallRule -ErrorAction Stop' },
+    @{ Path = 'scripts\install-host-service.ps1'; Pattern = 'if ($Start) { Start-Service -Name $serviceName }' },
     @{ Path = 'host\app\host_server.cpp'; Pattern = 'data_plane_gate_.Revoke' },
     @{ Path = 'host\app\host_server.cpp'; Pattern = 'data_plane_gate_.CanSend' },
     @{ Path = 'host\app\host_server.cpp'; Pattern = 'data_plane_gate_.RunIfAllowed' },

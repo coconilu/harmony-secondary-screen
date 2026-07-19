@@ -47,7 +47,10 @@ target_link_libraries(hss_host PRIVATE
   advapi32
   iphlpapi
   ole32
+  oleaut32
   runtimeobject
+  shell32
+  user32
   ws2_32
 )
 target_compile_definitions(hss_host PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
@@ -97,7 +100,7 @@ add_executable(hss_network_gate_tests
   app/network_gate.cpp
 )
 target_include_directories(hss_network_gate_tests PRIVATE app)
-target_link_libraries(hss_network_gate_tests PRIVATE iphlpapi ole32 runtimeobject ws2_32)
+target_link_libraries(hss_network_gate_tests PRIVATE iphlpapi ole32 oleaut32 runtimeobject ws2_32)
 target_compile_definitions(hss_network_gate_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(hss_network_gate_tests PRIVATE /W4 /WX /permissive- /utf-8)
 add_test(NAME hss_network_gate_tests COMMAND hss_network_gate_tests)

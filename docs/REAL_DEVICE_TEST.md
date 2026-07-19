@@ -27,9 +27,17 @@
 2. `scripts/build-host.ps1 -Configuration Release` 在安装 WDK 的干净环境通过。
 3. 测试签名驱动在隔离 Windows 11 测试机安装成功，“显示设置”出现独立显示器并选择“扩展这些显示器”。
 4. 主屏和平板显示不同内容，窗口能跨屏拖动；不得使用复制、投屏镜像或远程桌面。
-5. 家庭 Wi-Fi 在 Windows 中分类为“专用”；连接建立后把同一网络临时切为“公共”，Host 必须关闭
-   listener、立即撤销现有 session，并停止 UDP 视频；从 `network_not_private` 错误出现起抓包确认新增 UDP 数据包数为 0。
-   公共状态下重启 Host 必须拒绝监听。
+5. 把可信家庭 Wi-Fi 临时设为“公用”后运行 Host 网络准备入口，必须显示网络名称与风险说明；确认并
+   允许 UAC 后只把当前物理 Wi-Fi 改为“专用”，无需手动进入 Windows 网络设置。拒绝或取消 UAC 时
+   Host 必须保持关闭。
+6. VPN 保持连接，确认 Host 只监听物理 Wi-Fi IPv4，不监听 VPN 或以太网地址。
+   若 Windows 把 VPN 与 Wi-Fi 聚合为同一网络对象，网络准备入口必须拒绝自动改类；暂时断开 VPN、完成
+   一次 Wi-Fi 信任后再连接 VPN，Host 仍只能监听物理 Wi-Fi IPv4。
+7. 检查 Windows 防火墙规则 `HarmonySecondaryScreenHost-Control`：必须同时限定 `Private`、`Wireless`、
+   `LocalSubnet`、Host 程序路径与 TCP 47100；不得存在对应的 Public、VPN/以太网或 UDP 入站放行。
+8. 连接建立后把同一 Wi-Fi 临时切回“公用”，Host 必须关闭 listener、立即撤销现有 session，并停止
+   UDP 视频；从 `network_not_private` 错误出现起抓包确认新增 UDP 数据包数为 0。公共状态下以服务模式
+   重启 Host 必须拒绝监听，不得在 Session 0 弹出交互窗口。
 
 ## 30 分钟稳定性与丢帧
 

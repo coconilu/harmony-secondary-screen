@@ -157,10 +157,10 @@ bool HostServer::Start(std::string* error) {
     return false;
   }
 
-  auto addresses = NetworkGate::PrivateIpv4Addresses(error);
+  auto addresses = NetworkGate::TrustedWifiIpv4Addresses(error);
   if (addresses.empty()) {
     if (error->empty()) {
-      *error = "没有专用网络 IPv4 地址；公共网络下 Host 按设计拒绝监听";
+      *error = "没有可信物理 Wi-Fi IPv4 地址；未经确认的公用网络下 Host 拒绝监听";
     }
     return false;
   }
@@ -282,7 +282,7 @@ void HostServer::ControlLoop() {
   while (WaitForSingleObject(stop_event_, 0) != WAIT_OBJECT_0) {
     ExpireResumeWindow();
     std::string gateError;
-    const auto addresses = NetworkGate::PrivateIpv4Addresses(&gateError);
+    const auto addresses = NetworkGate::TrustedWifiIpv4Addresses(&gateError);
     if (addresses.empty()) {
       WaitForSingleObject(stop_event_, 500);
       continue;
@@ -291,7 +291,7 @@ void HostServer::ControlLoop() {
       if (WaitForSingleObject(stop_event_, 0) == WAIT_OBJECT_0) {
         return;
       }
-      if (!NetworkGate::IsPrivateIpv4(address, &gateError)) continue;
+      if (!NetworkGate::IsTrustedWifiIpv4(address, &gateError)) continue;
       const SOCKET listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
       if (listener == INVALID_SOCKET) {
         continue;
@@ -309,7 +309,7 @@ void HostServer::ControlLoop() {
         continue;
       }
       active_listener_ = listener;
-      std::cout << "仅监听专用网络 " << address << ':' << kControlPort << '\n';
+      std::cout << "仅监听可信物理 Wi-Fi " << address << ':' << kControlPort << '\n';
 
       fd_set readSet;
       FD_ZERO(&readSet);
@@ -318,7 +318,7 @@ void HostServer::ControlLoop() {
       const int ready = select(0, &readSet, nullptr, nullptr, &timeout);
       // Revalidate immediately before accepting. A Private -> Public profile
       // transition therefore closes this listener instead of accepting a peer.
-      if (ready > 0 && NetworkGate::IsPrivateIpv4(address, &gateError)) {
+      if (ready > 0 && NetworkGate::IsTrustedWifiIpv4(address, &gateError)) {
         sockaddr_in peer{};
         int peerLength = sizeof(peer);
         const SOCKET client = accept(listener, reinterpret_cast<sockaddr*>(&peer), &peerLength);
@@ -367,7 +367,7 @@ void HostServer::HandleClient(SOCKET client, sockaddr_in peer, std::string local
 
   while (WaitForSingleObject(stop_event_, 0) != WAIT_OBJECT_0) {
     std::string gateError;
-    if (!NetworkGate::IsPrivateIpv4(localAddress, &gateError)) {
+    if (!NetworkGate::IsTrustedWifiIpv4(localAddress, &gateError)) {
       ClearSession();
       SendControl(client, R"({"type":"error","code":"network_not_private"})");
       break;
