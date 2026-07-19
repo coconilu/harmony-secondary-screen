@@ -1,0 +1,7 @@
+{
+  "string": [
+    { "name": "module_desc", "value": "HarmonyOS native secondary-screen receiver" },
+    { "name": "EntryAbility_desc", "value": "Harmony Secondary Screen receiver" },
+    { "name": "EntryAbility_label", "value": "Harmony Secondary Screen" }
+  ]
+}
