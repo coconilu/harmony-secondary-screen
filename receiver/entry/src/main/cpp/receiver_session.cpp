@@ -1,5 +1,6 @@
 #include "receiver_session.h"
 
+#include "avc_decoder_input.h"
 #include "connect_policy.h"
 
 #include <arpa/inet.h>
@@ -83,7 +84,10 @@ void ReceiverSession::Stop() {
   }
   assemblies_.clear();
   control_decoder_.Reset();
+  telemetry_queue_.Clear();
   FlushDecoder();
+  telemetry_queue_.Clear();
+  keyframe_request_pending_ = false;
   SetState("idle", "等待连接", false);
 }
 
@@ -116,9 +120,12 @@ void ReceiverSession::NetworkLoop() {
     CloseSockets();
     assemblies_.clear();
     control_decoder_.Reset();
+    telemetry_queue_.Clear();
     if (desired_ && !FlushDecoder()) {
       SetState("warning", "AVCodec 恢复失败，等待 Surface 重建", false);
     }
+    telemetry_queue_.Clear();
+    keyframe_request_pending_ = false;
     if (!desired_) break;
     const int delay = retryDelayMs[std::min(retry, retryDelayMs.size() - 1)];
     ++retry;
@@ -299,21 +306,44 @@ bool ReceiverSession::RunConnectedSession() {
       }
       nextHeartbeat = std::chrono::steady_clock::now() + std::chrono::seconds(1);
     }
+    if (keyframe_request_pending_.exchange(false) &&
+        !SendControl(R"({"type":"keyframe","reason":"decoder_input_failed","requireCodecConfig":true})")) {
+      return false;
+    }
+    std::string telemetry;
+    if (telemetry_queue_.TryPop(&telemetry) && !SendControl(telemetry)) return false;
     SweepAssemblies();
   }
   return false;
 }
 
 bool ReceiverSession::SendControl(std::string_view json) {
-  std::scoped_lock lock(send_mutex_);
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+  std::unique_lock<std::timed_mutex> lock(send_mutex_, std::defer_lock);
+  if (!lock.try_lock_until(deadline)) return false;
   const int descriptor = control_socket_.load();
   if (descriptor < 0) return false;
   const auto frame = protocol::EncodeControl(json);
   std::size_t sent = 0;
   while (sent < frame.size()) {
-    const ssize_t count = send(descriptor, frame.data() + sent, frame.size() - sent, 0);
-    if (count <= 0) return false;
-    sent += static_cast<std::size_t>(count);
+    const ssize_t count = send(descriptor, frame.data() + sent, frame.size() - sent,
+                               MSG_DONTWAIT | MSG_NOSIGNAL);
+    if (count > 0) {
+      sent += static_cast<std::size_t>(count);
+      continue;
+    }
+    if (count < 0 && errno == EINTR) continue;
+    if (count >= 0 || (errno != EAGAIN && errno != EWOULDBLOCK)) return false;
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline) return false;
+    const auto remaining = std::chrono::duration_cast<std::chrono::microseconds>(deadline - now);
+    fd_set writeSet;
+    FD_ZERO(&writeSet);
+    FD_SET(descriptor, &writeSet);
+    timeval timeout{static_cast<time_t>(remaining.count() / 1'000'000),
+                    static_cast<suseconds_t>(remaining.count() % 1'000'000)};
+    const int ready = select(descriptor + 1, nullptr, &writeSet, nullptr, &timeout);
+    if (ready <= 0) return false;
   }
   return true;
 }
@@ -363,10 +393,15 @@ void ReceiverSession::HandleVideo(const std::byte* data, std::size_t size) {
   ++assembly.receivedCount;
   if (assembly.receivedCount != assembly.fragmentCount) return;
 
-  DecodedInput frame;
-  frame.timestampUs = assembly.timestampUs;
-  frame.keyframe = (assembly.flags & protocol::kKeyframe) != 0;
-  if (needs_codec_config_ &&
+  const auto recoveryState = decoder_recovery_state_.load();
+  const bool keyframe = (assembly.flags & protocol::kKeyframe) != 0;
+  const bool codecConfig = (assembly.flags & protocol::kCodecConfig) != 0;
+  if (recoveryState == DecoderRecoveryState::kNeedsSyncFrame) {
+    ++frames_dropped_;
+    assemblies_.erase(iterator);
+    return;
+  }
+  if (recoveryState == DecoderRecoveryState::kNeedsCodecData &&
       (assembly.flags & (protocol::kKeyframe | protocol::kCodecConfig)) !=
           (protocol::kKeyframe | protocol::kCodecConfig)) {
     ++frames_dropped_;
@@ -379,12 +414,31 @@ void ReceiverSession::HandleVideo(const std::byte* data, std::size_t size) {
   if (total == 0 || total > kMaxFrameBytes) {
     ++frames_dropped_;
   } else {
-    frame.bytes.reserve(total);
+    std::vector<std::byte> bytes;
+    bytes.reserve(total);
     for (const auto& fragment : assembly.fragments) {
-      frame.bytes.insert(frame.bytes.end(), fragment.begin(), fragment.end());
+      bytes.insert(bytes.end(), fragment.begin(), fragment.end());
     }
-    needs_codec_config_ = false;
-    SubmitFrame(std::move(frame));
+    if (recoveryState == DecoderRecoveryState::kNeedsCodecData) {
+      auto recovery = SplitAvcRecoveryInput(bytes);
+      if (!keyframe || !codecConfig || !recovery.complete()) {
+        ++frames_dropped_;
+        RequestKeyframe();
+      } else {
+        DecodedInput configInput{std::move(recovery.codecData), assembly.timestampUs,
+                                 DecoderInputKind::kCodecData};
+        DecodedInput syncInput{std::move(recovery.syncFrame), assembly.timestampUs,
+                               DecoderInputKind::kSyncFrame};
+        if (!SubmitRecovery(std::move(configInput), std::move(syncInput))) {
+          RequestKeyframe();
+        }
+      }
+    } else {
+      DecodedInput frame{std::move(bytes), assembly.timestampUs,
+                         keyframe ? DecoderInputKind::kSyncFrame
+                                  : DecoderInputKind::kFrame};
+      SubmitFrame(std::move(frame));
+    }
   }
   assemblies_.erase(iterator);
 }
@@ -458,7 +512,7 @@ bool ReceiverSession::CreateDecoderLocked() {
     decoder_state_ = DecoderLifecycleState::kStopped;
     return false;
   }
-  needs_codec_config_ = true;
+  decoder_recovery_state_ = DecoderRecoveryState::kNeedsCodecData;
   return true;
 }
 
@@ -478,7 +532,7 @@ void ReceiverSession::DestroyDecoderLocked() {
     OH_VideoDecoder_Destroy(decoder);
   }
   decoder_state_ = DecoderLifecycleState::kStopped;
-  needs_codec_config_ = true;
+  decoder_recovery_state_ = DecoderRecoveryState::kNeedsCodecData;
 }
 
 void ReceiverSession::StopDecoder() {
@@ -506,7 +560,7 @@ bool ReceiverSession::FlushDecoder() {
       DestroyDecoderLocked();
       recovered = CreateDecoderLocked();
     }
-    needs_codec_config_ = true;
+    decoder_recovery_state_ = DecoderRecoveryState::kNeedsCodecData;
   }
   if (recovered) RequestKeyframe();
   return recovered;
@@ -515,7 +569,8 @@ bool ReceiverSession::FlushDecoder() {
 void ReceiverSession::SubmitFrame(DecodedInput frame) {
   std::scoped_lock queueLock(decoder_queue_mutex_);
   OH_AVCodec* decoder = decoder_.load();
-  if (!DecoderCallbacksAllowed(decoder_state_.load()) || decoder == nullptr) {
+  if (!DecoderCallbacksAllowed(decoder_state_.load()) || decoder == nullptr ||
+      !DecoderInputAllowed(decoder_recovery_state_.load(), frame.kind)) {
     ++frames_dropped_;
     return;
   }
@@ -527,6 +582,25 @@ void ReceiverSession::SubmitFrame(DecodedInput frame) {
   PumpDecoderLocked(decoder);
 }
 
+bool ReceiverSession::SubmitRecovery(DecodedInput codecData, DecodedInput syncFrame) {
+  std::scoped_lock queueLock(decoder_queue_mutex_);
+  OH_AVCodec* decoder = decoder_.load();
+  if (!DecoderCallbacksAllowed(decoder_state_.load()) || decoder == nullptr ||
+      decoder_recovery_state_.load() != DecoderRecoveryState::kNeedsCodecData ||
+      codecData.kind != DecoderInputKind::kCodecData ||
+      syncFrame.kind != DecoderInputKind::kSyncFrame || codecData.bytes.empty() ||
+      syncFrame.bytes.empty()) {
+    ++frames_dropped_;
+    return false;
+  }
+  frames_dropped_ += decode_queue_.size();
+  decode_queue_.clear();
+  decode_queue_.push_back(std::move(codecData));
+  decode_queue_.push_back(std::move(syncFrame));
+  PumpDecoderLocked(decoder);
+  return true;
+}
+
 void ReceiverSession::PumpDecoderLocked(OH_AVCodec* decoder) {
   while (DecoderCallbacksAllowed(decoder_state_.load()) && decoder_.load() == decoder &&
          !input_slots_.empty() && !decode_queue_.empty()) {
@@ -534,21 +608,40 @@ void ReceiverSession::PumpDecoderLocked(OH_AVCodec* decoder) {
     input_slots_.pop_front();
     DecodedInput frame = std::move(decode_queue_.front());
     decode_queue_.pop_front();
+    const auto recoveryState = decoder_recovery_state_.load();
+    if (!DecoderInputAllowed(recoveryState, frame.kind)) {
+      ++frames_dropped_;
+      continue;
+    }
     const int32_t capacity = OH_AVBuffer_GetCapacity(slot.buffer);
     auto* target = OH_AVBuffer_GetAddr(slot.buffer);
     if (capacity < 0 || target == nullptr || frame.bytes.size() > static_cast<std::size_t>(capacity)) {
       ++frames_dropped_;
-      continue;
+      decoder_recovery_state_ = DecoderRecoveryState::kNeedsCodecData;
+      frames_dropped_ += decode_queue_.size();
+      decode_queue_.clear();
+      keyframe_request_pending_ = true;
+      break;
     }
     std::memcpy(target, frame.bytes.data(), frame.bytes.size());
     OH_AVCodecBufferAttr attributes{};
     attributes.pts = static_cast<int64_t>(frame.timestampUs);
     attributes.size = static_cast<int32_t>(frame.bytes.size());
     attributes.offset = 0;
-    attributes.flags = frame.keyframe ? AVCODEC_BUFFER_FLAGS_SYNC_FRAME : AVCODEC_BUFFER_FLAGS_NONE;
-    if (OH_AVBuffer_SetBufferAttr(slot.buffer, &attributes) != AV_ERR_OK ||
-        OH_VideoDecoder_PushInputBuffer(decoder, slot.index) != AV_ERR_OK) {
+    attributes.flags = frame.kind == DecoderInputKind::kCodecData
+                           ? AVCODEC_BUFFER_FLAGS_CODEC_DATA
+                           : frame.kind == DecoderInputKind::kSyncFrame
+                                 ? AVCODEC_BUFFER_FLAGS_SYNC_FRAME
+                                 : AVCODEC_BUFFER_FLAGS_NONE;
+    const bool pushed = OH_AVBuffer_SetBufferAttr(slot.buffer, &attributes) == AV_ERR_OK &&
+                        OH_VideoDecoder_PushInputBuffer(decoder, slot.index) == AV_ERR_OK;
+    decoder_recovery_state_ = AdvanceDecoderRecovery(recoveryState, frame.kind, pushed);
+    if (!pushed) {
       ++frames_dropped_;
+      frames_dropped_ += decode_queue_.size();
+      decode_queue_.clear();
+      keyframe_request_pending_ = true;
+      break;
     }
   }
 }
@@ -587,7 +680,7 @@ void ReceiverSession::DecoderOutput(OH_AVCodec* decoder, std::uint32_t index,
                 << ",\"endToEndUs\":" << endToEnd
                 << ",\"framesDecoded\":" << frames_decoded_.load()
                 << ",\"framesDropped\":" << frames_dropped_.load() << "}";
-      SendControl(telemetry.str());
+      telemetry_queue_.Push(telemetry.str());
       return;
     }
   }

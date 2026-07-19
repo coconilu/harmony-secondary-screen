@@ -15,7 +15,7 @@ class PipeSink final {
   PipeSink(const PipeSink&) = delete;
   PipeSink& operator=(const PipeSink&) = delete;
 
-  bool Write(std::uint32_t frameNumber, const EncodedFrame& frame, bool codecConfig);
+  bool Write(std::uint32_t frameNumber, const EncodedFrame& frame);
   void Close();
 
  private:

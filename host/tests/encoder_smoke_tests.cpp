@@ -1,3 +1,4 @@
+#include "annex_b.h"
 #include "com_apartment.h"
 #include "mf_h264_encoder.h"
 
@@ -87,6 +88,7 @@ int RunEncoderSmoke(const char* outputPath) {
   bool hasSps = false;
   bool hasPps = false;
   bool hasIdr = false;
+  bool sawCodecConfigMetadata = false;
   for (std::uint64_t frame = 0; frame < 90 && !(hasSps && hasPps && hasIdr); ++frame) {
     hss::graphics::EncodedFrame output;
     result = encoder.Encode(texture.Get(), frame * (1'000'000ULL / fps), frame == 0, &output);
@@ -95,11 +97,22 @@ int RunEncoderSmoke(const char* outputPath) {
       return 1;
     }
     if (!output.bytes.empty()) {
-      FindNalTypes(output.bytes, &hasSps, &hasPps, &hasIdr);
+      bool outputSps = false;
+      bool outputPps = false;
+      bool outputIdr = false;
+      FindNalTypes(output.bytes, &outputSps, &outputPps, &outputIdr);
+      if (output.hasCodecConfig != (outputSps && outputPps)) {
+        std::cerr << "Codec-config metadata did not match Annex-B SPS/PPS\n";
+        return 1;
+      }
+      sawCodecConfigMetadata = sawCodecConfigMetadata || output.hasCodecConfig;
+      hasSps = hasSps || outputSps;
+      hasPps = hasPps || outputPps;
+      hasIdr = hasIdr || outputIdr;
       stream.insert(stream.end(), output.bytes.begin(), output.bytes.end());
     }
   }
-  if (!hasSps || !hasPps || !hasIdr || stream.empty()) {
+  if (!hasSps || !hasPps || !hasIdr || !sawCodecConfigMetadata || stream.empty()) {
     std::cerr << "Encoded stream lacks Annex-B SPS/PPS/IDR\n";
     return 1;
   }
@@ -114,6 +127,12 @@ int RunEncoderSmoke(const char* outputPath) {
 
 int main(int argc, char** argv) {
   if (argc != 2) return 2;
+  const std::vector<std::byte> idrWithoutSequenceHeaders{
+      std::byte{0}, std::byte{0}, std::byte{0}, std::byte{1}, std::byte{0x65}};
+  if (hss::graphics::ContainsAvcCodecConfig(idrWithoutSequenceHeaders)) {
+    std::cerr << "IDR without SPS/PPS produced false codec-config metadata\n";
+    return 1;
+  }
   int result = 1;
   // The production encoder also starts on a fresh std::thread. Do not
   // initialize COM on this main thread; prove the thread entry owns its MTA.

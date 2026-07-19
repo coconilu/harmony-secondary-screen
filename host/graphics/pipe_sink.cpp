@@ -48,14 +48,14 @@ bool PipeSink::WriteAll(const void* data, std::uint32_t size) {
   return true;
 }
 
-bool PipeSink::Write(std::uint32_t frameNumber, const EncodedFrame& frame, bool codecConfig) {
+bool PipeSink::Write(std::uint32_t frameNumber, const EncodedFrame& frame) {
   if (frame.bytes.empty() || frame.bytes.size() > UINT32_MAX || !EnsureConnected()) {
     return false;
   }
   PipeFrameHeader header{kPipeMagic,
                          static_cast<std::uint32_t>(frame.bytes.size()),
                          frameNumber,
-                         (frame.keyframe ? 1U : 0U) | (codecConfig ? 2U : 0U),
+                         (frame.keyframe ? 1U : 0U) | (frame.hasCodecConfig ? 2U : 0U),
                          frame.timestampUs};
   return WriteAll(&header, sizeof(header)) &&
          WriteAll(frame.bytes.data(), static_cast<std::uint32_t>(frame.bytes.size()));

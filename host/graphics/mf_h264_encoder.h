@@ -13,12 +13,14 @@
 #include <vector>
 
 #include "async_mft_schedule.h"
+#include "mft_shutdown_state.h"
 
 namespace hss::graphics {
 
 struct EncodedFrame {
   std::vector<std::byte> bytes;
   bool keyframe = false;
+  bool hasCodecConfig = false;
   std::uint64_t timestampUs = 0;
 };
 
@@ -66,6 +68,7 @@ class MfH264Encoder final {
   void SetAsyncError(HRESULT error);
   void ForceKeyframe();
   HRESULT FallbackToSoftware();
+  void ReleaseEncoder(bool signalEndOfStream);
   HRESULT DrainOutput(std::uint64_t timestampUs, EncodedFrame* output);
   void RefreshCodecConfig();
   void Shutdown();
@@ -89,6 +92,7 @@ class MfH264Encoder final {
   Microsoft::WRL::ComPtr<IMFDXGIDeviceManager> device_manager_;
   Microsoft::WRL::ComPtr<IMFTransform> encoder_;
   Microsoft::WRL::ComPtr<IMFMediaEventGenerator> event_generator_;
+  MftShutdownState encoder_shutdown_state_;
   std::vector<std::byte> codec_config_;
 
   std::mutex async_mutex_;

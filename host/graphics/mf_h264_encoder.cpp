@@ -1,5 +1,6 @@
 #include "mf_h264_encoder.h"
 
+#include "annex_b.h"
 #include "com_apartment.h"
 
 #include <codecapi.h>
@@ -137,7 +138,7 @@ HRESULT MfH264Encoder::Initialize(ID3D11Device* device, std::uint32_t width,
 
   HRESULT result = CreateEncoder(true);
   if (FAILED(result)) {
-    encoder_.Reset();
+    ReleaseEncoder(false);
     result = CreateEncoder(false);
   }
   return result;
@@ -172,6 +173,7 @@ HRESULT MfH264Encoder::CreateEncoder(bool hardware) {
   }
   if (SUCCEEDED(result)) {
     result = activations[0]->ActivateObject(IID_PPV_ARGS(&encoder_));
+    if (SUCCEEDED(result)) encoder_shutdown_state_.Reset();
   }
   for (UINT32 index = 0; index < count; ++index) {
     activations[index]->Release();
@@ -281,6 +283,7 @@ HRESULT MfH264Encoder::Encode(ID3D11Texture2D* bgraTexture, std::uint64_t timest
   }
   output->bytes.clear();
   output->keyframe = false;
+  output->hasCodecConfig = false;
   output->timestampUs = timestampUs;
   ComPtr<ID3D11Texture2D> converted;
   RETURN_IF_FAILED(ConvertToNv12(bgraTexture, &converted));
@@ -478,9 +481,7 @@ void MfH264Encoder::AsyncEventLoop() {
 HRESULT MfH264Encoder::FallbackToSoftware() {
   StopAsyncPump();
   if (encoder_ != nullptr) encoder_->ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0);
-  event_generator_.Reset();
-  encoder_.Reset();
-  asynchronous_ = false;
+  ReleaseEncoder(false);
   using_hardware_ = false;
   codec_config_.clear();
   return CreateEncoder(false);
@@ -531,6 +532,7 @@ HRESULT MfH264Encoder::DrainOutput(std::uint64_t timestampUs, EncodedFrame* outp
   if (output->keyframe && !codec_config_.empty()) {
     output->bytes.insert(output->bytes.begin(), codec_config_.begin(), codec_config_.end());
   }
+  output->hasCodecConfig = ContainsAvcCodecConfig(output->bytes);
   LONGLONG sampleTime = 0;
   output->timestampUs = SUCCEEDED(sample->GetSampleTime(&sampleTime)) && sampleTime >= 0
                             ? static_cast<std::uint64_t>(sampleTime / 10)
@@ -554,15 +556,25 @@ void MfH264Encoder::RefreshCodecConfig() {
   }
 }
 
-void MfH264Encoder::Shutdown() {
+void MfH264Encoder::ReleaseEncoder(bool signalEndOfStream) {
   StopAsyncPump();
   if (encoder_ != nullptr) {
-    encoder_->ProcessMessage(MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0);
-    encoder_->ProcessMessage(MFT_MESSAGE_NOTIFY_END_STREAMING, 0);
+    if (signalEndOfStream) {
+      encoder_->ProcessMessage(MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0);
+      encoder_->ProcessMessage(MFT_MESSAGE_NOTIFY_END_STREAMING, 0);
+    }
+    if (encoder_shutdown_state_.Begin()) {
+      ComPtr<IMFShutdown> shutdown;
+      if (SUCCEEDED(encoder_.As(&shutdown))) shutdown->Shutdown();
+    }
   }
-  encoder_.Reset();
   event_generator_.Reset();
+  encoder_.Reset();
   asynchronous_ = false;
+}
+
+void MfH264Encoder::Shutdown() {
+  ReleaseEncoder(true);
   codec_config_.clear();
   device_manager_.Reset();
   processor_.Reset();

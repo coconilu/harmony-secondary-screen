@@ -1,5 +1,6 @@
 #pragma once
 
+#include "bounded_control_queue.h"
 #include "decoder_state.h"
 #include "native_protocol.h"
 
@@ -53,7 +54,7 @@ class ReceiverSession final {
   struct DecodedInput {
     std::vector<std::byte> bytes;
     std::uint64_t timestampUs = 0;
-    bool keyframe = false;
+    DecoderInputKind kind = DecoderInputKind::kFrame;
   };
   struct Assembly {
     std::uint16_t fragmentCount = 0;
@@ -83,6 +84,7 @@ class ReceiverSession final {
   void StopDecoder();
   bool FlushDecoder();
   void SubmitFrame(DecodedInput frame);
+  bool SubmitRecovery(DecodedInput codecData, DecodedInput syncFrame);
   void PumpDecoderLocked(OH_AVCodec* decoder);
   void DecoderError(int32_t errorCode);
   void DecoderNeedInput(OH_AVCodec* decoder, std::uint32_t index, OH_AVBuffer* buffer);
@@ -107,7 +109,9 @@ class ReceiverSession final {
   std::thread worker_;
   std::atomic<int> control_socket_{-1};
   std::atomic<int> video_socket_{-1};
-  std::mutex send_mutex_;
+  std::timed_mutex send_mutex_;
+  BoundedControlQueue telemetry_queue_{8};
+  std::atomic<bool> keyframe_request_pending_{false};
   protocol::ControlDecoder control_decoder_;
   std::map<std::uint32_t, Assembly> assemblies_;
 
@@ -115,7 +119,8 @@ class ReceiverSession final {
   std::mutex decoder_queue_mutex_;
   std::atomic<DecoderLifecycleState> decoder_state_{DecoderLifecycleState::kStopped};
   std::atomic<OH_AVCodec*> decoder_{nullptr};
-  std::atomic<bool> needs_codec_config_{true};
+  std::atomic<DecoderRecoveryState> decoder_recovery_state_{
+      DecoderRecoveryState::kNeedsCodecData};
   void* native_window_ = nullptr;
   std::deque<InputSlot> input_slots_;
   std::deque<DecodedInput> decode_queue_;

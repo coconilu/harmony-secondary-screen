@@ -328,7 +328,7 @@ void SwapChainProcessor::EncoderLoop() {
     const HRESULT result = encoder.Encode(frame.texture.Get(), frame.timestampUs,
                                           forceKeyframe, &encoded);
     if (result == S_OK && !encoded.bytes.empty()) {
-      sink.Write(frame.number, encoded, encoded.keyframe);
+      sink.Write(frame.number, encoded);
     }
   }
 }
