@@ -1,0 +1,6 @@
+{
+  "name": "libhss_receiver.so",
+  "version": "0.1.0",
+  "description": "Harmony Secondary Screen native receiver typings",
+  "main": "index.d.ts"
+}

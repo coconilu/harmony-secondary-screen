@@ -3,6 +3,10 @@
 oh_modules/
 node_modules/
 **/build/
+**/.cxx/
+out/
+/host/driver/HssIddDriver/
+/host/driver/x64/
 local.properties
 *.hap
 *.app
