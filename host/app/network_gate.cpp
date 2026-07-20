@@ -115,15 +115,9 @@ WifiAdapterAddresses ConnectedWifiAdapterAddresses(std::string* error) {
   return wifiAdapters;
 }
 
-struct NetworkConnections final {
-  std::size_t wifi = 0;
-  std::size_t other = 0;
-  std::set<std::string> wifi_ipv4_addresses;
-};
-
 bool ReadNetworkConnections(INetwork* network, const WifiAdapterAddresses& wifiAdapters,
-                            NetworkConnections* summary, std::string* error) {
-  if (summary == nullptr) {
+                            std::set<std::string>* wifiIpv4Addresses, std::string* error) {
+  if (wifiIpv4Addresses == nullptr) {
     *error = "Network connection summary is missing";
     return false;
   }
@@ -146,7 +140,6 @@ bool ReadNetworkConnections(INetwork* network, const WifiAdapterAddresses& wifiA
     }
     VARIANT_BOOL isConnected = VARIANT_FALSE;
     if (FAILED(connection->get_IsConnected(&isConnected))) {
-      ++summary->other;
       continue;
     }
     if (isConnected != VARIANT_TRUE) {
@@ -154,16 +147,13 @@ bool ReadNetworkConnections(INetwork* network, const WifiAdapterAddresses& wifiA
     }
     GUID adapterId{};
     if (FAILED(connection->GetAdapterId(&adapterId))) {
-      ++summary->other;
       continue;
     }
     const auto adapter = wifiAdapters.find(adapterId);
     if (adapter == wifiAdapters.end()) {
-      ++summary->other;
       continue;
     }
-    ++summary->wifi;
-    summary->wifi_ipv4_addresses.insert(adapter->second.begin(), adapter->second.end());
+    wifiIpv4Addresses->insert(adapter->second.begin(), adapter->second.end());
   }
   return true;
 }
@@ -185,16 +175,6 @@ HRESULT ConnectedNetworks(ComPtr<IEnumNetworks>& networks, std::string* error) {
 }
 
 }  // namespace
-
-NetworkConnectionClass ClassifyNetworkConnections(std::size_t wifiConnections,
-                                                   std::size_t otherConnections) {
-  if (wifiConnections == 0) {
-    return otherConnections == 0 ? NetworkConnectionClass::kNone
-                                 : NetworkConnectionClass::kMixedOrUnknown;
-  }
-  return otherConnections == 0 ? NetworkConnectionClass::kWifiOnly
-                               : NetworkConnectionClass::kMixedOrUnknown;
-}
 
 std::vector<WifiNetworkProfile> NetworkGate::ConnectedWifiProfiles(std::string* error) {
   if (error == nullptr) {
@@ -230,18 +210,11 @@ std::vector<WifiNetworkProfile> NetworkGate::ConnectedWifiProfiles(std::string* 
       return {};
     }
 
-    NLM_NETWORK_CATEGORY category = NLM_NETWORK_CATEGORY_PUBLIC;
-    const HRESULT categoryResult = network->GetCategory(&category);
-    if (FAILED(categoryResult)) {
-      *error = HResultMessage("INetwork::GetCategory", categoryResult);
+    std::set<std::string> wifiIpv4Addresses;
+    if (!ReadNetworkConnections(network.Get(), wifiAdapters, &wifiIpv4Addresses, error)) {
       return {};
     }
-
-    NetworkConnections connectionSummary;
-    if (!ReadNetworkConnections(network.Get(), wifiAdapters, &connectionSummary, error)) {
-      return {};
-    }
-    if (connectionSummary.wifi == 0 || connectionSummary.wifi_ipv4_addresses.empty()) {
+    if (wifiIpv4Addresses.empty()) {
       continue;
     }
 
@@ -264,12 +237,8 @@ std::vector<WifiNetworkProfile> NetworkGate::ConnectedWifiProfiles(std::string* 
     if (rawName != nullptr) {
       SysFreeString(rawName);
     }
-    profiles.push_back(
-        {GuidString(networkId), std::move(name), category == NLM_NETWORK_CATEGORY_PRIVATE,
-         ClassifyNetworkConnections(connectionSummary.wifi, connectionSummary.other) ==
-             NetworkConnectionClass::kWifiOnly,
-         {connectionSummary.wifi_ipv4_addresses.begin(),
-          connectionSummary.wifi_ipv4_addresses.end()}});
+    profiles.push_back({GuidString(networkId), std::move(name),
+                        {wifiIpv4Addresses.begin(), wifiIpv4Addresses.end()}});
   }
   std::ranges::sort(profiles, [](const WifiNetworkProfile& lhs, const WifiNetworkProfile& rhs) {
     return lhs.id < rhs.id;
@@ -277,108 +246,39 @@ std::vector<WifiNetworkProfile> NetworkGate::ConnectedWifiProfiles(std::string* 
   return profiles;
 }
 
-std::vector<std::string> NetworkGate::TrustedWifiIpv4Addresses(std::string* error) {
+std::vector<std::string> NetworkGate::AllowedWifiIpv4Addresses(
+    const std::vector<std::wstring>& allowedProfileIds, std::string* error) {
+  if (error == nullptr) {
+    return {};
+  }
+  error->clear();
+  std::set<std::wstring> allowedIds;
+  for (const auto& rawId : allowedProfileIds) {
+    GUID id{};
+    if (FAILED(CLSIDFromString(rawId.c_str(), &id))) {
+      *error = "无效的 Wi-Fi 网络标识";
+      return {};
+    }
+    allowedIds.insert(GuidString(id));
+  }
   const auto profiles = ConnectedWifiProfiles(error);
-  if (error == nullptr || !error->empty()) {
+  if (!error->empty()) {
     return {};
   }
   std::set<std::string> unique;
   for (const auto& profile : profiles) {
-    if (profile.is_private) {
+    if (allowedIds.contains(profile.id)) {
       unique.insert(profile.ipv4_addresses.begin(), profile.ipv4_addresses.end());
     }
   }
   return {unique.begin(), unique.end()};
 }
 
-bool NetworkGate::IsTrustedWifiIpv4(std::string_view address, std::string* error) {
-  const auto addresses = TrustedWifiIpv4Addresses(error);
+bool NetworkGate::IsAllowedWifiIpv4(std::string_view address,
+                                    const std::vector<std::wstring>& allowedProfileIds,
+                                    std::string* error) {
+  const auto addresses = AllowedWifiIpv4Addresses(allowedProfileIds, error);
   return std::find(addresses.begin(), addresses.end(), address) != addresses.end();
-}
-
-bool NetworkGate::TrustWifiProfile(std::wstring_view networkId, std::string* error) {
-  if (error == nullptr) {
-    return false;
-  }
-  error->clear();
-  GUID requestedId{};
-  const std::wstring idCopy(networkId);
-  if (FAILED(CLSIDFromString(idCopy.c_str(), &requestedId))) {
-    *error = "无效的 Wi-Fi 网络标识";
-    return false;
-  }
-
-  ComApartment apartment;
-  if (FAILED(apartment.result()) && apartment.result() != RPC_E_CHANGED_MODE) {
-    *error = HResultMessage("CoInitializeEx", apartment.result());
-    return false;
-  }
-  const auto wifiAdapters = ConnectedWifiAdapterAddresses(error);
-  if (!error->empty()) {
-    return false;
-  }
-  ComPtr<IEnumNetworks> networks;
-  if (FAILED(ConnectedNetworks(networks, error))) {
-    return false;
-  }
-
-  for (;;) {
-    ComPtr<INetwork> network;
-    ULONG fetched = 0;
-    const HRESULT nextResult = networks->Next(1, &network, &fetched);
-    if (nextResult == S_FALSE || fetched == 0) {
-      break;
-    }
-    if (FAILED(nextResult)) {
-      *error = HResultMessage("IEnumNetworks::Next", nextResult);
-      return false;
-    }
-    GUID currentId{};
-    if (FAILED(network->GetNetworkId(&currentId)) || !InlineIsEqualGUID(currentId, requestedId)) {
-      continue;
-    }
-    NetworkConnections connectionSummary;
-    if (!ReadNetworkConnections(network.Get(), wifiAdapters, &connectionSummary, error)) {
-      return false;
-    }
-    if (ClassifyNetworkConnections(connectionSummary.wifi, connectionSummary.other) !=
-        NetworkConnectionClass::kWifiOnly) {
-      *error = "当前网络还聚合了 VPN、以太网或未知连接，不能安全地自动修改网络类别";
-      return false;
-    }
-    if (connectionSummary.wifi_ipv4_addresses.empty()) {
-      *error = "目标网络不是当前连接的物理 Wi-Fi";
-      return false;
-    }
-    NLM_NETWORK_CATEGORY category = NLM_NETWORK_CATEGORY_PUBLIC;
-    const HRESULT categoryResult = network->GetCategory(&category);
-    if (FAILED(categoryResult)) {
-      *error = HResultMessage("INetwork::GetCategory", categoryResult);
-      return false;
-    }
-    if (category == NLM_NETWORK_CATEGORY_PRIVATE) {
-      return true;
-    }
-    if (category != NLM_NETWORK_CATEGORY_PUBLIC) {
-      *error = "只允许把当前公用 Wi-Fi 标记为可信网络";
-      return false;
-    }
-    const HRESULT setResult = network->SetCategory(NLM_NETWORK_CATEGORY_PRIVATE);
-    if (FAILED(setResult)) {
-      *error = HResultMessage("INetwork::SetCategory", setResult);
-      return false;
-    }
-    NLM_NETWORK_CATEGORY updatedCategory = NLM_NETWORK_CATEGORY_PUBLIC;
-    const HRESULT verifyResult = network->GetCategory(&updatedCategory);
-    if (FAILED(verifyResult) || updatedCategory != NLM_NETWORK_CATEGORY_PRIVATE) {
-      *error = FAILED(verifyResult) ? HResultMessage("INetwork::GetCategory", verifyResult)
-                                    : "Windows 未确认 Wi-Fi 网络类别变更";
-      return false;
-    }
-    return true;
-  }
-  *error = "指定的物理 Wi-Fi 已断开或不存在";
-  return false;
 }
 
 }  // namespace hss::host

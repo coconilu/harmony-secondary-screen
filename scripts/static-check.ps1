@@ -24,6 +24,12 @@ try {
   if ($LASTEXITCODE -eq 0) { throw "Invalid IddCx monitor type found:`n$invalidIddType" }
   if ($LASTEXITCODE -ne 1) { throw "IddCx invalid-type scan failed: $LASTEXITCODE" }
 
+  $networkMutation = & rg -n 'SetCategory|NLM_NETWORK_CATEGORY_' host\app 2>$null
+  if ($LASTEXITCODE -eq 0) {
+    throw "Host must not mutate or depend on the Windows network category:`n$networkMutation"
+  }
+  if ($LASTEXITCODE -ne 1) { throw "Network mutation scan failed: $LASTEXITCODE" }
+
   $sdkInclude = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Include'
   $wingdi = Get-ChildItem $sdkInclude -Recurse -Filter wingdi.h -ErrorAction SilentlyContinue |
     Sort-Object FullName -Descending | Select-Object -First 1
@@ -49,12 +55,11 @@ try {
     @{ Path = 'host\graphics\mf_h264_encoder.cpp'; Pattern = 'ContainsAvcCodecConfig' },
     @{ Path = 'host\app\local_security.h'; Pattern = 'GW;;;LS' },
     @{ Path = 'host\app\host_server.cpp'; Pattern = 'PIPE_REJECT_REMOTE_CLIENTS' },
-    @{ Path = 'host\app\network_gate.cpp'; Pattern = 'NLM_NETWORK_CATEGORY_PRIVATE' },
     @{ Path = 'host\app\network_gate.cpp'; Pattern = 'adapter->IfType != IF_TYPE_IEEE80211' },
-    @{ Path = 'host\app\network_gate.cpp'; Pattern = 'SetCategory(NLM_NETWORK_CATEGORY_PRIVATE)' },
-    @{ Path = 'host\app\host_server.cpp'; Pattern = 'IsTrustedWifiIpv4(localAddress' },
-    @{ Path = 'host\app\main.cpp'; Pattern = 'LaunchElevatedWifiTrust' },
-    @{ Path = 'scripts\install-host-service.ps1'; Pattern = '-Profile Private -InterfaceType Wireless' },
+    @{ Path = 'host\app\network_gate.cpp'; Pattern = 'AllowedWifiIpv4Addresses' },
+    @{ Path = 'host\app\host_server.cpp'; Pattern = 'IsAllowedWifiIpv4(localAddress' },
+    @{ Path = 'host\app\main.cpp'; Pattern = 'ConfirmWifiAccess' },
+    @{ Path = 'scripts\install-host-service.ps1'; Pattern = '-Profile Any -InterfaceType Wireless' },
     @{ Path = 'scripts\install-host-service.ps1'; Pattern = '-LocalPort 47100 -RemoteAddress LocalSubnet' },
     @{ Path = 'scripts\install-host-service.ps1'; Pattern = 'Remove-NetFirewallRule -ErrorAction Stop' },
     @{ Path = 'scripts\install-host-service.ps1'; Pattern = 'if ($Start) { Start-Service -Name $serviceName }' },
@@ -79,7 +84,7 @@ try {
     @{ Path = 'receiver\entry\src\main\cpp\napi_init.cpp'; Pattern = 'OH_NativeXComponent_RegisterCallback' },
     @{ Path = 'receiver\entry\src\main\ets\pages\Index.ets'; Pattern = 'XComponentType.SURFACE' },
     @{ Path = 'docs\PROTOCOL.md'; Pattern = 'sessionShort' },
-    @{ Path = 'docs\PROTOCOL.md'; Pattern = 'network_not_private' },
+    @{ Path = 'docs\PROTOCOL.md'; Pattern = 'wifi_not_allowed' },
     @{ Path = 'docs\PROTOCOL.md'; Pattern = 'requireCodecConfig' }
   )
   foreach ($check in $requiredPatterns) {

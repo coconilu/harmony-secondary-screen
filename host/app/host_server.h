@@ -19,7 +19,7 @@ namespace hss::host {
 
 class HostServer final {
  public:
-  HostServer();
+  explicit HostServer(std::vector<std::wstring> allowedWifiProfileIds);
   ~HostServer();
   HostServer(const HostServer&) = delete;
   HostServer& operator=(const HostServer&) = delete;
@@ -67,6 +67,7 @@ class HostServer final {
   std::uint32_t session_short_ = 0;
   sockaddr_in video_peer_{};
   SOCKET udp_socket_ = INVALID_SOCKET;
+  const std::vector<std::wstring> allowed_wifi_profile_ids_;
   DataPlaneGate data_plane_gate_;
   PointerRelay pointer_relay_;
 };

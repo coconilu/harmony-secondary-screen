@@ -74,15 +74,19 @@ if (-not (Test-Path -LiteralPath $hostExe)) {
   throw "Cannot find $hostExe; run build-host.ps1 first."
 }
 
-# This interactive preparation never runs inside Session 0. It asks the user to confirm the
-# current physical Wi-Fi before a narrowly scoped elevated helper marks that profile Private.
-& $hostExe --prepare-network
-if ($LASTEXITCODE -ne 0) {
-  throw 'The current physical Wi-Fi is not trusted; the Host service was not installed.'
+# This confirmation never runs inside Session 0. The selected Network List Manager profile ID
+# becomes an app-owned service argument; Windows network category and VPN settings are untouched.
+$trustedNetworkId = (& $hostExe --prepare-network | Select-Object -Last 1)
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($trustedNetworkId)) {
+  throw 'The current physical Wi-Fi was not approved; the Host service was not installed.'
+}
+$trustedNetworkId = $trustedNetworkId.Trim()
+if ($trustedNetworkId -notmatch '^\{[0-9A-Fa-f-]{36}\}$') {
+  throw "The Host returned an invalid Wi-Fi profile ID: $trustedNetworkId"
 }
 
 $resolvedHostExe = (Resolve-Path -LiteralPath $hostExe).Path
-$binaryPath = '"{0}" --service' -f $resolvedHostExe
+$binaryPath = '"{0}" --service "{1}"' -f $resolvedHostExe, $trustedNetworkId
 $serviceCreated = $false
 try {
   New-Service -Name $serviceName -BinaryPathName $binaryPath -DisplayName 'Harmony Secondary Screen Host' `
@@ -91,7 +95,7 @@ try {
   $serviceCreated = $true
   Remove-HostFirewallRule
   New-NetFirewallRule -Name $firewallRuleName -DisplayName 'Harmony Secondary Screen control' `
-    -Direction Inbound -Action Allow -Enabled True -Profile Private -InterfaceType Wireless `
+    -Direction Inbound -Action Allow -Enabled True -Profile Any -InterfaceType Wireless `
     -Program $resolvedHostExe -Protocol TCP -LocalPort 47100 -RemoteAddress LocalSubnet | Out-Null
   if ($Start) { Start-Service -Name $serviceName }
 } catch {

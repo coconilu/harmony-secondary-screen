@@ -107,7 +107,8 @@ std::filesystem::path MetricsPath(std::string_view filename) {
 
 }  // namespace
 
-HostServer::HostServer() {
+HostServer::HostServer(std::vector<std::wstring> allowedWifiProfileIds)
+    : allowed_wifi_profile_ids_(std::move(allowedWifiProfileIds)) {
   stop_event_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
   LocalSecurityAttributes keyframeSecurity(kKeyframeEventSddl);
   keyframe_event_ = keyframeSecurity.valid()
@@ -157,10 +158,10 @@ bool HostServer::Start(std::string* error) {
     return false;
   }
 
-  auto addresses = NetworkGate::TrustedWifiIpv4Addresses(error);
+  auto addresses = NetworkGate::AllowedWifiIpv4Addresses(allowed_wifi_profile_ids_, error);
   if (addresses.empty()) {
     if (error->empty()) {
-      *error = "没有可信物理 Wi-Fi IPv4 地址；未经确认的公用网络下 Host 拒绝监听";
+      *error = "应用已确认的物理 Wi-Fi 当前没有可用 IPv4 地址";
     }
     return false;
   }
@@ -282,7 +283,8 @@ void HostServer::ControlLoop() {
   while (WaitForSingleObject(stop_event_, 0) != WAIT_OBJECT_0) {
     ExpireResumeWindow();
     std::string gateError;
-    const auto addresses = NetworkGate::TrustedWifiIpv4Addresses(&gateError);
+    const auto addresses =
+        NetworkGate::AllowedWifiIpv4Addresses(allowed_wifi_profile_ids_, &gateError);
     if (addresses.empty()) {
       WaitForSingleObject(stop_event_, 500);
       continue;
@@ -291,7 +293,7 @@ void HostServer::ControlLoop() {
       if (WaitForSingleObject(stop_event_, 0) == WAIT_OBJECT_0) {
         return;
       }
-      if (!NetworkGate::IsTrustedWifiIpv4(address, &gateError)) continue;
+      if (!NetworkGate::IsAllowedWifiIpv4(address, allowed_wifi_profile_ids_, &gateError)) continue;
       const SOCKET listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
       if (listener == INVALID_SOCKET) {
         continue;
@@ -316,9 +318,10 @@ void HostServer::ControlLoop() {
       FD_SET(listener, &readSet);
       timeval timeout{0, 500000};
       const int ready = select(0, &readSet, nullptr, nullptr, &timeout);
-      // Revalidate immediately before accepting. A Private -> Public profile
-      // transition therefore closes this listener instead of accepting a peer.
-      if (ready > 0 && NetworkGate::IsTrustedWifiIpv4(address, &gateError)) {
+      // Revalidate immediately before accepting. A Wi-Fi disconnect, profile change, or
+      // address change closes this listener instead of accepting on a stale interface.
+      if (ready > 0 &&
+          NetworkGate::IsAllowedWifiIpv4(address, allowed_wifi_profile_ids_, &gateError)) {
         sockaddr_in peer{};
         int peerLength = sizeof(peer);
         const SOCKET client = accept(listener, reinterpret_cast<sockaddr*>(&peer), &peerLength);
@@ -367,9 +370,9 @@ void HostServer::HandleClient(SOCKET client, sockaddr_in peer, std::string local
 
   while (WaitForSingleObject(stop_event_, 0) != WAIT_OBJECT_0) {
     std::string gateError;
-    if (!NetworkGate::IsTrustedWifiIpv4(localAddress, &gateError)) {
+    if (!NetworkGate::IsAllowedWifiIpv4(localAddress, allowed_wifi_profile_ids_, &gateError)) {
       ClearSession();
-      SendControl(client, R"({"type":"error","code":"network_not_private"})");
+      SendControl(client, R"({"type":"error","code":"wifi_not_allowed"})");
       break;
     }
     const int received = recv(client, reinterpret_cast<char*>(receiveBuffer.data()),
