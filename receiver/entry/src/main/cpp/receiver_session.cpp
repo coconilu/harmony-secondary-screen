@@ -26,6 +26,8 @@ namespace {
 constexpr std::uint16_t kControlPort = 47100;
 constexpr std::uint16_t kVideoPort = 47101;
 constexpr std::size_t kMaxFrameBytes = 16U * 1024U * 1024U;
+constexpr unsigned int kLogDomain = 0x0000;
+constexpr const char* kLogTag = "HSSReceiver";
 
 std::uint64_t ClockMicroseconds() {
   return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
@@ -474,37 +476,72 @@ bool ReceiverSession::StartDecoder() {
 }
 
 bool ReceiverSession::CreateDecoderLocked() {
-  if (native_window_ == nullptr) return false;
+  const bool connected = Status().connected;
+  const auto fail = [this, connected](const char* operation, int32_t errorCode) {
+    OH_LOG_Print(LOG_APP, LOG_ERROR, kLogDomain, kLogTag,
+                 "AVCodec initialization failed at %{public}s, error=%{public}d",
+                 operation, errorCode);
+    SetState("error",
+             std::string("解码器初始化失败：") + operation + "（错误码 " +
+                 std::to_string(errorCode) + "）",
+             connected);
+  };
+
+  if (native_window_ == nullptr) {
+    fail("Surface", AV_ERR_INVALID_VAL);
+    return false;
+  }
   decoder_state_ = DecoderLifecycleState::kStarting;
   OH_AVCodec* decoder = OH_VideoDecoder_CreateByMime(OH_AVCODEC_MIMETYPE_VIDEO_AVC);
   if (decoder == nullptr) {
+    fail("CreateByMime", AV_ERR_UNSUPPORT);
     decoder_state_ = DecoderLifecycleState::kStopped;
     return false;
   }
   OH_AVCodecCallback callbacks{OnCodecError, OnCodecStreamChanged,
-                               OnCodecNeedInput, OnCodecOutput};
-  if (OH_VideoDecoder_RegisterCallback(decoder, callbacks, this) != AV_ERR_OK ||
-      OH_VideoDecoder_SetSurface(decoder, static_cast<OHNativeWindow*>(native_window_)) != AV_ERR_OK) {
+                                OnCodecNeedInput, OnCodecOutput};
+  const OH_AVErrCode registerCallback = OH_VideoDecoder_RegisterCallback(decoder, callbacks, this);
+  if (registerCallback != AV_ERR_OK) {
+    fail("RegisterCallback", registerCallback);
     OH_VideoDecoder_Destroy(decoder);
     decoder_state_ = DecoderLifecycleState::kStopped;
     return false;
   }
   OH_AVFormat* format = OH_AVFormat_CreateVideoFormat(OH_AVCODEC_MIMETYPE_VIDEO_AVC, 1920, 1200);
   if (format == nullptr) {
+    fail("CreateVideoFormat", AV_ERR_NO_MEMORY);
     OH_VideoDecoder_Destroy(decoder);
     decoder_state_ = DecoderLifecycleState::kStopped;
     return false;
   }
   const OH_AVErrCode configure = OH_VideoDecoder_Configure(decoder, format);
   OH_AVFormat_Destroy(format);
-  if (configure != AV_ERR_OK || OH_VideoDecoder_Prepare(decoder) != AV_ERR_OK) {
+  if (configure != AV_ERR_OK) {
+    fail("Configure", configure);
+    OH_VideoDecoder_Destroy(decoder);
+    decoder_state_ = DecoderLifecycleState::kStopped;
+    return false;
+  }
+  const OH_AVErrCode setSurface =
+      OH_VideoDecoder_SetSurface(decoder, static_cast<OHNativeWindow*>(native_window_));
+  if (setSurface != AV_ERR_OK) {
+    fail("SetSurface", setSurface);
+    OH_VideoDecoder_Destroy(decoder);
+    decoder_state_ = DecoderLifecycleState::kStopped;
+    return false;
+  }
+  const OH_AVErrCode prepare = OH_VideoDecoder_Prepare(decoder);
+  if (prepare != AV_ERR_OK) {
+    fail("Prepare", prepare);
     OH_VideoDecoder_Destroy(decoder);
     decoder_state_ = DecoderLifecycleState::kStopped;
     return false;
   }
   decoder_.store(decoder);
   decoder_state_ = DecoderLifecycleState::kRunning;
-  if (OH_VideoDecoder_Start(decoder) != AV_ERR_OK) {
+  const OH_AVErrCode start = OH_VideoDecoder_Start(decoder);
+  if (start != AV_ERR_OK) {
+    fail("Start", start);
     decoder_state_ = DecoderLifecycleState::kStopping;
     ClearDecoderQueues();
     decoder_.store(nullptr);
@@ -708,7 +745,7 @@ void ReceiverSession::OnSurfaceCreated(OH_NativeXComponent*, void* window) {
     std::scoped_lock lifecycleLock(decoder_lifecycle_mutex_);
     native_window_ = window;
   }
-  if (!StartDecoder()) SetState("error", "无法启动原生 AVCodec Surface 解码器", false);
+  StartDecoder();
 }
 
 void ReceiverSession::OnSurfaceChanged(OH_NativeXComponent*, void* window) {
