@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>网页伴随屏 · 传输状态</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="monitor.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div class="brand-mark" aria-hidden="true">&lt;/&gt;</div>
+        <h1>网页伴随屏 · 传输状态</h1>
+      </header>
+
+      <section class="hero" aria-labelledby="capture-status">
+        <div class="capture-summary">
+          <div class="live-orbit" aria-hidden="true"><span></span></div>
+          <div>
+            <h2 id="capture-status">等待开始</h2>
+            <p>当前标签页视频轨 → H.264 Annex-B（不采集音频）</p>
+          </div>
+        </div>
+        <div class="hero-actions">
+          <button id="stop-button" class="danger-button" type="button">停止捕获</button>
+          <button id="reset-button" class="secondary-button" type="button" hidden>清除并准备下一次</button>
+          <button id="export-button" class="text-button" type="button">导出测试结果</button>
+        </div>
+      </section>
+
+      <p id="error-message" class="error-message" role="alert" hidden></p>
+
+      <section class="metrics" aria-label="捕获和编码指标">
+        <div class="metric">
+          <span>捕获帧率</span>
+          <strong><span id="fps-value">—</span><small>fps</small></strong>
+        </div>
+        <div class="metric">
+          <span>捕获帧数</span>
+          <strong id="frames-value">0</strong>
+        </div>
+        <div class="metric">
+          <span>编码帧率</span>
+          <strong><span id="encoding-fps-value">—</span><small>fps</small></strong>
+        </div>
+        <div class="metric">
+          <span>编码帧数</span>
+          <strong id="encoded-frames-value">0</strong>
+        </div>
+        <div class="metric">
+          <span>实时码率</span>
+          <strong><span id="bitrate-value">—</span><small>kbps</small></strong>
+        </div>
+        <div class="metric">
+          <span>最近一帧</span>
+          <strong><span id="age-value">—</span><small>ms 前</small></strong>
+        </div>
+        <div class="metric">
+          <span>定格事件</span>
+          <strong id="stalls-value">0</strong>
+        </div>
+        <div class="metric">
+          <span>背压丢帧</span>
+          <strong id="dropped-frames-value">0</strong>
+        </div>
+        <div class="metric">
+          <span>编码队列</span>
+          <strong id="queue-size-value">0</strong>
+        </div>
+        <div class="metric">
+          <span>编码错误</span>
+          <strong id="encode-errors-value">0</strong>
+        </div>
+      </section>
+      <p id="encoder-config" class="encoder-config">等待 H.264 能力探测</p>
+
+      <section class="metrics relay-metrics" aria-label="平板传输指标">
+        <div class="metric">
+          <span>平板链路</span>
+          <strong id="relay-status-value">等待</strong>
+        </div>
+        <div class="metric">
+          <span>局域网发送</span>
+          <strong id="relay-sent-value">0</strong>
+        </div>
+        <div class="metric">
+          <span>平板已显示</span>
+          <strong id="relay-received-value">0</strong>
+        </div>
+        <div class="metric">
+          <span>平板丢弃</span>
+          <strong id="relay-dropped-value">0</strong>
+        </div>
+        <div class="metric">
+          <span>传输错误</span>
+          <strong id="relay-errors-value">0</strong>
+        </div>
+      </section>
+
+      <section class="test-section" aria-labelledby="test-heading">
+        <div class="section-heading">
+          <h2 id="test-heading">验证步骤</h2>
+          <p>依次选择阶段，观察捕获帧与编码帧是否持续增长</p>
+        </div>
+        <ol class="stage-list">
+          <li><button type="button" data-stage="A"><span>A</span><strong>前台可见</strong></button></li>
+          <li><button type="button" data-stage="B"><span>B</span><strong>被其他应用完全覆盖</strong></button></li>
+          <li><button type="button" data-stage="C"><span>C</span><strong>Edge 窗口最小化</strong></button></li>
+          <li><button type="button" data-stage="D"><span>D</span><strong>切换到其他标签页</strong></button></li>
+        </ol>
+      </section>
+
+      <section class="log-section" aria-labelledby="log-heading">
+        <div class="section-heading log-heading-row">
+          <h2 id="log-heading">事件日志 <span>（最近 100 条）</span></h2>
+        </div>
+        <div id="event-log" class="event-log" role="log" aria-live="polite">
+          <p class="empty-log">尚无事件</p>
+        </div>
+      </section>
+
+      <footer>
+        <span class="privacy-icon" aria-hidden="true">✓</span>
+        本地入口仅监听 127.0.0.1；局域网只主动连接已配对平板；不记录网页内容
+      </footer>
+    </main>
+    <script type="module" src="monitor.js"></script>
+  </body>
+</html>

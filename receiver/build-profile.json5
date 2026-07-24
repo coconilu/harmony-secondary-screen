@@ -1,6 +1,20 @@
 {
   "app": {
-    "signingConfigs": [],
+    "signingConfigs": [
+      {
+        "name": "default",
+        "type": "HarmonyOS",
+        "material": {
+          "certpath": "C:\\Users\\admin\\.ohos\\config\\default_receiver_9_iqhj5tZkR5d-hz7-ecUiMINWT_qcNMPN5lc9dlEC8=.cer",
+          "keyAlias": "debugKey",
+          "keyPassword": "0000001944BC1B36BF619FB1AC6DD0589CF6AF315208838E3A2FFC3A5808FAAACAC9E37C0A79C0F404",
+          "profile": "C:\\Users\\admin\\.ohos\\config\\default_receiver_9_iqhj5tZkR5d-hz7-ecUiMINWT_qcNMPN5lc9dlEC8=.p7b",
+          "signAlg": "SHA256withECDSA",
+          "storeFile": "C:\\Users\\admin\\.ohos\\config\\default_receiver_9_iqhj5tZkR5d-hz7-ecUiMINWT_qcNMPN5lc9dlEC8=.p12",
+          "storePassword": "000000193B9DE80595E95630C34CEE5A05D9EC7EA84BB607FEEF43FDC9206233A97A617AFAE9150233"
+        }
+      }
+    ],
     "products": [
       {
         "name": "default",
@@ -17,8 +31,12 @@
       }
     ],
     "buildModeSet": [
-      { "name": "debug" },
-      { "name": "release" }
+      {
+        "name": "debug"
+      },
+      {
+        "name": "release"
+      }
     ]
   },
   "modules": [
@@ -28,7 +46,9 @@
       "targets": [
         {
           "name": "default",
-          "applyToProducts": ["default"]
+          "applyToProducts": [
+            "default"
+          ]
         }
       ]
     }

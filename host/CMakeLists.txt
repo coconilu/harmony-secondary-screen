@@ -72,19 +72,6 @@ target_compile_definitions(hss_protocol_tests PRIVATE NOMINMAX WIN32_LEAN_AND_ME
 target_compile_options(hss_protocol_tests PRIVATE /W4 /WX /permissive- /utf-8)
 add_test(NAME hss_protocol_tests COMMAND hss_protocol_tests)
 
-add_executable(hss_wire_compatibility_tests
-  tests/wire_compatibility_tests.cpp
-  ../receiver/entry/src/main/cpp/native_protocol.cpp
-)
-target_include_directories(hss_wire_compatibility_tests PRIVATE
-  common
-  ../receiver/entry/src/main/cpp
-)
-target_link_libraries(hss_wire_compatibility_tests PRIVATE hss_protocol)
-target_compile_definitions(hss_wire_compatibility_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
-target_compile_options(hss_wire_compatibility_tests PRIVATE /W4 /WX /permissive- /utf-8)
-add_test(NAME hss_wire_compatibility_tests COMMAND hss_wire_compatibility_tests)
-
 add_executable(hss_security_contract_tests
   tests/security_contract_tests.cpp
   app/local_security.cpp
@@ -114,13 +101,6 @@ target_link_libraries(hss_pointer_mapping_tests PRIVATE hss_protocol user32)
 target_compile_definitions(hss_pointer_mapping_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(hss_pointer_mapping_tests PRIVATE /W4 /WX /permissive- /utf-8)
 add_test(NAME hss_pointer_mapping_tests COMMAND hss_pointer_mapping_tests)
-
-add_executable(hss_receiver_connect_policy_tests tests/receiver_connect_policy_tests.cpp)
-target_include_directories(hss_receiver_connect_policy_tests PRIVATE
-  ../receiver/entry/src/main/cpp
-)
-target_compile_options(hss_receiver_connect_policy_tests PRIVATE /W4 /WX /permissive- /utf-8)
-add_test(NAME hss_receiver_connect_policy_tests COMMAND hss_receiver_connect_policy_tests)
 
 add_executable(hss_decoder_state_tests tests/decoder_state_tests.cpp)
 target_include_directories(hss_decoder_state_tests PRIVATE

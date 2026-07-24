@@ -9,11 +9,12 @@
 
 namespace hss::receiver::protocol {
 
-constexpr std::uint32_t kVideoMagic = 0x48535331U;
-constexpr std::uint8_t kVersion = 1;
+constexpr std::uint32_t kVideoMagic = 0x48535332U;
+constexpr std::uint8_t kVersion = 2;
 constexpr std::size_t kHeaderSize = 32;
 constexpr std::uint32_t kMaxControlPayload = 64U * 1024U;
 constexpr std::size_t kMaxUdpPayload = 1200;
+constexpr std::size_t kMaxFrameBytes = 8U * 1024U * 1024U;
 
 enum VideoFlags : std::uint16_t {
   kKeyframe = 1U << 0U,

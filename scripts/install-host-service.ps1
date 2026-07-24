@@ -96,7 +96,7 @@ try {
   Remove-HostFirewallRule
   New-NetFirewallRule -Name $firewallRuleName -DisplayName 'Harmony Secondary Screen control' `
     -Direction Inbound -Action Allow -Enabled True -Profile Any -InterfaceType Wireless `
-    -Program $resolvedHostExe -Protocol TCP -LocalPort 47100 -RemoteAddress LocalSubnet | Out-Null
+    -Program $resolvedHostExe -Protocol TCP -LocalPort 44000 -RemoteAddress LocalSubnet | Out-Null
   if ($Start) { Start-Service -Name $serviceName }
 } catch {
   $installFailure = $_

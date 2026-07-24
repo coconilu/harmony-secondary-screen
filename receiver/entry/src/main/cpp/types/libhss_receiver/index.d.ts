@@ -1,21 +1,23 @@
 export interface ReceiverStatus {
   state: string;
   detail: string;
+  listenAddress: string;
+  pairingCode: string;
+  pairedAddress: string;
+  listening: boolean;
   connected: boolean;
   framesDecoded: number;
   framesDropped: number;
 }
 
-export const connect: (host: string, pairingCode: string) => boolean;
-export const disconnect: () => void;
+export const startReceiver: (listenAddress: string) => boolean;
+export const stopReceiver: () => void;
 export const getStatus: () => ReceiverStatus;
-export const setInputMode: (mode: 'pointer' | 'scroll') => void;
 
 declare const receiver: {
-  connect: typeof connect;
-  disconnect: typeof disconnect;
+  startReceiver: typeof startReceiver;
+  stopReceiver: typeof stopReceiver;
   getStatus: typeof getStatus;
-  setInputMode: typeof setInputMode;
 };
 
 export default receiver;

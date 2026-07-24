@@ -22,6 +22,10 @@ namespace hss::receiver {
 struct StatusSnapshot {
   std::string state;
   std::string detail;
+  std::string listenAddress;
+  std::string pairingCode;
+  std::string pairedAddress;
+  bool listening = false;
   bool connected = false;
   std::uint64_t framesDecoded = 0;
   std::uint64_t framesDropped = 0;
@@ -34,15 +38,13 @@ class ReceiverSession final {
   ReceiverSession(const ReceiverSession&) = delete;
   ReceiverSession& operator=(const ReceiverSession&) = delete;
 
-  bool Start(std::string host, std::string pairingCode);
+  bool Start(std::string listenAddress);
   void Stop();
   StatusSnapshot Status() const;
-  void SetInputMode(std::string mode);
 
   void OnSurfaceCreated(OH_NativeXComponent* component, void* window);
   void OnSurfaceChanged(OH_NativeXComponent* component, void* window);
   void OnSurfaceDestroyed();
-  void OnTouch(OH_NativeXComponent* component, void* window);
 
  private:
   ReceiverSession() = default;
@@ -67,15 +69,17 @@ class ReceiverSession final {
   };
 
   void NetworkLoop();
-  bool ConnectControl(bool resume);
+  bool OpenListeners();
+  bool AcceptAndPair();
   bool RunConnectedSession();
   bool SendControl(std::string_view json);
-  void HandleControl(std::string_view json);
+  bool HandleControl(std::string_view json);
   void HandleVideo(const std::byte* data, std::size_t size);
   void SweepAssemblies();
   void RequestKeyframe();
+  void CloseControlSocket();
   void CloseSockets();
-  void SetState(std::string state, std::string detail, bool connected);
+  void SetState(std::string state, std::string detail, bool listening, bool connected);
 
   bool StartDecoder();
   bool CreateDecoderLocked();
@@ -99,14 +103,19 @@ class ReceiverSession final {
 
   mutable std::mutex state_mutex_;
   std::string state_ = "idle";
-  std::string detail_ = "等待连接";
+  std::string detail_ = "请输入本机 Wi-Fi IPv4";
+  std::string listen_address_;
+  std::string paired_address_;
+  bool listening_ = false;
   bool connected_ = false;
-  std::string host_;
   std::string pairing_code_;
+  std::string receiver_nonce_;
   std::string session_id_;
   std::uint32_t session_short_ = 0;
+  std::chrono::steady_clock::time_point pairing_expires_at_;
   std::atomic<bool> desired_{false};
   std::thread worker_;
+  std::atomic<int> listener_socket_{-1};
   std::atomic<int> control_socket_{-1};
   std::atomic<int> video_socket_{-1};
   std::timed_mutex send_mutex_;
@@ -126,12 +135,6 @@ class ReceiverSession final {
   std::deque<DecodedInput> decode_queue_;
   std::atomic<std::uint64_t> frames_decoded_{0};
   std::atomic<std::uint64_t> frames_dropped_{0};
-  std::atomic<std::int64_t> host_clock_offset_us_{0};
-
-  std::mutex input_mutex_;
-  std::string input_mode_ = "pointer";
-  float previous_touch_y_ = 0.0F;
-  bool touch_active_ = false;
 };
 
 }  // namespace hss::receiver

@@ -2,89 +2,117 @@
 
 ## 产品目标
 
-让非华为 Windows 11 电脑把 HarmonyOS 平板识别为真正的第二块显示器，并通过家庭 Wi-Fi 传输低延迟画面。平板端必须是原生 HarmonyOS 应用。
+让 Windows 11 用户把自己明确选择的 Microsoft Edge 标签页画面发送到 HarmonyOS 平板，作为独立的
+网页伴随屏观看；声音继续由 Windows 输出到现有耳机。
+
+产品不向 Windows 枚举显示器，不支持窗口跨屏拖动，不捕获整个桌面，也不把镜像称为扩展屏。
+HarmonyOS 接收端必须是原生应用。
 
 ## 组件边界
 
 | 组件 | 职责 | v0.1 技术方向 |
 | --- | --- | --- |
-| Windows Virtual Display | 向 Windows 枚举真实的扩展显示器 | IddCx / UMDF |
-| Frame Pipeline | 从虚拟显示 SwapChain 取得 D3D11 帧 | IddCx SwapChainProcessor |
-| Encoder | 低延迟压缩桌面帧 | Media Foundation H.264 硬件编码 |
-| Host Service | 可信物理 Wi-Fi 监听、一次性配对、UDP 视频与帧日志 | Win32 SCM 服务（Session 0） |
-| Input Agent | 把已鉴权触控注入当前桌面 | Win32 用户会话进程 + SendInput |
-| Transport | 局域网配对、视频和控制消息 | 手动 IPv4 + TCP 控制 + UDP 视频；mDNS 为后续目标 |
-| Harmony Receiver | 连接、解码、渲染、状态展示 | ArkTS + NDK AVCodec + XComponent |
-| Input Return | 将触摸映射回扩展屏坐标 | TCP 控制通道 + Windows SendInput |
+| Edge Extension | 接收用户手势、选择当前标签页、展示连接状态 | Manifest V3 + `activeTab` + `tabCapture` |
+| Capture Worker | 持有媒体流、缩放并编码视频 | offscreen document + WebCodecs `VideoEncoder` |
+| Local Bridge | 在扩展与 Relay 间传输控制消息和二进制编码帧 | Native Messaging 启动/授权 + 随机令牌保护的回环 WebSocket |
+| Windows Relay | 配对、关键帧转发、UDP 分片与工程日志 | 普通用户态进程；不注册系统服务、不要求管理员 |
+| LAN Transport | 可信局域网内的控制和视频 | Relay 主动连接平板 TCP 44000；向平板 UDP 47101 发送视频 |
+| Harmony Receiver | 展示配对信息、收包、解码、渲染和状态展示 | ArkTS + NDK AVCodec + XComponent |
 
 ## 数据流
 
 ```text
-Windows DWM
+用户点击 Edge 扩展按钮
+   ↓ chrome.tabCapture.getMediaStreamId（只请求 video）
+MV3 offscreen document
+   ↓ MediaStreamTrackProcessor / VideoFrame
+WebCodecs VideoEncoder
+   ↓ H.264 Annex-B EncodedVideoChunk
+回环 Local Bridge（127.0.0.1 + 临时令牌）
    ↓
-IddCx 虚拟显示器（1920×1200 / 60 Hz）
-   ↓ D3D11 texture
-H.264 编码器（低延迟，无 B 帧）
-   ↓ 仅本机命名管道
-Windows Host Service（可信物理 Wi-Fi 门禁）
-   ↓ UDP 分片
-HarmonyOS 接收端抖动缓冲
+Windows Relay（普通用户进程）
+   ↓ UDP 受限分片
+HarmonyOS Receiver
    ↓ H.264 Annex-B
 OH_VideoDecoder
    ↓ Surface
 XComponent
 ```
 
-触控走反向通道：
+控制流反向返回关键帧请求、停止原因和遥测：
 
 ```text
-ArkUI 触摸坐标 → 归一化坐标 → TCP 控制消息 → Host Service
-  → 仅本机输入管道 → 用户会话 Input Agent → Windows 屏幕坐标 → SendInput
+Harmony Receiver → TCP control → Windows Relay
+  → Local Bridge → offscreen document → VideoEncoder key frame
 ```
-
-IddCx 驱动和 Host Service 运行在 Session 0；`SendInput` 只在用户会话 Input Agent 中执行，避免
-Session 0 输入隔离。驱动只把编码后的 H.264 帧写入拒绝远程客户端的本机命名管道。Host Service
-提供另一个只限本机的只读状态管道，用于查询当前一次性配对码。
 
 ## 架构决策
 
-### 原生接收端
+### 捕获标签页，而不是窗口像素
 
-接收端不使用 WebView、HTML5 Viewer 或 Android 兼容应用。ArkTS 只负责生命周期、连接与设置；视频收包、抖动缓冲和 AVCodec 解码由 C++ 完成。
+Deskreen 实验验证了通用投屏链路，但最小化 Edge 后窗口停止绘制。v0.1 使用 Edge 官方支持的
+`tabCapture` 获取用户主动选择的标签页媒体流，目标是让捕获生命周期不依赖窗口遮挡状态。
 
-AVCodec 生命周期与回调队列使用两把独立锁。`Stop`、`Destroy`、`Flush` 等可能等待回调结束的 API 调用期间不持有回调队列锁；
-`Flush` 成功后必须再次 `Start`，失败则重建解码器，并等待携带 SPS/PPS 的 IDR 后恢复解码。
+“Edge 窗口最小化后仍持续出帧”目前仍是 PoC 门禁，不因为 API 存在就视为已通过。
 
-### 异步硬件编码
+### 不采集音频
 
-IddCx 编码线程在入口建立 COM MTA。硬件 MFT 使用独立事件泵维护 `METransformNeedInput` 与 `METransformHaveOutput` credit，
-输入和输出分别使用有界队列，不假设一次输入必然同步产生一次输出；运行错误时才切换到同步软件 MFT。
+扩展只请求视频轨，不获取音频轨。B 站等网页的声音继续走 Edge 原有本地输出设备，项目不编码、
+发送或在平板播放音频。这样满足“耳机只连接 PC”的核心需求，也避免双端回声。
 
-### Wi-Fi only
+PC 本地音频与平板视频之间可能存在可感知偏移，必须实测并记录；不能用单独的视频延迟指标替代。
 
-v0.1 只支持可信家庭 Wi-Fi。USB 可用于供电，但不属于视频传输链路。这个边界减少设备模式、驱动权限和型号差异带来的不确定性。
+### H.264 能力必须探测
 
-### 可信物理 Wi-Fi 门禁
+WebCodecs 允许通过 `VideoEncoder.isConfigSupported()` 探测具体编码配置，AVC 注册允许
+`avc.format = "annexb"`。但标准不要求浏览器一定实现 H.264 编码。
 
-Host 先用 `GetAdaptersAddresses` 将候选接口限制为 `IF_TYPE_IEEE80211`，再通过 Windows Network List
-Manager 把 Wi-Fi 适配器 GUID、网络配置文件与 IPv4 地址关联；以太网和 VPN 虚拟网卡不会成为监听候选。
-交互式启动或服务安装会展示当前 Wi-Fi 名称与风险说明。用户确认后，Host 只记录该网络的 NLM profile ID；
-不会调用 `INetwork::SetCategory`，不会改变 Windows 的“公用/专用”分类，也不会修改或断开 VPN。
+v0.1 在开始会话前探测至少 `1280×720 @ 30 fps` 的 H.264 Annex-B 配置。若不支持，扩展必须明确
+展示“不支持当前编码能力”，不得静默改成 VP8/VP9 后让 HarmonyOS 端黑屏。`1920×1080 @ 30 fps`
+作为增强能力协商，不是首个垂直切片的硬门禁。
 
-Host 只在应用已确认的具体 Wi-Fi IPv4 上监听 TCP。每次 bind、accept 和已连接会话循环都会重新验证
-profile ID、物理接口类型与 IPv4；Wi-Fi 断开、切换网络或地址变化时会先撤销会话数据面 epoch、停止
-后续 UDP 分片，再关闭 listener 和现有控制连接，不会退化为全接口绑定。服务安装器只为 Host 程序创建
-`Any profile + Wireless + LocalSubnet + TCP 47100` 入站防火墙规则，并在卸载时清理；实际监听仍受应用
-确认的 Wi-Fi profile ID 限制。视频 UDP 由 Host 向已配对平板发起，不创建 UDP 入站规则。
+### 保留轻量 Relay，不把 libwebrtc 引入平板
 
-### 型号不是业务分支
+浏览器扩展不能直接发送任意 UDP。直接采用 WebRTC 会要求 HarmonyOS 原生端集成和维护 libwebrtc，
+其体积、ABI、构建和升级成本与当前轻量目标不符。
 
-运行时根据 API 版本、编解码能力、屏幕参数和网络条件协商能力。`XYAO-W00` 只是首个实机验证样本。
+v0.1 使用普通用户态 Relay：
+
+- Native Messaging 只负责启动 Relay、交换临时端口和随机令牌；
+- 视频块通过只绑定 `127.0.0.1` 的二进制 WebSocket 传输，避免 Base64/JSON 成为主数据面；
+- Relay 主动连接平板，不开放 Windows 局域网入站端口；
+- Relay 不安装为服务，不需要驱动签名或管理员权限。
+
+若回环 WebSocket PoC 不满足性能要求，只替换本地桥接层，不改变 Edge 捕获、局域网协议和 HarmonyOS
+接收端边界。
+
+### 原生 HarmonyOS 接收端
+
+接收端不使用 WebView、HTML5 Viewer 或 Android 兼容应用。ArkTS 负责生命周期、可信 Wi-Fi 确认、
+配对信息和状态；TCP/UDP、抖动缓冲和 AVCodec 解码由 C++ 完成。
+
+接收端只在用户明确确认的 Wi-Fi IPv4 上监听，不绑定蜂窝、VPN 或通配地址。运行时依据 API、编解码
+能力、Surface 与网络条件协商，不依据设备型号分支。
+
+### 迁移旧原型
+
+旧 IddCx 原型中的 H.264 UDP 分片、协议边界检查、AVCodec 解码器状态机和测试思路可以复用。以下
+组件不再属于产品：
+
+- `host/driver` IddCx 驱动；
+- D3D11 / Media Foundation 桌面帧编码管线；
+- Session 0 Host Service 与服务安装器；
+- Input Agent、`SendInput` 和触控坐标映射；
+- Windows 入站防火墙规则。
+
+具体处置见 [ADR-001](ADR-001-WEB-COMPANION-PIVOT.md)。
 
 ## 非目标
 
-- 公网远程桌面；
-- DRM/受保护视频捕获；
-- USB 视频传输；
-- 音频、手写笔压感和多平板；
+- Windows 真扩展屏、虚拟显示器或窗口跨屏拖动；
+- 捕获整个桌面、任意应用窗口或远程控制 PC；
+- 音频传输、平板扬声器播放或多音频设备同步；
+- DRM/受保护视频捕获或绕过站点保护；
+- 公网、访客 Wi-Fi、端口转发或云中继；
+- USB 视频传输、多平板、HDR、4K、触控/键鼠回传；
 - Windows 10、macOS、Android 或 iPadOS。

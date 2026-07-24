@@ -15,12 +15,13 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <set>
 #include <sstream>
 
 namespace hss::host {
 namespace {
 
-constexpr std::uint16_t kControlPort = 47100;
+constexpr std::uint16_t kControlPort = 44000;
 constexpr std::uint16_t kVideoPort = 47101;
 constexpr std::uint32_t kPipeMagic = 0x48535046U; // HSPF
 constexpr std::uint32_t kMaxEncodedFrame = 16U * 1024U * 1024U;
@@ -280,12 +281,21 @@ void HostServer::RecordReceiverTelemetry(std::string_view json) {
 }
 
 void HostServer::ControlLoop() {
+  std::set<std::string> announcedAddresses;
+  std::string lastListenFailure;
+  const auto reportListenFailure = [&lastListenFailure](std::string message) {
+    if (message != lastListenFailure) {
+      std::cerr << message << '\n';
+      lastListenFailure = std::move(message);
+    }
+  };
   while (WaitForSingleObject(stop_event_, 0) != WAIT_OBJECT_0) {
     ExpireResumeWindow();
     std::string gateError;
     const auto addresses =
         NetworkGate::AllowedWifiIpv4Addresses(allowed_wifi_profile_ids_, &gateError);
     if (addresses.empty()) {
+      announcedAddresses.clear();
       WaitForSingleObject(stop_event_, 500);
       continue;
     }
@@ -296,22 +306,49 @@ void HostServer::ControlLoop() {
       if (!NetworkGate::IsAllowedWifiIpv4(address, allowed_wifi_profile_ids_, &gateError)) continue;
       const SOCKET listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
       if (listener == INVALID_SOCKET) {
+        reportListenFailure("创建控制监听 socket 失败: " +
+                            std::to_string(WSAGetLastError()));
+        WaitForSingleObject(stop_event_, 500);
         continue;
       }
       BOOL exclusive = TRUE;
-      setsockopt(listener, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
-                 reinterpret_cast<const char*>(&exclusive), sizeof(exclusive));
+      if (setsockopt(listener, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
+                     reinterpret_cast<const char*>(&exclusive), sizeof(exclusive)) == SOCKET_ERROR) {
+        reportListenFailure("设置控制监听 socket 独占模式失败: " +
+                            std::to_string(WSAGetLastError()));
+        closesocket(listener);
+        WaitForSingleObject(stop_event_, 500);
+        continue;
+      }
       sockaddr_in bindAddress{};
       bindAddress.sin_family = AF_INET;
       bindAddress.sin_port = htons(kControlPort);
-      if (InetPtonA(AF_INET, address.c_str(), &bindAddress.sin_addr) != 1 ||
-          bind(listener, reinterpret_cast<sockaddr*>(&bindAddress), sizeof(bindAddress)) == SOCKET_ERROR ||
-          listen(listener, 1) == SOCKET_ERROR) {
+      if (InetPtonA(AF_INET, address.c_str(), &bindAddress.sin_addr) != 1) {
+        reportListenFailure("物理 Wi-Fi IPv4 地址无效: " + address);
         closesocket(listener);
+        WaitForSingleObject(stop_event_, 500);
         continue;
       }
+      if (bind(listener, reinterpret_cast<sockaddr*>(&bindAddress), sizeof(bindAddress)) ==
+          SOCKET_ERROR) {
+        reportListenFailure("绑定物理 Wi-Fi " + address + ':' + std::to_string(kControlPort) +
+                            " 失败: " + std::to_string(WSAGetLastError()));
+        closesocket(listener);
+        WaitForSingleObject(stop_event_, 500);
+        continue;
+      }
+      if (listen(listener, 1) == SOCKET_ERROR) {
+        reportListenFailure("监听物理 Wi-Fi " + address + ':' + std::to_string(kControlPort) +
+                            " 失败: " + std::to_string(WSAGetLastError()));
+        closesocket(listener);
+        WaitForSingleObject(stop_event_, 500);
+        continue;
+      }
+      lastListenFailure.clear();
       active_listener_ = listener;
-      std::cout << "仅监听可信物理 Wi-Fi " << address << ':' << kControlPort << '\n';
+      if (announcedAddresses.insert(address).second) {
+        std::cout << "仅监听可信物理 Wi-Fi " << address << ':' << kControlPort << '\n';
+      }
 
       fd_set readSet;
       FD_ZERO(&readSet);

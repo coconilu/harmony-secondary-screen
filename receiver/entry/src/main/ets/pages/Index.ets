@@ -3,11 +3,12 @@ import hssReceiver, { ReceiverStatus } from 'libhss_receiver.so';
 @Entry
 @Component
 struct Index {
-  @State hostAddress: string = '';
-  @State pairingCode: string = '';
-  @State statusText: string = '等待 Windows Host';
+  @State listenAddress: string = '';
+  @State pairingCode: string = '------';
+  @State pairedAddress: string = '';
+  @State statusText: string = '请输入平板当前的 Wi-Fi IPv4';
+  @State isListening: boolean = false;
   @State isConnected: boolean = false;
-  @State inputMode: string = 'pointer';
   @State framesDecoded: number = 0;
   @State framesDropped: number = 0;
   private statusTimer: number = -1;
@@ -16,7 +17,10 @@ struct Index {
     this.statusTimer = setInterval(() => {
       const status: ReceiverStatus = hssReceiver.getStatus();
       this.statusText = status.detail;
+      this.isListening = status.listening;
       this.isConnected = status.connected;
+      this.pairingCode = status.pairingCode.length > 0 ? status.pairingCode : '已使用';
+      this.pairedAddress = status.pairedAddress;
       this.framesDecoded = status.framesDecoded;
       this.framesDropped = status.framesDropped;
     }, 250);
@@ -27,44 +31,39 @@ struct Index {
       clearInterval(this.statusTimer);
       this.statusTimer = -1;
     }
-    hssReceiver.disconnect();
+    hssReceiver.stopReceiver();
   }
 
-  private connect(): void {
-    if (this.hostAddress.trim().length === 0) {
-      this.statusText = '请输入 Windows 主机 IP';
+  private startReceiver(): void {
+    if (this.listenAddress.trim().length === 0) {
+      this.statusText = '请输入平板当前的 Wi-Fi IPv4';
       return;
     }
-    if (!/^\d{6}$/.test(this.pairingCode)) {
-      this.statusText = '请输入 Windows Host 显示的六位一次性配对码';
-      return;
-    }
-    if (!hssReceiver.connect(this.hostAddress.trim(), this.pairingCode)) {
-      this.statusText = '连接参数无效';
+    if (!hssReceiver.startReceiver(this.listenAddress.trim())) {
+      this.statusText = '该地址不是平板当前启用的 Wi-Fi IPv4';
     }
   }
 
-  private toggleInputMode(): void {
-    this.inputMode = this.inputMode === 'pointer' ? 'scroll' : 'pointer';
-    hssReceiver.setInputMode(this.inputMode === 'pointer' ? 'pointer' : 'scroll');
+  private stopReceiver(): void {
+    hssReceiver.stopReceiver();
   }
 
   build() {
     Column({ space: 20 }) {
       Row() {
         Column({ space: 4 }) {
-          Text('Harmony Secondary Screen')
+          Text('网页伴随屏')
             .fontSize(28)
             .fontWeight(FontWeight.Bold)
             .fontColor('#F7FAFC')
-          Text('HarmonyOS 原生接收端 · Wi-Fi only')
+          Text('HarmonyOS 原生接收端 · 仅可信局域网 · 无音频')
             .fontSize(15)
             .fontColor('#AAB6C5')
         }
         .alignItems(HorizontalAlign.Start)
         .layoutWeight(1)
 
-        Text(this.isConnected ? '已连接' : '未连接')
+        Text(this.isConnected ? '正在显示' : this.isListening ? '等待配对' : '未启动')
           .fontSize(14)
           .fontColor(this.isConnected ? '#4ADE80' : '#FBBF24')
       }
@@ -82,32 +81,32 @@ struct Index {
       .border({ width: 1, color: '#2D3748' })
 
       Row({ space: 10 }) {
-        TextInput({ placeholder: 'Windows 主机 IP，例如 192.168.1.20', text: this.hostAddress })
+        TextInput({ placeholder: '平板 Wi-Fi IPv4，例如 192.168.1.30', text: this.listenAddress })
           .layoutWeight(1)
           .height(48)
           .backgroundColor('#202A38')
           .fontColor('#F7FAFC')
           .placeholderColor('#718096')
           .onChange((value: string) => {
-            this.hostAddress = value;
+            this.listenAddress = value;
           })
 
-        TextInput({ placeholder: '六位配对码', text: this.pairingCode })
+        Text(`配对码 ${this.pairingCode}`)
           .width(150)
-          .height(48)
-          .maxLength(6)
-          .backgroundColor('#202A38')
+          .fontSize(18)
           .fontColor('#F7FAFC')
-          .placeholderColor('#718096')
-          .onChange((value: string) => {
-            this.pairingCode = value;
-          })
 
-        Button('连接')
+        Button(this.isListening || this.isConnected ? '停止接收' : '开始接收')
           .height(48)
           .fontColor('#07130C')
           .backgroundColor('#4ADE80')
-          .onClick(() => this.connect())
+          .onClick(() => {
+            if (this.isListening || this.isConnected) {
+              this.stopReceiver();
+            } else {
+              this.startReceiver();
+            }
+          })
       }
       .width('100%')
 
@@ -121,11 +120,9 @@ struct Index {
           .fontSize(13)
           .fontColor('#718096')
 
-        Button(this.inputMode === 'pointer' ? '指针模式' : '滚动模式')
-          .height(38)
+        Text(this.pairedAddress.length > 0 ? `发送端 ${this.pairedAddress}` : '尚未配对')
           .fontSize(13)
-          .backgroundColor('#2D3748')
-          .onClick(() => this.toggleInputMode())
+          .fontColor('#718096')
       }
         .width('100%')
     }

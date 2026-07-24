@@ -17,19 +17,18 @@ std::string ArgumentString(napi_env env, napi_value value) {
   return result;
 }
 
-napi_value Connect(napi_env env, napi_callback_info info) {
-  std::array<napi_value, 2> arguments{};
+napi_value StartReceiver(napi_env env, napi_callback_info info) {
+  std::array<napi_value, 1> arguments{};
   std::size_t count = arguments.size();
   napi_get_cb_info(env, info, &count, arguments.data(), nullptr, nullptr);
   const bool started = count == arguments.size() &&
-                       ReceiverSession::Instance().Start(ArgumentString(env, arguments[0]),
-                                                         ArgumentString(env, arguments[1]));
+                       ReceiverSession::Instance().Start(ArgumentString(env, arguments[0]));
   napi_value result;
   napi_get_boolean(env, started, &result);
   return result;
 }
 
-napi_value Disconnect(napi_env env, napi_callback_info) {
+napi_value StopReceiver(napi_env env, napi_callback_info) {
   ReceiverSession::Instance().Stop();
   napi_value result;
   napi_get_undefined(env, &result);
@@ -60,19 +59,13 @@ napi_value GetStatus(napi_env env, napi_callback_info) {
   napi_create_object(env, &result);
   SetString(env, result, "state", status.state);
   SetString(env, result, "detail", status.detail);
+  SetString(env, result, "listenAddress", status.listenAddress);
+  SetString(env, result, "pairingCode", status.pairingCode);
+  SetString(env, result, "pairedAddress", status.pairedAddress);
+  SetBoolean(env, result, "listening", status.listening);
   SetBoolean(env, result, "connected", status.connected);
   SetInteger(env, result, "framesDecoded", status.framesDecoded);
   SetInteger(env, result, "framesDropped", status.framesDropped);
-  return result;
-}
-
-napi_value SetInputMode(napi_env env, napi_callback_info info) {
-  napi_value argument;
-  std::size_t count = 1;
-  napi_get_cb_info(env, info, &count, &argument, nullptr, nullptr);
-  if (count == 1) ReceiverSession::Instance().SetInputMode(ArgumentString(env, argument));
-  napi_value result;
-  napi_get_undefined(env, &result);
   return result;
 }
 
@@ -88,16 +81,11 @@ void SurfaceDestroyed(OH_NativeXComponent*, void*) {
   ReceiverSession::Instance().OnSurfaceDestroyed();
 }
 
-void Touch(OH_NativeXComponent* component, void* window) {
-  ReceiverSession::Instance().OnTouch(component, window);
-}
-
 napi_value Init(napi_env env, napi_value exports) {
-  const std::array<napi_property_descriptor, 4> properties{{
-      {"connect", nullptr, Connect, nullptr, nullptr, nullptr, napi_default, nullptr},
-      {"disconnect", nullptr, Disconnect, nullptr, nullptr, nullptr, napi_default, nullptr},
+  const std::array<napi_property_descriptor, 3> properties{{
+      {"startReceiver", nullptr, StartReceiver, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"stopReceiver", nullptr, StopReceiver, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"getStatus", nullptr, GetStatus, nullptr, nullptr, nullptr, napi_default, nullptr},
-      {"setInputMode", nullptr, SetInputMode, nullptr, nullptr, nullptr, napi_default, nullptr},
   }};
   napi_define_properties(env, exports, properties.size(), properties.data());
 
@@ -107,7 +95,7 @@ napi_value Init(napi_env env, napi_value exports) {
     if (napi_unwrap(env, xcomponentObject, reinterpret_cast<void**>(&component)) == napi_ok &&
         component != nullptr) {
       static OH_NativeXComponent_Callback callbacks{SurfaceCreated, SurfaceChanged,
-                                                     SurfaceDestroyed, Touch};
+                                                     SurfaceDestroyed, nullptr};
       OH_NativeXComponent_RegisterCallback(component, &callbacks);
     }
   }

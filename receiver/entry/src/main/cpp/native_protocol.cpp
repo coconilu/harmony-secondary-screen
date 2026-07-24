@@ -64,7 +64,9 @@ std::optional<VideoHeader> DecodeVideoHeader(const std::byte* data, std::size_t 
   header.payloadLength = ReadU16(data + 20);
   header.timestampUs = ReadU64(data + 24);
   if (header.fragments == 0 || header.fragment >= header.fragments ||
-      header.payloadLength > kMaxUdpPayload || size != kHeaderSize + header.payloadLength) {
+      header.payloadLength > kMaxUdpPayload || ReadU16(data + 22) != 0 ||
+      (header.flags & ~(kKeyframe | kCodecConfig | kEndOfFrame)) != 0 ||
+      size != kHeaderSize + header.payloadLength) {
     return std::nullopt;
   }
   return header;
