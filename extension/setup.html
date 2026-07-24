@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>网页伴随屏</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="setup.css">
+  </head>
+  <body>
+    <main>
+      <header>
+        <span class="mark" aria-hidden="true">↗</span>
+        <div>
+          <h1>网页伴随屏</h1>
+          <p>发送当前 Edge 标签页</p>
+        </div>
+      </header>
+
+      <form id="receiver-form">
+        <label for="receiver-address">平板 Wi-Fi IPv4</label>
+        <input
+          id="receiver-address"
+          name="receiver-address"
+          inputmode="decimal"
+          autocomplete="off"
+          placeholder="例如 192.168.3.112"
+          required>
+
+        <label for="pairing-code">六位一次性配对码</label>
+        <input
+          id="pairing-code"
+          name="pairing-code"
+          inputmode="numeric"
+          autocomplete="one-time-code"
+          maxlength="6"
+          pattern="[0-9]{6}"
+          placeholder="平板当前显示的配对码"
+          required>
+
+        <p id="error-message" class="error" role="alert" hidden></p>
+        <button id="start-button" type="submit">发送当前标签页</button>
+      </form>
+
+      <footer>
+        <strong>声音仍从 PC 输出</strong>
+        <span>配对码不会保存；仅允许可信局域网地址</span>
+      </footer>
+    </main>
+    <script type="module" src="setup.js"></script>
+  </body>
+</html>

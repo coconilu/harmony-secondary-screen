@@ -5,5 +5,7 @@
   "main": "",
   "author": "coconilu",
   "license": "Apache-2.0",
-  "dependencies": {}
+  "dependencies": {
+    "libhss_receiver.so": "file:./src/main/cpp/types/libhss_receiver"
+  }
 }

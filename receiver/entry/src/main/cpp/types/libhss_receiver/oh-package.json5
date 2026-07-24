@@ -1,0 +1,6 @@
+{
+  "name": "libhss_receiver.so",
+  "version": "0.1.0",
+  "description": "Harmony Web Companion native receiver typings",
+  "main": "index.d.ts"
+}

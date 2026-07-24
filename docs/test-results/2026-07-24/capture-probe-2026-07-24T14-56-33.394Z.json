@@ -1,0 +1,108 @@
+{
+  "schemaVersion": 3,
+  "exportedAt": "2026-07-24T14:56:33.394Z",
+  "mode": "stopped",
+  "currentStage": "A",
+  "fps": 15.013404825737265,
+  "totalFrames": 21876,
+  "lastFrameAgeMs": 63.80000001192093,
+  "stallEvents": 0,
+  "stalled": false,
+  "encodingFps": 15.979546180584066,
+  "submittedFrames": 21778,
+  "encodedFrames": 21778,
+  "encodedBytes": 367358843,
+  "keyFrames": 378,
+  "droppedFrames": 98,
+  "encodeErrors": 0,
+  "encodeQueueSize": 0,
+  "bitrateKbps": 2504.56,
+  "averageBitrateKbps": 3654.360555143986,
+  "lastEncodedAgeMs": 54.599999994039536,
+  "encoderConfig": {
+    "avcFormat": "annexb",
+    "bitrate": 4000000,
+    "codec": "avc1.42001f",
+    "framerate": 30,
+    "hardwareAcceleration": "prefer-hardware",
+    "height": 720,
+    "latencyMode": "realtime",
+    "width": 1280
+  },
+  "relayConnected": false,
+  "relaySentFrames": 21778,
+  "relaySentBytes": 367358843,
+  "relayReceivedFrames": 21778,
+  "relayReceivedBytes": 367358843,
+  "relayKeyFrames": 378,
+  "relayInvalidMessages": 0,
+  "relayDroppedFrames": 0,
+  "relayBufferedAmount": 0,
+  "relayErrors": 0,
+  "relayLastErrorCode": null,
+  "relayLastErrorDetail": null,
+  "lanConnected": true,
+  "lanSentFrames": 21778,
+  "lanSentBytes": 367358843,
+  "lanSentDatagrams": 316960,
+  "lanSendErrors": 0,
+  "receiverDecodedFrames": 21763,
+  "receiverDroppedFrames": 14,
+  "startedAt": 1784904188314,
+  "stoppedAt": 1784904992738,
+  "stopReason": "user_stopped_capture",
+  "error": null,
+  "events": [
+    {
+      "at": 1784904188314,
+      "level": "INFO",
+      "message": "正在申请当前标签页视频轨"
+    },
+    {
+      "at": 1784904188525,
+      "level": "INFO",
+      "message": "当前标签页已通过 Relay 发送到 HarmonyOS 平板（不采集音频）"
+    },
+    {
+      "at": 1784904992728,
+      "level": "INFO",
+      "message": "正在停止捕获"
+    },
+    {
+      "at": 1784904992740,
+      "level": "INFO",
+      "message": "捕获与编码已停止"
+    }
+  ],
+  "stageRuns": [
+    {
+      "endTelemetry": {
+        "capturedFrames": 21876,
+        "droppedFrames": 98,
+        "encodeErrors": 0,
+        "encodedBytes": 367358843,
+        "encodedFrames": 21778,
+        "relayDroppedFrames": 0,
+        "relayErrors": 0,
+        "relayReceivedFrames": 21778,
+        "relaySentFrames": 21778,
+        "stallEvents": 0
+      },
+      "endedAt": 1784904992738,
+      "stage": "A",
+      "startTelemetry": {
+        "capturedFrames": 0,
+        "droppedFrames": 0,
+        "encodeErrors": 0,
+        "encodedBytes": 0,
+        "encodedFrames": 0,
+        "relayDroppedFrames": 0,
+        "relayErrors": 0,
+        "relayReceivedFrames": 0,
+        "relaySentFrames": 0,
+        "stallEvents": 0
+      },
+      "startedAt": 1784904188525
+    }
+  ]
+}
