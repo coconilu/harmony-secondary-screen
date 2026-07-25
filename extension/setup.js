@@ -2,6 +2,7 @@ import qrcode from "./vendor/qrcode.mjs";
 import { pairReceiver } from "./direct-client.js";
 import {
   createPairingAuthorization,
+  DEFAULT_RECEIVER_HOST,
   normalizeReceiverHost
 } from "./direct-protocol.js";
 import {
@@ -39,26 +40,30 @@ startButton.addEventListener("click", startCapture);
 forgetButton.addEventListener("click", forgetPairing);
 updateHostButton.addEventListener("click", updateTrustedHost);
 
-void loadPairingState();
+export const setupReady = loadPairingState();
 
-async function loadPairingState() {
+export async function loadPairingState() {
   const trusted = await getTrustedReceiver();
   renderTrusted(trusted);
+  let cleanupSucceeded = true;
   try {
     await cleanupUnusedManualHostPermissions(trusted ? [trusted.host] : []);
   } catch (error) {
+    cleanupSucceeded = false;
     showError(error);
   }
   if (!trusted) {
-    refreshAuthorization();
+    refreshAuthorization({ clearError: cleanupSucceeded });
   }
 }
 
-function refreshAuthorization() {
+function refreshAuthorization({ clearError = true } = {}) {
   authorization = createPairingAuthorization();
   shortCode.textContent = `摄像头不可用时，在平板输入短码 ${authorization.shortCode}`;
   renderQrCode(authorization.payload);
-  errorMessage.hidden = true;
+  if (clearError) {
+    errorMessage.hidden = true;
+  }
 }
 
 async function completePairing() {
@@ -111,16 +116,18 @@ async function startCapture() {
   }
 }
 
-async function forgetPairing() {
+export async function forgetPairing() {
   errorMessage.hidden = true;
+  let cleanupSucceeded = true;
   try {
     await forgetTrustedReceiver();
     await cleanupUnusedManualHostPermissions([]);
   } catch (error) {
+    cleanupSucceeded = false;
     showError(error);
   }
   renderTrusted(null);
-  refreshAuthorization();
+  refreshAuthorization({ clearError: cleanupSucceeded });
 }
 
 async function updateTrustedHost() {
