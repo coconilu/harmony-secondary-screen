@@ -130,16 +130,6 @@ bool SenderIdValid(const std::string& value) {
          });
 }
 
-std::string ShortCodeFromToken(const std::string& token) {
-  if (!Hex(token, 64)) return {};
-  std::uint64_t prefix = 0;
-  const auto parsed = std::from_chars(token.data(), token.data() + 12, prefix, 16);
-  if (parsed.ec != std::errc{}) return {};
-  std::ostringstream output;
-  output << std::setw(6) << std::setfill('0') << prefix % 1'000'000U;
-  return output.str();
-}
-
 }  // namespace
 
 ReceiverSession& ReceiverSession::Instance() {
@@ -385,14 +375,8 @@ bool ReceiverSession::AcceptWebSocket() {
 
 bool ReceiverSession::ReadUpgrade(int client) {
   std::string request;
-  std::array<char, 2048> buffer{};
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-  while (request.find("\r\n\r\n") == std::string::npos &&
-         request.size() < 16U * 1024U && std::chrono::steady_clock::now() < deadline) {
-    const ssize_t count = recv(client, buffer.data(), buffer.size(), 0);
-    if (count <= 0) return false;
-    request.append(buffer.data(), static_cast<std::size_t>(count));
-  }
+  if (!websocket::ReadUpgradeRequest(client, deadline, &request)) return false;
   std::string response;
   if (!websocket::BuildUpgradeResponse(request, &response)) return false;
   return send(client, response.data(), response.size(), MSG_NOSIGNAL) ==
@@ -436,17 +420,24 @@ bool ReceiverSession::AuthenticateConnection() {
         std::string credential;
         {
           std::scoped_lock lock(state_mutex_);
-          const auto now = std::chrono::system_clock::now();
-          if (sessionId == consumed_session_id_) {
-            error = "authorization_replayed";
-          } else if (now >= pairing_expires_at_) {
-            error = "authorization_expired";
-          } else {
-            const bool qrMatch = !pending_session_id_.empty() &&
-                                 sessionId == pending_session_id_ && token == pending_token_;
-            const bool shortMatch = !pending_short_code_.empty() &&
-                                    ShortCodeFromToken(token) == pending_short_code_;
-            if (!qrMatch && !shortMatch) error = "pairing_failed";
+          const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::system_clock::now().time_since_epoch()).count();
+          const auto expiresAt = std::chrono::duration_cast<std::chrono::milliseconds>(
+              pairing_expires_at_.time_since_epoch()).count();
+          switch (protocol::EvaluatePairingAuthorization(
+              sessionId, token, pending_session_id_, pending_token_,
+              pending_short_code_, consumed_session_id_, expiresAt, now)) {
+            case protocol::PairingAuthorizationResult::kReplayed:
+              error = "authorization_replayed";
+              break;
+            case protocol::PairingAuthorizationResult::kExpired:
+              error = "authorization_expired";
+              break;
+            case protocol::PairingAuthorizationResult::kMismatch:
+              error = "pairing_failed";
+              break;
+            case protocol::PairingAuthorizationResult::kAccepted:
+              break;
           }
           if (error.empty() && !SenderIdValid(senderId)) {
             error = "pairing_failed";

@@ -16,6 +16,8 @@ ws://harmony-web-companion.local:44000/direct
 
 所有控制消息是 UTF-8 JSON text message；H.264 是 binary message。客户端 frame 必须 mask，
 Receiver 支持合法 continuation frame，单消息上限为 8 MiB + 32 字节头。
+TCP 连接建立后，客户端必须在 5 秒内完成 WebSocket upgrade；静默或不完整的连接会被关闭，
+Receiver 随后继续接受下一条连接，避免单个客户端长期占用唯一接收循环。
 
 ## 一次性配对
 

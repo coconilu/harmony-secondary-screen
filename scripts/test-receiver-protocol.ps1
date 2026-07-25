@@ -2,8 +2,13 @@ $ErrorActionPreference = 'Stop'
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $buildRoot = Join-Path $projectRoot 'out\receiver-protocol-tests'
+$wireFixture = Join-Path $buildRoot 'extension-wire-message.bin'
 
-cmake -S (Join-Path $projectRoot 'receiver\tests') -B $buildRoot -A x64
+node (Join-Path $projectRoot 'receiver\tests\write_extension_wire_fixture.mjs') $wireFixture
+if ($LASTEXITCODE -ne 0) { throw "Extension wire fixture generation failed: $LASTEXITCODE" }
+
+cmake -S (Join-Path $projectRoot 'receiver\tests') -B $buildRoot -A x64 `
+  "-DHSS_EXTENSION_WIRE_FIXTURE=$wireFixture"
 if ($LASTEXITCODE -ne 0) { throw "Receiver protocol configure failed: $LASTEXITCODE" }
 
 cmake --build $buildRoot --config Release

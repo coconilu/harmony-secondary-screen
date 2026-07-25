@@ -30,6 +30,9 @@
 | 固定 `.local` origin | 尝试单一 Receiver 地址 |
 | optional HTTP origin | 用户手动输入私网 IP 后，只请求该精确 origin |
 
+手动 IP 配对或保存失败时会回滚本次新增的 origin；更新地址或忘记设备时会枚举并撤销所有未使用的
+手动私网 origin，撤销失败会明确报错。
+
 不申请 `nativeMessaging`、`<all_urls>`、Cookie、history、页面正文或站点脚本注入。
 
 ## 编码与隐私

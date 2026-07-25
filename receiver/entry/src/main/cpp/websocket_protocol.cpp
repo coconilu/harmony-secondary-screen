@@ -3,7 +3,15 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cerrno>
 #include <cstring>
+
+#ifdef _WIN32
+#include <winsock2.h>
+#else
+#include <sys/select.h>
+#include <sys/socket.h>
+#endif
 
 namespace hss::receiver::websocket {
 namespace {
@@ -141,6 +149,14 @@ std::uint64_t ReadU64(const std::byte* source) {
   return value;
 }
 
+bool InterruptedSocketCall() {
+#ifdef _WIN32
+  return WSAGetLastError() == WSAEINTR;
+#else
+  return errno == EINTR;
+#endif
+}
+
 }  // namespace
 
 bool BuildUpgradeResponse(std::string_view request, std::string* response) {
@@ -161,6 +177,48 @@ bool BuildUpgradeResponse(std::string_view request, std::string* response) {
               "Sec-WebSocket-Accept: " +
               Base64(digest.data(), digest.size()) + "\r\n\r\n";
   return true;
+}
+
+bool ReadUpgradeRequest(SocketHandle socket,
+                        std::chrono::steady_clock::time_point deadline,
+                        std::string* request) {
+  if (request == nullptr) return false;
+  request->clear();
+  std::array<char, 2048> buffer{};
+  while (request->find("\r\n\r\n") == std::string::npos &&
+         request->size() < 16U * 1024U) {
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline) return false;
+    const auto remaining =
+        std::chrono::duration_cast<std::chrono::microseconds>(deadline - now);
+    fd_set readSet;
+    FD_ZERO(&readSet);
+#ifdef _WIN32
+    const SOCKET nativeSocket = static_cast<SOCKET>(socket);
+    FD_SET(nativeSocket, &readSet);
+#else
+    const int nativeSocket = socket;
+    FD_SET(nativeSocket, &readSet);
+#endif
+    timeval timeout{};
+    timeout.tv_sec =
+        static_cast<decltype(timeout.tv_sec)>(remaining.count() / 1'000'000);
+    timeout.tv_usec =
+        static_cast<decltype(timeout.tv_usec)>(remaining.count() % 1'000'000);
+#ifdef _WIN32
+    const int ready = select(0, &readSet, nullptr, nullptr, &timeout);
+#else
+    const int ready = select(nativeSocket + 1, &readSet, nullptr, nullptr, &timeout);
+#endif
+    if (ready < 0 && InterruptedSocketCall()) continue;
+    if (ready <= 0) return false;
+    const int count = recv(nativeSocket, buffer.data(),
+                           static_cast<int>(buffer.size()), 0);
+    if (count <= 0) return false;
+    request->append(buffer.data(), static_cast<std::size_t>(count));
+  }
+  return request->find("\r\n\r\n") != std::string::npos &&
+         request->size() <= 16U * 1024U;
 }
 
 std::vector<std::byte> EncodeFrame(Opcode opcode, std::string_view payload) {

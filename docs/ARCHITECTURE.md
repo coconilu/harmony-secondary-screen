@@ -65,6 +65,9 @@ IPv4；不进行 mDNS 浏览或子网扫描。
 | 固定 `.local` host permission | 只访问一个预定 Receiver 地址 |
 | 可选 `http://*/*` 声明 | Chrome match pattern 无法枚举所有 RFC1918；仅在用户输入并确认具体 IP 时请求该精确 origin |
 
+扩展只保留当前可信设备实际使用的手动私网 origin；配对/保存失败回滚新授权，更新地址和忘记设备时
+枚举并撤销其余手动 origin，且不得把 `permissions.remove()` 的失败当成成功。
+
 不申请 `<all_urls>`、`nativeMessaging`、Cookie、history、正文读取或脚本注入。
 
 ## 非目标

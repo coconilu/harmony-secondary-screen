@@ -1,7 +1,11 @@
 #include "native_protocol.h"
 
+#include <algorithm>
 #include <charconv>
+#include <cctype>
 #include <cstring>
+#include <iomanip>
+#include <sstream>
 
 namespace hss::receiver::protocol {
 namespace {
@@ -44,8 +48,7 @@ std::optional<std::size_t> ValueStart(std::string_view json, std::string_view ke
 
 std::optional<VideoHeader> DecodeVideoHeader(const std::byte* data, std::size_t size) {
   if (data == nullptr || size < kHeaderSize || ReadU32(data) != kVideoMagic ||
-      std::to_integer<std::uint8_t>(data[4]) != kVersion ||
-      std::to_integer<std::uint8_t>(data[5]) != kHeaderSize) {
+      std::to_integer<std::uint8_t>(data[4]) != kVersion) {
     return std::nullopt;
   }
   VideoHeader header;
@@ -61,6 +64,41 @@ std::optional<VideoHeader> DecodeVideoHeader(const std::byte* data, std::size_t 
     return std::nullopt;
   }
   return header;
+}
+
+std::string PairingShortCode(std::string_view token) {
+  if (token.size() != 64U ||
+      !std::all_of(token.begin(), token.end(), [](unsigned char character) {
+        return std::isdigit(character) != 0 ||
+               (character >= 'a' && character <= 'f');
+      })) {
+    return {};
+  }
+  std::uint64_t prefix = 0;
+  const auto parsed = std::from_chars(token.data(), token.data() + 12, prefix, 16);
+  if (parsed.ec != std::errc{}) return {};
+  std::ostringstream output;
+  output << std::setw(6) << std::setfill('0') << prefix % 1'000'000U;
+  return output.str();
+}
+
+PairingAuthorizationResult EvaluatePairingAuthorization(
+    std::string_view sessionId, std::string_view token,
+    std::string_view pendingSessionId, std::string_view pendingToken,
+    std::string_view pendingShortCode, std::string_view consumedSessionId,
+    std::int64_t expiresAtMs, std::int64_t nowMs) {
+  if (!sessionId.empty() && sessionId == consumedSessionId) {
+    return PairingAuthorizationResult::kReplayed;
+  }
+  if (nowMs >= expiresAtMs) {
+    return PairingAuthorizationResult::kExpired;
+  }
+  const bool qrMatch =
+      !pendingSessionId.empty() && sessionId == pendingSessionId && token == pendingToken;
+  const bool shortMatch =
+      !pendingShortCode.empty() && PairingShortCode(token) == pendingShortCode;
+  return qrMatch || shortMatch ? PairingAuthorizationResult::kAccepted
+                              : PairingAuthorizationResult::kMismatch;
 }
 
 std::optional<std::string> JsonString(std::string_view json, std::string_view key) {

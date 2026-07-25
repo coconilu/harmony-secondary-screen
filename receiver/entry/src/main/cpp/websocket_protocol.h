@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <chrono>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -10,6 +11,12 @@
 namespace hss::receiver::websocket {
 
 constexpr std::size_t kMaxMessageBytes = 8U * 1024U * 1024U + 32U;
+
+#ifdef _WIN32
+using SocketHandle = std::uintptr_t;
+#else
+using SocketHandle = int;
+#endif
 
 enum class Opcode : std::uint8_t {
   kContinuation = 0x0,
@@ -26,6 +33,9 @@ struct Message {
 };
 
 bool BuildUpgradeResponse(std::string_view request, std::string* response);
+bool ReadUpgradeRequest(SocketHandle socket,
+                        std::chrono::steady_clock::time_point deadline,
+                        std::string* request);
 std::vector<std::byte> EncodeFrame(Opcode opcode, std::string_view payload);
 
 class Decoder final {

@@ -19,6 +19,13 @@ enum VideoFlags : std::uint16_t {
   kKeyframe = 1U << 0U,
 };
 
+enum class PairingAuthorizationResult {
+  kAccepted,
+  kExpired,
+  kReplayed,
+  kMismatch,
+};
+
 struct VideoHeader {
   std::uint32_t sourceEpoch = 0;
   std::uint32_t sequence = 0;
@@ -32,6 +39,13 @@ std::optional<VideoHeader> DecodeVideoHeader(const std::byte* data, std::size_t 
 constexpr bool IsAcceptedSourceEpoch(std::uint32_t candidate, std::uint32_t latest) {
   return candidate >= latest;
 }
+
+std::string PairingShortCode(std::string_view token);
+PairingAuthorizationResult EvaluatePairingAuthorization(
+    std::string_view sessionId, std::string_view token,
+    std::string_view pendingSessionId, std::string_view pendingToken,
+    std::string_view pendingShortCode, std::string_view consumedSessionId,
+    std::int64_t expiresAtMs, std::int64_t nowMs);
 
 std::optional<std::string> JsonString(std::string_view json, std::string_view key);
 std::optional<std::int64_t> JsonInteger(std::string_view json, std::string_view key);

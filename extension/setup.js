@@ -2,7 +2,6 @@ import qrcode from "./vendor/qrcode.mjs";
 import { pairReceiver } from "./direct-client.js";
 import {
   createPairingAuthorization,
-  DEFAULT_RECEIVER_HOST,
   normalizeReceiverHost
 } from "./direct-protocol.js";
 import {
@@ -11,6 +10,10 @@ import {
   getTrustedReceiver,
   saveTrustedReceiver
 } from "./pairing-store.js";
+import {
+  cleanupUnusedManualHostPermissions,
+  withHostPermission
+} from "./host-permissions.js";
 
 const form = document.querySelector("#pairing-form");
 const pairedPanel = document.querySelector("#paired-panel");
@@ -41,6 +44,11 @@ void loadPairingState();
 async function loadPairingState() {
   const trusted = await getTrustedReceiver();
   renderTrusted(trusted);
+  try {
+    await cleanupUnusedManualHostPermissions(trusted ? [trusted.host] : []);
+  } catch (error) {
+    showError(error);
+  }
   if (!trusted) {
     refreshAuthorization();
   }
@@ -63,16 +71,18 @@ async function completePairing() {
       throw new Error("二维码已过期，请用平板扫描新二维码");
     }
     const host = normalizeReceiverHost(address.value);
-    await ensureHostPermission(host);
     const senderId = await getOrCreateSenderId();
-    const trusted = await pairReceiver({
-      host,
-      authorization,
-      senderId
+    const trusted = await withHostPermission(host, async () => {
+      const paired = await pairReceiver({
+        host,
+        authorization,
+        senderId
+      });
+      return saveTrustedReceiver(paired);
     });
-    await saveTrustedReceiver(trusted);
     authorization = null;
     renderTrusted(trusted);
+    await cleanupUnusedManualHostPermissions([trusted.host]);
   } catch (error) {
     showError(error);
   } finally {
@@ -102,12 +112,12 @@ async function startCapture() {
 }
 
 async function forgetPairing() {
-  const trusted = await getTrustedReceiver();
-  await forgetTrustedReceiver();
-  if (trusted?.host !== DEFAULT_RECEIVER_HOST) {
-    await chrome.permissions.remove({
-      origins: [`http://${trusted.host}/*`]
-    });
+  errorMessage.hidden = true;
+  try {
+    await forgetTrustedReceiver();
+    await cleanupUnusedManualHostPermissions([]);
+  } catch (error) {
+    showError(error);
   }
   renderTrusted(null);
   refreshAuthorization();
@@ -121,28 +131,14 @@ async function updateTrustedHost() {
       throw new Error("没有可更新的已配对平板");
     }
     const host = normalizeReceiverHost(pairedHost.value);
-    await ensureHostPermission(host);
-    const previousHost = trusted.host;
-    const updated = await saveTrustedReceiver({ ...trusted, host });
-    if (previousHost !== DEFAULT_RECEIVER_HOST && previousHost !== host) {
-      await chrome.permissions.remove({
-        origins: [`http://${previousHost}/*`]
-      });
-    }
+    const updated = await withHostPermission(
+      host,
+      () => saveTrustedReceiver({ ...trusted, host })
+    );
     renderTrusted(updated);
+    await cleanupUnusedManualHostPermissions([updated.host]);
   } catch (error) {
     showError(error);
-  }
-}
-
-async function ensureHostPermission(host) {
-  if (host === DEFAULT_RECEIVER_HOST) {
-    return;
-  }
-  const origin = `http://${host}/*`;
-  const granted = await chrome.permissions.request({ origins: [origin] });
-  if (!granted) {
-    throw new Error("需要允许访问你刚输入的平板私网地址");
   }
 }
 
