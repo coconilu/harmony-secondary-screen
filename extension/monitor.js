@@ -14,11 +14,11 @@ const elements = {
   queueSize: document.querySelector("#queue-size-value"),
   encodeErrors: document.querySelector("#encode-errors-value"),
   encoderConfig: document.querySelector("#encoder-config"),
-  relayStatus: document.querySelector("#relay-status-value"),
-  relaySent: document.querySelector("#relay-sent-value"),
-  relayReceived: document.querySelector("#relay-received-value"),
-  relayDropped: document.querySelector("#relay-dropped-value"),
-  relayErrors: document.querySelector("#relay-errors-value"),
+  directStatus: document.querySelector("#direct-status-value"),
+  directSent: document.querySelector("#direct-sent-value"),
+  directReceived: document.querySelector("#direct-received-value"),
+  directDropped: document.querySelector("#direct-dropped-value"),
+  directErrors: document.querySelector("#direct-errors-value"),
   log: document.querySelector("#event-log"),
   stop: document.querySelector("#stop-button"),
   reset: document.querySelector("#reset-button"),
@@ -107,23 +107,16 @@ async function exportResult() {
     averageBitrateKbps: state.averageBitrateKbps,
     lastEncodedAgeMs: state.lastEncodedAgeMs,
     encoderConfig: state.encoderConfig,
-    relayConnected: state.relayConnected,
-    relaySentFrames: state.relaySentFrames,
-    relaySentBytes: state.relaySentBytes,
-    relayReceivedFrames: state.relayReceivedFrames,
-    relayReceivedBytes: state.relayReceivedBytes,
-    relayKeyFrames: state.relayKeyFrames,
-    relayInvalidMessages: state.relayInvalidMessages,
-    relayDroppedFrames: state.relayDroppedFrames,
-    relayBufferedAmount: state.relayBufferedAmount,
-    relayErrors: state.relayErrors,
-    relayLastErrorCode: state.relayLastErrorCode,
-    relayLastErrorDetail: state.relayLastErrorDetail,
-    lanConnected: state.lanConnected,
-    lanSentFrames: state.lanSentFrames,
-    lanSentBytes: state.lanSentBytes,
-    lanSentDatagrams: state.lanSentDatagrams,
-    lanSendErrors: state.lanSendErrors,
+    directConnected: state.directConnected,
+    directSentFrames: state.directSentFrames,
+    directSentBytes: state.directSentBytes,
+    directDroppedFrames: state.directDroppedFrames,
+    directBufferedAmount: state.directBufferedAmount,
+    directErrors: state.directErrors,
+    directKeyframeRequests: state.directKeyframeRequests,
+    lastPongAt: state.lastPongAt,
+    receiverReceivedFrames: state.receiverReceivedFrames,
+    receiverReceivedBytes: state.receiverReceivedBytes,
     receiverDecodedFrames: state.receiverDecodedFrames,
     receiverDroppedFrames: state.receiverDroppedFrames,
     startedAt: state.startedAt,
@@ -179,18 +172,18 @@ function render(state) {
     state.encodeErrors || 0
   ).toLocaleString("zh-CN");
   elements.encoderConfig.textContent = formatEncoderConfig(state.encoderConfig);
-  elements.relayStatus.textContent = getRelayStatusText(state);
-  elements.relaySent.textContent = Number(
-    state.lanSentFrames || 0
+  elements.directStatus.textContent = getDirectStatusText(state);
+  elements.directSent.textContent = Number(
+    state.directSentFrames || 0
   ).toLocaleString("zh-CN");
-  elements.relayReceived.textContent = Number(
+  elements.directReceived.textContent = Number(
     state.receiverDecodedFrames || 0
   ).toLocaleString("zh-CN");
-  elements.relayDropped.textContent = Number(
-    state.receiverDroppedFrames || 0
+  elements.directDropped.textContent = Number(
+    (state.directDroppedFrames || 0) + (state.receiverDroppedFrames || 0)
   ).toLocaleString("zh-CN");
-  elements.relayErrors.textContent = Number(
-    (state.relayErrors || 0) + (state.lanSendErrors || 0)
+  elements.directErrors.textContent = Number(
+    state.directErrors || 0
   ).toLocaleString("zh-CN");
 
   const canStop = ["starting", "capturing"].includes(state.mode);
@@ -230,11 +223,11 @@ function formatEncoderConfig(config) {
     .join(" · ");
 }
 
-function getRelayStatusText(state) {
-  if (state.relayConnected && state.lanConnected) {
+function getDirectStatusText(state) {
+  if (state.directConnected) {
     return "已连接";
   }
-  if (state.mode === "stopped" && Number(state.lanSentFrames || 0) > 0) {
+  if (state.mode === "stopped" && Number(state.directSentFrames || 0) > 0) {
     return "已停止";
   }
   if (state.mode === "error") {
@@ -310,23 +303,16 @@ function createFallbackState() {
     encodeQueueSize: 0,
     encodeErrors: 0,
     encoderConfig: null,
-    relayConnected: false,
-    relaySentFrames: 0,
-    relaySentBytes: 0,
-    relayReceivedFrames: 0,
-    relayReceivedBytes: 0,
-    relayKeyFrames: 0,
-    relayInvalidMessages: 0,
-    relayDroppedFrames: 0,
-    relayBufferedAmount: 0,
-    relayErrors: 0,
-    relayLastErrorCode: null,
-    relayLastErrorDetail: null,
-    lanConnected: false,
-    lanSentFrames: 0,
-    lanSentBytes: 0,
-    lanSentDatagrams: 0,
-    lanSendErrors: 0,
+    directConnected: false,
+    directSentFrames: 0,
+    directSentBytes: 0,
+    directDroppedFrames: 0,
+    directBufferedAmount: 0,
+    directErrors: 0,
+    directKeyframeRequests: 0,
+    lastPongAt: null,
+    receiverReceivedFrames: 0,
+    receiverReceivedBytes: 0,
     receiverDecodedFrames: 0,
     receiverDroppedFrames: 0,
     error: null,

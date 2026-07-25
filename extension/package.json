@@ -1,9 +1,12 @@
 {
   "name": "harmony-web-companion-capture-probe",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "scripts": {
     "test": "node --test tests/*.test.js"
+  },
+  "devDependencies": {
+    "ws": "^8.21.1"
   }
 }

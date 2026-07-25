@@ -75,26 +75,26 @@
       </section>
       <p id="encoder-config" class="encoder-config">等待 H.264 能力探测</p>
 
-      <section class="metrics relay-metrics" aria-label="平板传输指标">
+      <section class="metrics direct-metrics" aria-label="平板直连传输指标">
         <div class="metric">
           <span>平板链路</span>
-          <strong id="relay-status-value">等待</strong>
+          <strong id="direct-status-value">等待</strong>
         </div>
         <div class="metric">
           <span>局域网发送</span>
-          <strong id="relay-sent-value">0</strong>
+          <strong id="direct-sent-value">0</strong>
         </div>
         <div class="metric">
           <span>平板已显示</span>
-          <strong id="relay-received-value">0</strong>
+          <strong id="direct-received-value">0</strong>
         </div>
         <div class="metric">
           <span>平板丢弃</span>
-          <strong id="relay-dropped-value">0</strong>
+          <strong id="direct-dropped-value">0</strong>
         </div>
         <div class="metric">
           <span>传输错误</span>
-          <strong id="relay-errors-value">0</strong>
+          <strong id="direct-errors-value">0</strong>
         </div>
       </section>
 
@@ -122,7 +122,7 @@
 
       <footer>
         <span class="privacy-icon" aria-hidden="true">✓</span>
-        本地入口仅监听 127.0.0.1；局域网只主动连接已配对平板；不记录网页内容
+        仅直连已配对平板；不扫描局域网，不记录网页内容
       </footer>
     </main>
     <script type="module" src="monitor.js"></script>

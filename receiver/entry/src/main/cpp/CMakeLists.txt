@@ -8,6 +8,7 @@ add_library(hss_receiver SHARED
   napi_init.cpp
   native_protocol.cpp
   receiver_session.cpp
+  websocket_protocol.cpp
 )
 
 target_compile_options(hss_receiver PRIVATE -Wall -Wextra -Werror -Wno-unused-command-line-argument)

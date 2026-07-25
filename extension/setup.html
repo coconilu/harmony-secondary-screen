@@ -17,34 +17,40 @@
         </div>
       </header>
 
-      <form id="receiver-form">
-        <label for="receiver-address">平板 Wi-Fi IPv4</label>
+      <p id="error-message" class="error" role="alert" hidden></p>
+
+      <section id="paired-panel" hidden>
+        <p class="success">已配对 HarmonyOS Receiver</p>
+        <p id="paired-address" class="muted"></p>
+        <label for="paired-host">连接地址</label>
+        <input id="paired-host" autocomplete="off">
+        <button id="update-host-button" class="secondary" type="button">更新地址（不重新配对）</button>
+        <button id="start-button" type="button">发送当前标签页</button>
+        <button id="forget-button" class="secondary" type="button">忘记这台平板</button>
+      </section>
+
+      <form id="pairing-form">
+        <div class="qr-wrap">
+          <canvas id="pairing-qr" width="224" height="224" aria-label="一次性配对二维码"></canvas>
+        </div>
+        <p class="muted">在平板 Receiver 点击“扫码配对”，二维码 60 秒内有效且只能使用一次。</p>
+
+        <label for="receiver-address">Receiver 地址</label>
         <input
           id="receiver-address"
           name="receiver-address"
-          inputmode="decimal"
           autocomplete="off"
-          placeholder="例如 192.168.3.112"
+          value="harmony-web-companion.local"
           required>
 
-        <label for="pairing-code">六位一次性配对码</label>
-        <input
-          id="pairing-code"
-          name="pairing-code"
-          inputmode="numeric"
-          autocomplete="one-time-code"
-          maxlength="6"
-          pattern="[0-9]{6}"
-          placeholder="平板当前显示的配对码"
-          required>
-
-        <p id="error-message" class="error" role="alert" hidden></p>
-        <button id="start-button" type="submit">发送当前标签页</button>
+        <p id="short-code" class="short-code"></p>
+        <button id="pair-button" type="submit">已扫码，连接平板</button>
+        <button id="refresh-button" class="secondary" type="button">刷新二维码</button>
       </form>
 
       <footer>
         <strong>声音仍从 PC 输出</strong>
-        <span>配对码不会保存；仅允许可信局域网地址</span>
+        <span>不扫描局域网；仅允许固定 .local 或用户输入的私网 IPv4</span>
       </footer>
     </main>
     <script type="module" src="setup.js"></script>

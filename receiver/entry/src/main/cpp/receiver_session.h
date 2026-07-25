@@ -3,6 +3,7 @@
 #include "bounded_control_queue.h"
 #include "decoder_state.h"
 #include "native_protocol.h"
+#include "websocket_protocol.h"
 
 #include <ace/xcomponent/native_interface_xcomponent.h>
 #include <multimedia/player_framework/native_avcodec_videodecoder.h>
@@ -11,7 +12,6 @@
 #include <chrono>
 #include <cstdint>
 #include <deque>
-#include <map>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -23,12 +23,21 @@ struct StatusSnapshot {
   std::string state;
   std::string detail;
   std::string listenAddress;
-  std::string pairingCode;
   std::string pairedAddress;
+  std::string deviceId;
   bool listening = false;
   bool connected = false;
+  bool paired = false;
   std::uint64_t framesDecoded = 0;
   std::uint64_t framesDropped = 0;
+  std::uint64_t receivedFrames = 0;
+};
+
+struct PairingRecord {
+  std::string deviceId;
+  std::string senderId;
+  std::string credential;
+  std::uint64_t version = 0;
 };
 
 class ReceiverSession final {
@@ -40,7 +49,14 @@ class ReceiverSession final {
 
   bool Start(std::string listenAddress);
   void Stop();
+  bool ConfigureTrust(std::string deviceId, std::string senderId, std::string credential,
+                      std::uint64_t version);
+  bool AuthorizeQr(std::string sessionId, std::string token, std::int64_t expiresAtMs);
+  bool AuthorizeShortCode(std::string shortCode);
+  void ForgetDevice();
   StatusSnapshot Status() const;
+  PairingRecord Pairing() const;
+  std::vector<std::string> WifiAddresses() const;
 
   void OnSurfaceCreated(OH_NativeXComponent* component, void* window);
   void OnSurfaceChanged(OH_NativeXComponent* component, void* window);
@@ -58,24 +74,15 @@ class ReceiverSession final {
     std::uint64_t timestampUs = 0;
     DecoderInputKind kind = DecoderInputKind::kFrame;
   };
-  struct Assembly {
-    std::uint16_t fragmentCount = 0;
-    std::uint16_t flags = 0;
-    std::uint64_t timestampUs = 0;
-    std::chrono::steady_clock::time_point created;
-    std::vector<std::vector<std::byte>> fragments;
-    std::vector<bool> received;
-    std::size_t receivedCount = 0;
-  };
-
   void NetworkLoop();
-  bool OpenListeners();
-  bool AcceptAndPair();
+  bool OpenListener();
+  bool AcceptWebSocket();
+  bool ReadUpgrade(int client);
+  bool AuthenticateConnection();
   bool RunConnectedSession();
   bool SendControl(std::string_view json);
   bool HandleControl(std::string_view json);
   void HandleVideo(const std::byte* data, std::size_t size);
-  void SweepAssemblies();
   void RequestKeyframe();
   void CloseControlSocket();
   void CloseSockets();
@@ -108,21 +115,27 @@ class ReceiverSession final {
   std::string paired_address_;
   bool listening_ = false;
   bool connected_ = false;
-  std::string pairing_code_;
-  std::string receiver_nonce_;
-  std::string session_id_;
-  std::uint32_t session_short_ = 0;
-  std::chrono::steady_clock::time_point pairing_expires_at_;
+  std::string device_id_;
+  std::string trusted_sender_id_;
+  std::string trusted_credential_;
+  std::uint64_t pairing_record_version_ = 0;
+  std::string pending_session_id_;
+  std::string pending_token_;
+  std::string pending_short_code_;
+  std::string consumed_session_id_;
+  std::chrono::system_clock::time_point pairing_expires_at_;
+  std::uint32_t latest_source_epoch_ = 0;
+  std::uint32_t active_source_epoch_ = 0;
   std::atomic<bool> desired_{false};
   std::thread worker_;
   std::atomic<int> listener_socket_{-1};
   std::atomic<int> control_socket_{-1};
-  std::atomic<int> video_socket_{-1};
   std::timed_mutex send_mutex_;
   BoundedControlQueue telemetry_queue_{8};
   std::atomic<bool> keyframe_request_pending_{false};
-  protocol::ControlDecoder control_decoder_;
-  std::map<std::uint32_t, Assembly> assemblies_;
+  websocket::Decoder websocket_decoder_;
+  std::atomic<std::uint64_t> received_frames_{0};
+  std::atomic<std::uint64_t> received_bytes_{0};
 
   std::mutex decoder_lifecycle_mutex_;
   std::mutex decoder_queue_mutex_;

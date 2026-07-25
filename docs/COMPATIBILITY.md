@@ -1,66 +1,52 @@
 # 兼容性策略
 
-## 原则
+## 按能力，不按型号或网站
 
-产品不按设备型号或网站名称判断功能，而是按运行时能力协商：
-
-- Microsoft Edge 扩展 API 与版本；
-- `tabCapture`、offscreen document、MediaStreamTrackProcessor 和 WebCodecs 可用性；
-- H.264 Annex-B `VideoEncoder.isConfigSupported()` 结果；
-- HarmonyOS API、`video/avc` 硬件解码和 Surface 输出能力；
-- 屏幕尺寸、Wi-Fi 吞吐、抖动和丢包率。
-
-型号、GPU 和网站只用于记录可重复的测试证据，不得成为业务分支。
-
-## 首个验证基线
-
-| 项目 | 值 |
+| 层 | 运行时门禁 |
 | --- | --- |
-| PC | Windows 11 x64 |
-| 浏览器 | Microsoft Edge 当前稳定版 |
-| 捕获 | 用户主动选择的单个标签页，仅视频 |
-| 基线编码 | H.264 Annex-B `1280×720 @ 30 fps` |
-| 平板 | HUAWEI MatePad Pro；型号作为首个测试样本 |
-| 系统 | HarmonyOS 6.1.0 / API 23 |
-| 网络 | 同一可信家庭 5 GHz Wi-Fi |
-| 音频 | Windows 原输出设备，不传输到平板 |
+| Edge | MV3、`tabCapture`、offscreen、MediaStreamTrackProcessor、WebCodecs |
+| 编码 | H.264 `avc1.42001f`、Annex-B、1280×720 @ 30 fps |
+| 局域网 | Edge Local Network Access、WebSocket、私网 Wi-Fi |
+| HarmonyOS | API 23+、ScanKit、NetworkKit mDNS、Preferences、AVCodec、XComponent |
 
-## 初始支持范围
+型号、GPU、网站和 AP 只进入测试记录，不得成为业务分支。
 
-- Windows 11 x64 + Microsoft Edge Manifest V3；
-- `tabCapture` 和 offscreen API 可用；
-- H.264 Annex-B 720p30 编码探测通过；
-- HarmonyOS 6.1.0 / API 23 及以上；
-- 平板支持 H.264 Surface 硬件解码；
-- PC 与平板位于同一用户确认的可信局域网。
+## 地址与 Local Network Access
 
-增强能力 `1920×1080 @ 30 fps` 必须双方探测通过后协商，不能仅因某个 GPU 或平板宣称支持就默认
-启用。
+扩展持久 host permission 仅包含 `http://harmony-web-companion.local/*`。手动 IP 回退使用
+`http://*/*` 的 optional host 声明，但只在用户输入并确认具体私网 IPv4 后请求该单一 origin。
 
-## 页面兼容性
+Edge 143+ 的 Local Network Access 行为仍可能变化，必须在目标 Edge 版本验证 WebSocket。不得用
+`<all_urls>` 或网络扫描规避。
 
-| 页面类型 | v0.1 立场 |
+HarmonyOS DNS-SD 服务实例注册不等于裸 `.local` 主机名解析。兼容性记录必须分别报告：
+
+1. DNS-SD 注册是否成功；
+2. Windows 是否能解析 `harmony-web-companion.local`；
+3. Edge 是否允许建立对应 WebSocket；
+4. 手动私网 IPv4 是否成功。
+
+## 页面范围
+
+| 页面类型 | v0.1 |
 | --- | --- |
-| 普通 HTML5 视频 | 目标支持 |
-| Canvas/WebGL 动画 | 记录实测，不做首版承诺 |
-| 受保护 DRM/EME 视频 | 明确不支持，不绕过 |
-| 浏览器内部页、扩展页、商店页 | 受 Edge 安全限制，不支持 |
-| 整个桌面或其他应用 | 不支持 |
+| 普通 HTTP/HTTPS 页面和非 DRM 视频 | 目标支持 |
+| Canvas/WebGL | 记录实测 |
+| DRM/EME | 不支持，不绕过 |
+| 浏览器内部页、商店页、扩展页 | 不支持 |
+| 桌面或其他应用 | 不支持 |
 
-B 站只是首个真实样本。代码不得根据 `bilibili.com` 或播放器 DOM 写专用捕获路径。
+音频始终留在 PC。
 
-## 网络与 VPN
+## 网络限制
 
-Receiver 只绑定用户确认的 Wi-Fi IPv4。Relay 主动连接平板，不监听局域网地址，不修改 Windows 的
-公用/专用分类、VPN、系统代理或路由。
+Receiver 仅允许用户确认的 `wlan*` 私网或 IPv4 link-local 地址；拒绝通配、回环、VPN、蜂窝和公网。
+VPN 的“阻止局域网”可能阻止连接，产品不修改 VPN、代理、路由、防火墙或 Windows 网络分类。
 
-VPN 的“阻止局域网”或 Kill Switch 仍可能拦截平板流量。此时应在 VPN 客户端中允许本地网络访问，
-不能通过放宽 Receiver 到通配地址、关闭防火墙或修改系统路由来绕过。
+## 不能由自动化推断的结论
 
-## 不作推断
-
-- Edge 文档列出 API 不等于目标页面在最小化状态一定持续出帧；
-- WebCodecs 标准登记 H.264 不等于每台 PC 都实现 H.264 编码；
-- Receiver 编译成功不等于对应平板完成硬件解码；
-- Deskreen 可用不等于本项目的原生 Receiver、协议 v2 或音画偏移已通过；
-- 扩大到更低 HarmonyOS、其他浏览器或其他系统必须有独立构建和实机证据。
+- Receiver 构建成功不等于目标平板扫码或 AVCodec 显示成功；
+- DNS-SD API 成功不等于裸 `.local` 可解析；
+- 假 Receiver 收到 Annex-B 不等于真实 Edge/平板端到端通过；
+- 旧 Relay 的 13 分 24 秒结果不等于 HWC3 直连链路通过；
+- 短时画面不等于 #3 的 30 分钟、延迟、丢包和恢复验收。

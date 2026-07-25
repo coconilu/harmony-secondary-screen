@@ -26,13 +26,6 @@ std::uint64_t ReadU64(const std::byte* source) {
   return value;
 }
 
-void WriteU32(std::byte* target, std::uint32_t value) {
-  target[0] = static_cast<std::byte>((value >> 24U) & 0xffU);
-  target[1] = static_cast<std::byte>((value >> 16U) & 0xffU);
-  target[2] = static_cast<std::byte>((value >> 8U) & 0xffU);
-  target[3] = static_cast<std::byte>(value & 0xffU);
-}
-
 std::optional<std::size_t> ValueStart(std::string_view json, std::string_view key) {
   const std::string quoted = "\"" + std::string(key) + "\"";
   const auto keyPosition = json.find(quoted);
@@ -56,48 +49,18 @@ std::optional<VideoHeader> DecodeVideoHeader(const std::byte* data, std::size_t 
     return std::nullopt;
   }
   VideoHeader header;
-  header.flags = ReadU16(data + 6);
-  header.session = ReadU32(data + 8);
-  header.frame = ReadU32(data + 12);
-  header.fragment = ReadU16(data + 16);
-  header.fragments = ReadU16(data + 18);
-  header.payloadLength = ReadU16(data + 20);
+  header.flags = std::to_integer<std::uint8_t>(data[5]);
+  header.sourceEpoch = ReadU32(data + 8);
+  header.sequence = ReadU32(data + 12);
+  header.payloadLength = ReadU32(data + 16);
   header.timestampUs = ReadU64(data + 24);
-  if (header.fragments == 0 || header.fragment >= header.fragments ||
-      header.payloadLength > kMaxUdpPayload || ReadU16(data + 22) != 0 ||
-      (header.flags & ~(kKeyframe | kCodecConfig | kEndOfFrame)) != 0 ||
+  if (ReadU16(data + 6) != kHeaderSize || ReadU32(data + 20) != 0 ||
+      header.payloadLength == 0 || header.payloadLength > kMaxFrameBytes ||
+      (header.flags & ~kKeyframe) != 0 ||
       size != kHeaderSize + header.payloadLength) {
     return std::nullopt;
   }
   return header;
-}
-
-std::vector<std::byte> EncodeControl(std::string_view json) {
-  if (json.empty() || json.size() > kMaxControlPayload) return {};
-  std::vector<std::byte> output(4 + json.size());
-  WriteU32(output.data(), static_cast<std::uint32_t>(json.size()));
-  std::memcpy(output.data() + 4, json.data(), json.size());
-  return output;
-}
-
-bool ControlDecoder::Push(const std::byte* data, std::size_t size,
-                          std::vector<std::string>* frames) {
-  if (data == nullptr || frames == nullptr || buffer_.size() + size > kMaxControlPayload + 4U) {
-    Reset();
-    return false;
-  }
-  buffer_.insert(buffer_.end(), data, data + size);
-  while (buffer_.size() >= 4) {
-    const auto length = ReadU32(buffer_.data());
-    if (length == 0 || length > kMaxControlPayload) {
-      Reset();
-      return false;
-    }
-    if (buffer_.size() < length + 4U) break;
-    frames->emplace_back(reinterpret_cast<const char*>(buffer_.data() + 4), length);
-    buffer_.erase(buffer_.begin(), buffer_.begin() + static_cast<std::ptrdiff_t>(length + 4U));
-  }
-  return true;
 }
 
 std::optional<std::string> JsonString(std::string_view json, std::string_view key) {

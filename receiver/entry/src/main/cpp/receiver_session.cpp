@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <array>
 #include <cerrno>
+#include <charconv>
 #include <climits>
 #include <cstring>
 #include <iomanip>
@@ -26,7 +27,6 @@ namespace hss::receiver {
 namespace {
 
 constexpr std::uint16_t kControlPort = 44000;
-constexpr std::uint16_t kVideoPort = 47101;
 constexpr unsigned int kLogDomain = 0x0000;
 constexpr const char* kLogTag = "HSSReceiver";
 
@@ -50,7 +50,12 @@ bool ValidIpv4(const std::string& value, in_addr* address) {
 bool IsCurrentWifiIpv4(const std::string& value, in_addr* address) {
   if (!ValidIpv4(value, address)) return false;
   const std::uint32_t hostOrder = ntohl(address->s_addr);
-  if (hostOrder == 0 || (hostOrder >> 24U) == 127U || (hostOrder >> 28U) == 14U) {
+  const std::uint8_t first = static_cast<std::uint8_t>(hostOrder >> 24U);
+  const std::uint8_t second = static_cast<std::uint8_t>((hostOrder >> 16U) & 0xffU);
+  const bool trustedLan =
+      first == 10U || (first == 172U && second >= 16U && second <= 31U) ||
+      (first == 192U && second == 168U) || (first == 169U && second == 254U);
+  if (!trustedLan) {
     return false;
   }
   ifaddrs* interfaces = nullptr;
@@ -104,28 +109,35 @@ std::string RandomHex(std::size_t byteCount) {
   return output.str();
 }
 
-std::string RandomPairingCode() {
-  std::uint32_t value = 0;
-  constexpr std::uint32_t kRange = 1'000'000U;
-  constexpr std::uint32_t kLimit = UINT32_MAX - (UINT32_MAX % kRange);
-  do {
-    if (!RandomBytes(&value, sizeof(value))) return {};
-  } while (value >= kLimit);
-  std::ostringstream output;
-  output << std::setw(6) << std::setfill('0') << value % kRange;
-  return output.str();
-}
-
-std::uint32_t RandomSessionShort() {
-  std::uint32_t value = 0;
-  while (value == 0 && RandomBytes(&value, sizeof(value))) {
-  }
-  return value;
-}
-
 std::string Ipv4Text(const in_addr& address) {
   std::array<char, INET_ADDRSTRLEN> text{};
   return inet_ntop(AF_INET, &address, text.data(), text.size()) == nullptr ? "" : text.data();
+}
+
+bool Hex(const std::string& value, std::size_t size) {
+  return value.size() == size &&
+         std::all_of(value.begin(), value.end(), [](unsigned char character) {
+           return std::isdigit(character) != 0 ||
+                  (character >= 'a' && character <= 'f');
+         });
+}
+
+bool SenderIdValid(const std::string& value) {
+  return value.size() >= 16U && value.size() <= 64U &&
+         std::all_of(value.begin(), value.end(), [](unsigned char character) {
+           return std::isdigit(character) != 0 ||
+                  (character >= 'a' && character <= 'f') || character == '-';
+         });
+}
+
+std::string ShortCodeFromToken(const std::string& token) {
+  if (!Hex(token, 64)) return {};
+  std::uint64_t prefix = 0;
+  const auto parsed = std::from_chars(token.data(), token.data() + 12, prefix, 16);
+  if (parsed.ec != std::errc{}) return {};
+  std::ostringstream output;
+  output << std::setw(6) << std::setfill('0') << prefix % 1'000'000U;
+  return output.str();
 }
 
 }  // namespace
@@ -146,24 +158,31 @@ bool ReceiverSession::Start(std::string listenAddress) {
     return false;
   }
   Stop();
-  const std::string pairingCode = RandomPairingCode();
-  const std::string receiverNonce = RandomHex(16);
-  if (pairingCode.empty() || receiverNonce.empty()) {
-    SetState("error", "无法生成安全配对凭据", false, false);
-    return false;
+  std::string generatedDeviceId;
+  {
+    std::scoped_lock lock(state_mutex_);
+    if (device_id_.empty()) generatedDeviceId = RandomHex(16);
+  }
+  if (!generatedDeviceId.empty()) {
+    std::scoped_lock lock(state_mutex_);
+    if (device_id_.empty()) device_id_ = std::move(generatedDeviceId);
   }
   {
     std::scoped_lock lock(state_mutex_);
+    if (device_id_.empty()) {
+      state_ = "error";
+      detail_ = "无法生成设备身份";
+      listening_ = false;
+      connected_ = false;
+      return false;
+    }
     listen_address_ = std::move(listenAddress);
     paired_address_.clear();
-    pairing_code_ = pairingCode;
-    receiver_nonce_ = receiverNonce;
-    session_id_.clear();
-    session_short_ = 0;
-    pairing_expires_at_ = std::chrono::steady_clock::now() + std::chrono::minutes(5);
   }
   frames_decoded_ = 0;
   frames_dropped_ = 0;
+  received_frames_ = 0;
+  received_bytes_ = 0;
   desired_ = true;
   SetState("starting", "正在绑定已确认的 Wi-Fi 地址", false, false);
   worker_ = std::thread(&ReceiverSession::NetworkLoop, this);
@@ -176,17 +195,104 @@ void ReceiverSession::Stop() {
   if (worker_.joinable() && worker_.get_id() != std::this_thread::get_id()) {
     worker_.join();
   }
-  assemblies_.clear();
-  control_decoder_.Reset();
+  websocket_decoder_.Reset();
   telemetry_queue_.Clear();
   keyframe_request_pending_ = false;
   SetState("idle", "请输入本机 Wi-Fi IPv4", false, false);
 }
 
+bool ReceiverSession::ConfigureTrust(std::string deviceId, std::string senderId,
+                                     std::string credential, std::uint64_t version) {
+  if (!Hex(deviceId, 32) ||
+      ((!senderId.empty() || !credential.empty()) &&
+       (!SenderIdValid(senderId) || !Hex(credential, 64)))) {
+    return false;
+  }
+  std::scoped_lock lock(state_mutex_);
+  device_id_ = std::move(deviceId);
+  trusted_sender_id_ = std::move(senderId);
+  trusted_credential_ = std::move(credential);
+  pairing_record_version_ = version;
+  return true;
+}
+
+bool ReceiverSession::AuthorizeQr(std::string sessionId, std::string token,
+                                  std::int64_t expiresAtMs) {
+  const auto now = std::chrono::system_clock::now();
+  const auto expiry = std::chrono::system_clock::time_point(
+      std::chrono::milliseconds(expiresAtMs));
+  if (!Hex(sessionId, 32) || !Hex(token, 64) || expiry <= now ||
+      expiry > now + std::chrono::seconds(65)) {
+    return false;
+  }
+  std::scoped_lock lock(state_mutex_);
+  pending_session_id_ = std::move(sessionId);
+  pending_token_ = std::move(token);
+  pending_short_code_.clear();
+  pairing_expires_at_ = expiry;
+  detail_ = "一次性扫码授权已就绪，等待 Edge 连接";
+  return true;
+}
+
+bool ReceiverSession::AuthorizeShortCode(std::string shortCode) {
+  if (shortCode.size() != 6U ||
+      !std::all_of(shortCode.begin(), shortCode.end(),
+                   [](unsigned char character) { return std::isdigit(character) != 0; })) {
+    return false;
+  }
+  std::scoped_lock lock(state_mutex_);
+  pending_session_id_.clear();
+  pending_token_.clear();
+  pending_short_code_ = std::move(shortCode);
+  pairing_expires_at_ = std::chrono::system_clock::now() + std::chrono::seconds(60);
+  detail_ = "一次性短码授权已就绪，等待 Edge 连接";
+  return true;
+}
+
+void ReceiverSession::ForgetDevice() {
+  {
+    std::scoped_lock lock(state_mutex_);
+    trusted_sender_id_.clear();
+    trusted_credential_.clear();
+    pending_session_id_.clear();
+    pending_token_.clear();
+    pending_short_code_.clear();
+    ++pairing_record_version_;
+    detail_ = "已忘记电脑，需要重新扫码配对";
+  }
+  CloseControlSocket();
+}
+
 StatusSnapshot ReceiverSession::Status() const {
   std::scoped_lock lock(state_mutex_);
-  return {state_, detail_, listen_address_, pairing_code_, paired_address_, listening_,
-          connected_, frames_decoded_.load(), frames_dropped_.load()};
+  return {state_, detail_, listen_address_, paired_address_, device_id_, listening_,
+          connected_, !trusted_sender_id_.empty(), frames_decoded_.load(),
+          frames_dropped_.load(), received_frames_.load()};
+}
+
+PairingRecord ReceiverSession::Pairing() const {
+  std::scoped_lock lock(state_mutex_);
+  return {device_id_, trusted_sender_id_, trusted_credential_, pairing_record_version_};
+}
+
+std::vector<std::string> ReceiverSession::WifiAddresses() const {
+  std::vector<std::string> addresses;
+  ifaddrs* interfaces = nullptr;
+  if (getifaddrs(&interfaces) != 0) return addresses;
+  for (const ifaddrs* item = interfaces; item != nullptr; item = item->ifa_next) {
+    if (item->ifa_addr == nullptr || item->ifa_addr->sa_family != AF_INET ||
+        item->ifa_name == nullptr || (item->ifa_flags & IFF_UP) == 0 ||
+        (item->ifa_flags & IFF_LOOPBACK) != 0 ||
+        std::strncmp(item->ifa_name, "wlan", 4) != 0) {
+      continue;
+    }
+    const auto* candidate = reinterpret_cast<const sockaddr_in*>(item->ifa_addr);
+    const std::string text = Ipv4Text(candidate->sin_addr);
+    in_addr verified{};
+    if (IsCurrentWifiIpv4(text, &verified)) addresses.push_back(text);
+  }
+  freeifaddrs(interfaces);
+  return addresses;
 }
 
 void ReceiverSession::SetState(std::string state, std::string detail, bool listening,
@@ -199,29 +305,26 @@ void ReceiverSession::SetState(std::string state, std::string detail, bool liste
 }
 
 void ReceiverSession::NetworkLoop() {
-  if (!OpenListeners()) {
-    if (desired_) SetState("error", "无法在该 Wi-Fi 地址绑定 44000/47101", false, false);
+  if (!OpenListener()) {
+    if (desired_) SetState("error", "无法在该 Wi-Fi 地址绑定 44000", false, false);
     CloseSockets();
     return;
   }
-  SetState("listening", "等待 Windows 发送端输入配对码", true, false);
-  while (desired_ && !AcceptAndPair()) {
-  }
-  if (desired_) {
-    RunConnectedSession();
+  SetState("listening", "等待已配对 Edge；首次使用请扫码或输入短码", true, false);
+  while (desired_) {
+    AcceptWebSocket();
+    CloseControlSocket();
+    websocket_decoder_.Reset();
+    if (desired_) {
+      SetState("listening", "等待已配对 Edge；首次使用请扫码或输入短码", true, false);
+    }
   }
   CloseSockets();
-  assemblies_.clear();
-  control_decoder_.Reset();
   telemetry_queue_.Clear();
   keyframe_request_pending_ = false;
-  if (desired_) {
-    desired_ = false;
-    SetState("stopped", "会话已结束；请重新开始接收以生成新配对码", false, false);
-  }
 }
 
-bool ReceiverSession::OpenListeners() {
+bool ReceiverSession::OpenListener() {
   std::string addressText;
   {
     std::scoped_lock lock(state_mutex_);
@@ -244,21 +347,10 @@ bool ReceiverSession::OpenListeners() {
     return false;
   }
 
-  const int udp = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-  if (udp < 0) return false;
-  video_socket_ = udp;
-  setsockopt(udp, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
-  sockaddr_in udpAddress{};
-  udpAddress.sin_family = AF_INET;
-  udpAddress.sin_addr = address;
-  udpAddress.sin_port = htons(kVideoPort);
-  if (bind(udp, reinterpret_cast<sockaddr*>(&udpAddress), sizeof(udpAddress)) != 0) {
-    return false;
-  }
   return true;
 }
 
-bool ReceiverSession::AcceptAndPair() {
+bool ReceiverSession::AcceptWebSocket() {
   const int listener = listener_socket_.load();
   if (listener < 0) return false;
   fd_set set;
@@ -272,74 +364,153 @@ bool ReceiverSession::AcceptAndPair() {
   socklen_t peerSize = sizeof(peer);
   const int client = accept(listener, reinterpret_cast<sockaddr*>(&peer), &peerSize);
   if (client < 0) return false;
+  const std::uint32_t peerHost = ntohl(peer.sin_addr.s_addr);
+  const std::uint8_t first = static_cast<std::uint8_t>(peerHost >> 24U);
+  const std::uint8_t second = static_cast<std::uint8_t>((peerHost >> 16U) & 0xffU);
+  const bool privatePeer =
+      first == 10U || (first == 172U && second >= 16U && second <= 31U) ||
+      (first == 192U && second == 168U) || (first == 169U && second == 254U);
+  if (!privatePeer) {
+    close(client);
+    return false;
+  }
   control_socket_ = client;
-  control_decoder_.Reset();
+  {
+    std::scoped_lock lock(state_mutex_);
+    paired_address_ = Ipv4Text(peer.sin_addr);
+  }
+  if (!ReadUpgrade(client) || !AuthenticateConnection()) return false;
+  return RunConnectedSession();
+}
 
-  bool helloSeen = false;
-  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+bool ReceiverSession::ReadUpgrade(int client) {
+  std::string request;
+  std::array<char, 2048> buffer{};
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (request.find("\r\n\r\n") == std::string::npos &&
+         request.size() < 16U * 1024U && std::chrono::steady_clock::now() < deadline) {
+    const ssize_t count = recv(client, buffer.data(), buffer.size(), 0);
+    if (count <= 0) return false;
+    request.append(buffer.data(), static_cast<std::size_t>(count));
+  }
+  std::string response;
+  if (!websocket::BuildUpgradeResponse(request, &response)) return false;
+  return send(client, response.data(), response.size(), MSG_NOSIGNAL) ==
+         static_cast<ssize_t>(response.size());
+}
+
+bool ReceiverSession::AuthenticateConnection() {
+  const int socket = control_socket_.load();
+  if (socket < 0) return false;
   std::array<std::byte, 8192> buffer{};
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
   while (desired_ && std::chrono::steady_clock::now() < deadline) {
     fd_set readSet;
     FD_ZERO(&readSet);
-    FD_SET(client, &readSet);
-    timeval readTimeout{0, 100'000};
-    const int readable = select(client + 1, &readSet, nullptr, nullptr, &readTimeout);
-    if (readable < 0 && errno != EINTR) break;
-    if (readable <= 0) continue;
-    const ssize_t count = recv(client, buffer.data(), buffer.size(), 0);
-    if (count <= 0) break;
-    std::vector<std::string> frames;
-    if (!control_decoder_.Push(buffer.data(), static_cast<std::size_t>(count), &frames)) break;
-    for (const auto& json : frames) {
-      const auto type = protocol::JsonString(json, "type");
-      const auto version = protocol::JsonInteger(json, "protocol");
-      if (version != protocol::kVersion) {
-        SendControl(R"({"type":"error","code":"protocol_mismatch"})");
-        CloseControlSocket();
+    FD_SET(socket, &readSet);
+    timeval timeout{0, 100'000};
+    const int ready = select(socket + 1, &readSet, nullptr, nullptr, &timeout);
+    if (ready < 0 && errno != EINTR) return false;
+    if (ready <= 0) continue;
+    const ssize_t count = recv(socket, buffer.data(), buffer.size(), 0);
+    if (count <= 0) return false;
+    std::vector<websocket::Message> messages;
+    if (!websocket_decoder_.Push(buffer.data(), static_cast<std::size_t>(count), &messages)) {
+      return false;
+    }
+    for (const auto& message : messages) {
+      if (message.opcode != websocket::Opcode::kText) return false;
+      const std::string json(reinterpret_cast<const char*>(message.payload.data()),
+                             message.payload.size());
+      if (protocol::JsonInteger(json, "protocol") != protocol::kVersion) {
+        SendControl(R"({"type":"error","protocol":3,"code":"protocol_mismatch"})");
         return false;
       }
-      if (type == "hello") {
-        std::string nonce;
-        std::int64_t expires = 0;
+      const auto type = protocol::JsonString(json, "type");
+      if (type == "pair") {
+        const std::string sessionId = protocol::JsonString(json, "sessionId").value_or("");
+        const std::string token = protocol::JsonString(json, "token").value_or("");
+        const std::string senderId = protocol::JsonString(json, "senderId").value_or("");
+        std::string error;
+        std::string deviceId;
+        std::string credential;
         {
           std::scoped_lock lock(state_mutex_);
-          nonce = receiver_nonce_;
-          expires = std::max<std::int64_t>(
-              0, std::chrono::duration_cast<std::chrono::seconds>(
-                     pairing_expires_at_ - std::chrono::steady_clock::now()).count());
+          const auto now = std::chrono::system_clock::now();
+          if (sessionId == consumed_session_id_) {
+            error = "authorization_replayed";
+          } else if (now >= pairing_expires_at_) {
+            error = "authorization_expired";
+          } else {
+            const bool qrMatch = !pending_session_id_.empty() &&
+                                 sessionId == pending_session_id_ && token == pending_token_;
+            const bool shortMatch = !pending_short_code_.empty() &&
+                                    ShortCodeFromToken(token) == pending_short_code_;
+            if (!qrMatch && !shortMatch) error = "pairing_failed";
+          }
+          if (error.empty() && !SenderIdValid(senderId)) {
+            error = "pairing_failed";
+          }
+          if (error.empty()) {
+            credential = RandomHex(32);
+            if (credential.empty()) {
+              error = "pairing_failed";
+            } else {
+              if (device_id_.empty()) device_id_ = RandomHex(16);
+              deviceId = device_id_;
+              trusted_sender_id_ = senderId;
+              trusted_credential_ = credential;
+              consumed_session_id_ = sessionId;
+              pending_session_id_.clear();
+              pending_token_.clear();
+              pending_short_code_.clear();
+              ++pairing_record_version_;
+            }
+          }
+        }
+        if (!error.empty()) {
+          return SendControl("{\"type\":\"error\",\"protocol\":3,\"code\":\"" + error + "\"}") &&
+                 false;
         }
         std::ostringstream reply;
-        reply << "{\"type\":\"hello\",\"protocol\":2,\"receiverNonce\":\""
-              << protocol::EscapeJson(nonce) << "\",\"pairingExpiresInSec\":" << expires << "}";
-        if (!SendControl(reply.str())) {
-          CloseControlSocket();
-          return false;
-        }
-        helloSeen = true;
-        continue;
-      }
-      if (type != "pair" || !helloSeen) {
-        CloseControlSocket();
+        reply << "{\"type\":\"paired\",\"protocol\":3,\"deviceId\":\""
+              << protocol::EscapeJson(deviceId) << "\",\"credential\":\""
+              << protocol::EscapeJson(credential) << "\"}";
+        SendControl(reply.str());
+        SetState("paired", "配对成功，凭据将在应用沙箱中保存", true, false);
         return false;
       }
-
-      std::string expectedCode;
-      std::string expectedNonce;
-      std::chrono::steady_clock::time_point expiry;
+      if (type != "auth") {
+        SendControl(R"({"type":"error","protocol":3,"code":"not_paired"})");
+        return false;
+      }
+      const std::string senderId = protocol::JsonString(json, "senderId").value_or("");
+      const std::string deviceId = protocol::JsonString(json, "deviceId").value_or("");
+      const std::string credential = protocol::JsonString(json, "credential").value_or("");
+      const auto epoch = protocol::JsonInteger(json, "sourceEpoch");
+      bool trusted = false;
+      bool stale = false;
+      bool epochChanged = false;
       {
         std::scoped_lock lock(state_mutex_);
-        expectedCode = pairing_code_;
-        expectedNonce = receiver_nonce_;
-        expiry = pairing_expires_at_;
+        trusted = !trusted_sender_id_.empty() && senderId == trusted_sender_id_ &&
+                  deviceId == device_id_ && credential == trusted_credential_;
+        stale = !epoch || *epoch <= 0 || *epoch > UINT32_MAX ||
+                !protocol::IsAcceptedSourceEpoch(static_cast<std::uint32_t>(*epoch),
+                                                 latest_source_epoch_);
+        if (trusted && !stale) {
+          const auto accepted = static_cast<std::uint32_t>(*epoch);
+          epochChanged = accepted != latest_source_epoch_;
+          latest_source_epoch_ = accepted;
+          active_source_epoch_ = accepted;
+        }
       }
-      const bool pairingValid =
-          std::chrono::steady_clock::now() < expiry &&
-          protocol::JsonString(json, "pairingCode") == expectedCode &&
-          protocol::JsonString(json, "receiverNonce") == expectedNonce &&
-          protocol::JsonString(json, "senderNonce").value_or("").size() >= 16;
-      if (!pairingValid) {
-        SendControl(R"({"type":"error","code":"pairing_failed"})");
-        CloseControlSocket();
+      if (!trusted) {
+        SendControl(R"({"type":"error","protocol":3,"code":"identity_mismatch"})");
+        return false;
+      }
+      if (stale) {
+        SendControl(R"({"type":"error","protocol":3,"code":"epoch_stale"})");
         return false;
       }
       const bool codecValid =
@@ -349,85 +520,63 @@ bool ReceiverSession::AcceptAndPair() {
           protocol::JsonInteger(json, "height") == 720 &&
           protocol::JsonInteger(json, "fps") == 30;
       if (!codecValid) {
-        SendControl(R"({"type":"error","code":"codec_unsupported"})");
-        CloseControlSocket();
+        SendControl(R"({"type":"error","protocol":3,"code":"codec_unsupported"})");
         return false;
       }
-      const std::string sessionId = RandomHex(16);
-      const std::uint32_t sessionShort = RandomSessionShort();
-      if (sessionId.empty() || sessionShort == 0) {
-        CloseControlSocket();
-        return false;
-      }
-      {
-        std::scoped_lock lock(state_mutex_);
-        session_id_ = sessionId;
-        session_short_ = sessionShort;
-        pairing_code_.clear();
-        paired_address_ = Ipv4Text(peer.sin_addr);
-      }
+      if (epochChanged) FlushDecoder();
       std::ostringstream reply;
-      reply << "{\"type\":\"session\",\"protocol\":2,\"sessionId\":\""
-            << sessionId << "\",\"sessionShort\":" << sessionShort
-            << ",\"codec\":\"video/avc\",\"avcFormat\":\"annexb\","
-               "\"width\":1280,\"height\":720,\"fps\":30,\"videoPort\":47101}";
-      if (!SendControl(reply.str())) {
-        CloseControlSocket();
-        return false;
-      }
-      SetState("connected", "已配对，等待 H.264 关键帧", true, true);
+      reply << "{\"type\":\"ready\",\"protocol\":3,\"sourceEpoch\":" << *epoch << "}";
+      if (!SendControl(reply.str())) return false;
+      SetState("connected", "Edge 已鉴权，等待 H.264 关键帧", true, true);
       keyframe_request_pending_ = true;
       return true;
     }
   }
-  CloseControlSocket();
   return false;
 }
 
 bool ReceiverSession::RunConnectedSession() {
-  int tcp = control_socket_.load();
-  int udp = video_socket_.load();
-  if (tcp < 0 || udp < 0) return false;
-  std::array<std::byte, protocol::kHeaderSize + protocol::kMaxUdpPayload> udpBuffer{};
-  std::array<std::byte, 8192> tcpBuffer{};
+  const int socket = control_socket_.load();
+  if (socket < 0) return false;
+  std::array<std::byte, 64U * 1024U> buffer{};
   while (desired_) {
     fd_set readSet;
     FD_ZERO(&readSet);
-    FD_SET(tcp, &readSet);
-    FD_SET(udp, &readSet);
-    timeval timeout{0, 100000};
-    const int ready = select(std::max(tcp, udp) + 1, &readSet, nullptr, nullptr, &timeout);
+    FD_SET(socket, &readSet);
+    timeval timeout{0, 100'000};
+    const int ready = select(socket + 1, &readSet, nullptr, nullptr, &timeout);
     if (ready < 0 && errno != EINTR) return false;
-    if (ready > 0 && FD_ISSET(tcp, &readSet)) {
-      const ssize_t count = recv(tcp, tcpBuffer.data(), tcpBuffer.size(), 0);
+    if (ready > 0) {
+      const ssize_t count = recv(socket, buffer.data(), buffer.size(), 0);
       if (count <= 0) return false;
-      std::vector<std::string> frames;
-      if (!control_decoder_.Push(tcpBuffer.data(), static_cast<std::size_t>(count), &frames)) return false;
-      for (const auto& json : frames) {
-        if (!HandleControl(json)) return false;
+      std::vector<websocket::Message> messages;
+      if (!websocket_decoder_.Push(buffer.data(), static_cast<std::size_t>(count), &messages)) {
+        return false;
       }
-    }
-    if (ready > 0 && FD_ISSET(udp, &readSet)) {
-      sockaddr_in source{};
-      socklen_t sourceSize = sizeof(source);
-      const ssize_t count = recvfrom(udp, udpBuffer.data(), udpBuffer.size(), 0,
-                                     reinterpret_cast<sockaddr*>(&source), &sourceSize);
-      std::string pairedAddress;
-      {
-        std::scoped_lock lock(state_mutex_);
-        pairedAddress = paired_address_;
-      }
-      if (count > 0 && Ipv4Text(source.sin_addr) == pairedAddress) {
-        HandleVideo(udpBuffer.data(), static_cast<std::size_t>(count));
+      for (const auto& message : messages) {
+        if (message.opcode == websocket::Opcode::kText) {
+          const std::string json(reinterpret_cast<const char*>(message.payload.data()),
+                                 message.payload.size());
+          if (!HandleControl(json)) return false;
+        } else if (message.opcode == websocket::Opcode::kBinary) {
+          HandleVideo(message.payload.data(), message.payload.size());
+        } else if (message.opcode == websocket::Opcode::kPing) {
+          const std::string payload(reinterpret_cast<const char*>(message.payload.data()),
+                                    message.payload.size());
+          const auto pong = websocket::EncodeFrame(websocket::Opcode::kPong, payload);
+          if (send(socket, pong.data(), pong.size(), MSG_NOSIGNAL) !=
+              static_cast<ssize_t>(pong.size())) return false;
+        } else if (message.opcode == websocket::Opcode::kClose) {
+          return false;
+        }
       }
     }
     if (keyframe_request_pending_.exchange(false) &&
-        !SendControl(R"({"type":"keyframe","reason":"loss_flush_or_session_start","requireCodecConfig":true})")) {
+        !SendControl(R"({"type":"keyframe","protocol":3,"reason":"loss_flush_or_session_start","requireCodecConfig":true})")) {
       return false;
     }
     std::string telemetry;
     if (telemetry_queue_.TryPop(&telemetry) && !SendControl(telemetry)) return false;
-    SweepAssemblies();
   }
   return false;
 }
@@ -438,7 +587,8 @@ bool ReceiverSession::SendControl(std::string_view json) {
   if (!lock.try_lock_until(deadline)) return false;
   const int descriptor = control_socket_.load();
   if (descriptor < 0) return false;
-  const auto frame = protocol::EncodeControl(json);
+  const auto frame = websocket::EncodeFrame(websocket::Opcode::kText, json);
+  if (frame.empty()) return false;
   std::size_t sent = 0;
   while (sent < frame.size()) {
     const ssize_t count = send(descriptor, frame.data() + sent, frame.size() - sent,
@@ -464,129 +614,58 @@ bool ReceiverSession::SendControl(std::string_view json) {
 }
 
 bool ReceiverSession::HandleControl(std::string_view json) {
+  if (protocol::JsonInteger(json, "protocol") != protocol::kVersion) return false;
   const auto type = protocol::JsonString(json, "type");
   if (type == "ping") {
-    const auto senderSend = protocol::JsonInteger(json, "senderSendUs");
-    if (!senderSend) return false;
-    const auto receiveUs = ClockMicroseconds();
+    const auto at = protocol::JsonInteger(json, "at");
+    if (!at) return false;
     std::ostringstream pong;
-    pong << "{\"type\":\"pong\",\"senderSendUs\":" << *senderSend
-         << ",\"receiverReceiveUs\":" << receiveUs
-         << ",\"receiverSendUs\":" << ClockMicroseconds() << "}";
+    pong << "{\"type\":\"pong\",\"protocol\":3,\"at\":" << *at << "}";
     return SendControl(pong.str());
   }
-  return type != "stop";
+  return type != "close";
 }
 
 void ReceiverSession::HandleVideo(const std::byte* data, std::size_t size) {
   const auto header = protocol::DecodeVideoHeader(data, size);
-  std::uint32_t expectedSession = 0;
+  std::uint32_t activeEpoch = 0;
   {
     std::scoped_lock lock(state_mutex_);
-    expectedSession = session_short_;
+    activeEpoch = active_source_epoch_;
   }
-  if (!header || header->session != expectedSession) return;
-  if (assemblies_.size() >= 4 && !assemblies_.contains(header->frame)) {
-    assemblies_.erase(assemblies_.begin());
+  if (!header || header->sourceEpoch != activeEpoch) {
     ++frames_dropped_;
-  }
-  auto [iterator, inserted] = assemblies_.try_emplace(header->frame);
-  Assembly& assembly = iterator->second;
-  if (inserted) {
-    assembly.fragmentCount = header->fragments;
-    assembly.flags = header->flags & ~protocol::kEndOfFrame;
-    assembly.timestampUs = header->timestampUs;
-    assembly.created = std::chrono::steady_clock::now();
-    assembly.fragments.resize(header->fragments);
-    assembly.received.resize(header->fragments, false);
-  }
-  const bool finalFragment = header->fragment + 1U == header->fragments;
-  const bool hasEndFlag = (header->flags & protocol::kEndOfFrame) != 0;
-  if (assembly.fragmentCount != header->fragments ||
-      assembly.flags != (header->flags & ~protocol::kEndOfFrame) ||
-      assembly.timestampUs != header->timestampUs || assembly.received[header->fragment]) {
-    ++frames_dropped_;
-    assemblies_.erase(iterator);
-    RequestKeyframe();
     return;
   }
-  if (finalFragment != hasEndFlag) {
-    ++frames_dropped_;
-    assemblies_.erase(iterator);
-    RequestKeyframe();
-    return;
-  }
-  assembly.flags |= header->flags & protocol::kEndOfFrame;
-  const auto* payload = data + protocol::kHeaderSize;
-  assembly.fragments[header->fragment].assign(payload, payload + header->payloadLength);
-  assembly.received[header->fragment] = true;
-  ++assembly.receivedCount;
-  if (assembly.receivedCount != assembly.fragmentCount) return;
-
+  ++received_frames_;
+  received_bytes_ += header->payloadLength;
   const auto recoveryState = decoder_recovery_state_.load();
-  const bool keyframe = (assembly.flags & protocol::kKeyframe) != 0;
-  const bool codecConfig = (assembly.flags & protocol::kCodecConfig) != 0;
-  if (recoveryState == DecoderRecoveryState::kNeedsSyncFrame) {
-    ++frames_dropped_;
-    assemblies_.erase(iterator);
-    return;
-  }
-  if (recoveryState == DecoderRecoveryState::kNeedsCodecData &&
-      (assembly.flags & (protocol::kKeyframe | protocol::kCodecConfig)) !=
-          (protocol::kKeyframe | protocol::kCodecConfig)) {
-    ++frames_dropped_;
-    assemblies_.erase(iterator);
-    RequestKeyframe();
-    return;
-  }
-  std::size_t total = 0;
-  for (const auto& fragment : assembly.fragments) total += fragment.size();
-  if (total == 0 || total > protocol::kMaxFrameBytes ||
-      (assembly.flags & protocol::kEndOfFrame) == 0) {
-    ++frames_dropped_;
-  } else {
-    std::vector<std::byte> bytes;
-    bytes.reserve(total);
-    for (const auto& fragment : assembly.fragments) {
-      bytes.insert(bytes.end(), fragment.begin(), fragment.end());
-    }
-    if (recoveryState == DecoderRecoveryState::kNeedsCodecData) {
-      auto recovery = SplitAvcRecoveryInput(bytes);
-      if (!keyframe || !codecConfig || !recovery.complete()) {
-        ++frames_dropped_;
-        RequestKeyframe();
-      } else {
-        DecodedInput configInput{std::move(recovery.codecData), assembly.timestampUs,
-                                 DecoderInputKind::kCodecData};
-        DecodedInput syncInput{std::move(recovery.syncFrame), assembly.timestampUs,
-                               DecoderInputKind::kSyncFrame};
-        if (!SubmitRecovery(std::move(configInput), std::move(syncInput))) {
-          RequestKeyframe();
-        }
-      }
-    } else {
-      DecodedInput frame{std::move(bytes), assembly.timestampUs,
-                         keyframe ? DecoderInputKind::kSyncFrame
-                                  : DecoderInputKind::kFrame};
-      SubmitFrame(std::move(frame));
-    }
-  }
-  assemblies_.erase(iterator);
-}
-
-void ReceiverSession::SweepAssemblies() {
-  const auto deadline = std::chrono::steady_clock::now() - std::chrono::milliseconds(150);
-  bool lost = false;
-  for (auto iterator = assemblies_.begin(); iterator != assemblies_.end();) {
-    if (iterator->second.created < deadline) {
-      iterator = assemblies_.erase(iterator);
+  const bool keyframe = (header->flags & protocol::kKeyframe) != 0;
+  std::vector<std::byte> bytes(data + protocol::kHeaderSize,
+                               data + protocol::kHeaderSize + header->payloadLength);
+  if (recoveryState == DecoderRecoveryState::kNeedsCodecData) {
+    auto recovery = SplitAvcRecoveryInput(bytes);
+    if (!keyframe || !recovery.complete()) {
       ++frames_dropped_;
-      lost = true;
+      RequestKeyframe();
     } else {
-      ++iterator;
+      DecodedInput configInput{std::move(recovery.codecData), header->timestampUs,
+                               DecoderInputKind::kCodecData};
+      DecodedInput syncInput{std::move(recovery.syncFrame), header->timestampUs,
+                             DecoderInputKind::kSyncFrame};
+      if (!SubmitRecovery(std::move(configInput), std::move(syncInput))) {
+        RequestKeyframe();
+      }
     }
+  } else if (recoveryState == DecoderRecoveryState::kNeedsSyncFrame && !keyframe) {
+    ++frames_dropped_;
+    RequestKeyframe();
+  } else {
+    DecodedInput frame{std::move(bytes), header->timestampUs,
+                       keyframe ? DecoderInputKind::kSyncFrame
+                                : DecoderInputKind::kFrame};
+    SubmitFrame(std::move(frame));
   }
-  if (lost) RequestKeyframe();
 }
 
 void ReceiverSession::RequestKeyframe() {
@@ -599,7 +678,6 @@ void ReceiverSession::CloseControlSocket() {
 
 void ReceiverSession::CloseSockets() {
   CloseSocket(&control_socket_);
-  CloseSocket(&video_socket_);
   CloseSocket(&listener_socket_);
 }
 
@@ -847,10 +925,12 @@ void ReceiverSession::DecoderOutput(OH_AVCodec* decoder, std::uint32_t index,
         SetState("displaying", "首个 H.264 关键帧已由 AVCodec 显示", true, true);
       }
       std::ostringstream telemetry;
-      telemetry << "{\"type\":\"telemetry\",\"captureUs\":" << attributes.pts
+      telemetry << "{\"type\":\"telemetry\",\"protocol\":3,\"captureUs\":" << attributes.pts
                 << ",\"displayUs\":" << ClockMicroseconds()
-                << ",\"framesDecoded\":" << decoded
-                << ",\"framesDropped\":" << frames_dropped_.load() << "}";
+                << ",\"receivedFrames\":" << received_frames_.load()
+                << ",\"receivedBytes\":" << received_bytes_.load()
+                << ",\"receiverDecodedFrames\":" << decoded
+                << ",\"receiverDroppedFrames\":" << frames_dropped_.load() << "}";
       telemetry_queue_.Push(telemetry.str());
       return;
     }
