@@ -29,6 +29,12 @@ export async function acquireHostPermission(host, permissions) {
   return { origin, added: true };
 }
 
+export async function hasHostPermission(host, permissions) {
+  const origin = manualHostOrigin(host);
+  if (!origin) return true;
+  return permissionApiOrDefault(permissions).contains({ origins: [origin] });
+}
+
 export async function revokeHostPermission(origin, permissions) {
   if (!origin) return;
   const removed = await permissionApiOrDefault(permissions).remove({

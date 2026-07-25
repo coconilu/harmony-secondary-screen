@@ -1,0 +1,75 @@
+import {
+  DIRECT_PROTOCOL,
+  DEFAULT_RECEIVER_HOST,
+  parsePairingAuthorization
+} from "./direct-protocol.js";
+
+export const PENDING_PAIRING_STORAGE_KEY = "pendingPairing";
+
+function normalizePendingHost(value) {
+  const host = String(value ?? DEFAULT_RECEIVER_HOST).trim();
+  if (!host || host.length > 255 || /[\u0000-\u001f\u007f]/.test(host)) {
+    throw new Error("待配对地址无效");
+  }
+  return host;
+}
+
+function normalizePendingPairing(value, now) {
+  const candidate = value?.authorization;
+  const payload = JSON.stringify({
+    v: DIRECT_PROTOCOL,
+    sid: candidate?.sessionId,
+    token: candidate?.token,
+    exp: candidate?.expiresAt
+  });
+  const authorization = parsePairingAuthorization(payload, now);
+  if (candidate?.shortCode !== authorization.shortCode) {
+    throw new Error("待配对短码无效");
+  }
+  return {
+    host: normalizePendingHost(value.host),
+    authorization: {
+      ...authorization,
+      payload
+    }
+  };
+}
+
+export async function getPendingPairing(
+  storage = chrome.storage.session,
+  now = Date.now()
+) {
+  const result = await storage.get(PENDING_PAIRING_STORAGE_KEY);
+  if (!result[PENDING_PAIRING_STORAGE_KEY]) return null;
+  try {
+    return normalizePendingPairing(result[PENDING_PAIRING_STORAGE_KEY], now);
+  } catch {
+    await storage.remove(PENDING_PAIRING_STORAGE_KEY);
+    return null;
+  }
+}
+
+export async function savePendingPairing(
+  pending,
+  storage = chrome.storage.session,
+  now = Date.now()
+) {
+  const normalized = normalizePendingPairing(pending, now);
+  const stored = {
+    host: normalized.host,
+    authorization: {
+      sessionId: normalized.authorization.sessionId,
+      token: normalized.authorization.token,
+      shortCode: normalized.authorization.shortCode,
+      expiresAt: normalized.authorization.expiresAt
+    }
+  };
+  await storage.set({ [PENDING_PAIRING_STORAGE_KEY]: stored });
+  return normalized;
+}
+
+export async function clearPendingPairing(
+  storage = chrome.storage.session
+) {
+  await storage.remove(PENDING_PAIRING_STORAGE_KEY);
+}

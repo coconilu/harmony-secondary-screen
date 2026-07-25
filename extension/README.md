@@ -19,6 +19,11 @@
 摄像头不可用时，在平板输入扩展显示的六位短码；`.local` 失败时，在扩展输入 Receiver 显示的
 私网 IPv4。更新 IP 不重新配对。
 
+Edge 首次请求手动私网 IP 权限时可能关闭 popup。扩展会先把当前二维码授权、短码、到期时间和
+输入地址保存在 `chrome.storage.session`；60 秒内重新打开 popup 会恢复同一二维码和地址，并在
+权限已允许时提示继续连接，无需重新扫码或输入 IP。该 pending state 只存在于当前浏览器内存
+会话；配对成功、主动刷新、授权过期或浏览器会话结束后会清除或替换，不写入 `storage.local`。
+
 ## 权限说明
 
 | 权限 | 用途 |
@@ -51,7 +56,8 @@ npm test
 npm audit --audit-level=high
 ```
 
-测试包含真实本机 WebSocket 假 Receiver，并逐字节比对至少一个 Annex-B Access Unit。
+测试包含真实本机 WebSocket 假 Receiver、逐字节比对至少一个 Annex-B Access Unit，以及模拟
+权限弹窗中断和 popup 重建的模块测试。自动化不等同于 Edge + HarmonyOS 真机复验。
 
 真实 Edge、Local Network Access、裸 `.local` 与 HarmonyOS 平板仍按
 [`docs/REAL_DEVICE_TEST.md`](../docs/REAL_DEVICE_TEST.md) 验收。

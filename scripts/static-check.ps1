@@ -55,6 +55,8 @@ try {
     @{ Path = 'extension\offscreen.js'; Pattern = 'createDirectVideoMessage' },
     @{ Path = 'extension\direct-protocol.js'; Pattern = 'PAIRING_TTL_MS = 60_000' },
     @{ Path = 'extension\direct-protocol.js'; Pattern = 'sourceEpoch' },
+    @{ Path = 'extension\pending-pairing-store.js'; Pattern = 'chrome.storage.session' },
+    @{ Path = 'extension\setup.js'; Pattern = 'await updatePendingHost(host)' },
     @{ Path = 'extension\host-permissions.js'; Pattern = 'api.request({ origins: [origin] })' },
     @{ Path = 'extension\host-permissions.js'; Pattern = 'const granted = await api.getAll()' },
     @{ Path = 'extension\host-permissions.js'; Pattern = 'if (!removed)' },
@@ -83,6 +85,13 @@ try {
     throw "One-time pairing authorization must not be persisted:`n$pairingPersistence"
   }
   if ($LASTEXITCODE -ne 1) { throw "Pairing persistence scan failed: $LASTEXITCODE" }
+
+  $pendingLocalPersistence = & rg -n 'chrome\.storage\.local|storage\.local' `
+    extension\pending-pairing-store.js 2>$null
+  if ($LASTEXITCODE -eq 0) {
+    throw "Pending pairing authorization must use session storage only:`n$pendingLocalPersistence"
+  }
+  if ($LASTEXITCODE -ne 1) { throw "Pending storage boundary scan failed: $LASTEXITCODE" }
 
   $candidateCredentialFiles = & rg --files `
     -g '!out/**' `

@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
+import { createPairingAuthorization } from "../direct-protocol.js";
+
 const TRUSTED = {
   senderId: "019fa3cf-75c7-7000-8000-000000000001",
   deviceId: "00112233445566778899aabbccddeeff",
@@ -18,6 +20,7 @@ class FakeElement {
     this.width = 224;
     this.height = 224;
     this.listeners = new Map();
+    this.drawOperations = [];
   }
 
   addEventListener(type, listener) {
@@ -25,9 +28,17 @@ class FakeElement {
   }
 
   getContext() {
+    let fillStyle = "";
     return {
-      fillStyle: "",
-      fillRect() {}
+      get fillStyle() {
+        return fillStyle;
+      },
+      set fillStyle(value) {
+        fillStyle = value;
+      },
+      fillRect: (...values) => {
+        this.drawOperations.push([fillStyle, ...values]);
+      }
     };
   }
 }
@@ -35,11 +46,17 @@ class FakeElement {
 function createPopupEnvironment({
   trusted = null,
   origins = [],
-  removeResult = true
+  removeResult = true,
+  sharedState = null,
+  permissionRequest = null
 } = {}) {
-  const values = new Map();
-  if (trusted) values.set("trustedReceiver", trusted);
-  const grantedOrigins = new Set(origins);
+  const state = sharedState ?? {
+    localValues: new Map(),
+    sessionValues: new Map(),
+    grantedOrigins: new Set(origins),
+    requestCalls: []
+  };
+  if (trusted) state.localValues.set("trustedReceiver", trusted);
   const elements = new Map([
     ["#pairing-form", new FakeElement()],
     ["#paired-panel", new FakeElement({ hidden: true })],
@@ -67,34 +84,27 @@ function createPopupEnvironment({
   };
   const chrome = {
     storage: {
-      local: {
-        async get(key) {
-          return { [key]: values.get(key) };
-        },
-        async set(entries) {
-          for (const [key, value] of Object.entries(entries)) {
-            values.set(key, value);
-          }
-        },
-        async remove(key) {
-          values.delete(key);
-        }
-      }
+      local: createStorageArea(state.localValues),
+      session: createStorageArea(state.sessionValues)
     },
     permissions: {
       async contains({ origins: queried }) {
-        return queried.every((origin) => grantedOrigins.has(origin));
+        return queried.every((origin) => state.grantedOrigins.has(origin));
       },
       async request({ origins: requested }) {
-        requested.forEach((origin) => grantedOrigins.add(origin));
+        state.requestCalls.push(...requested);
+        if (permissionRequest) {
+          return permissionRequest({ requested, state });
+        }
+        requested.forEach((origin) => state.grantedOrigins.add(origin));
         return true;
       },
       async getAll() {
-        return { origins: [...grantedOrigins] };
+        return { origins: [...state.grantedOrigins] };
       },
       async remove({ origins: removed }) {
         if (!removeResult) return false;
-        removed.forEach((origin) => grantedOrigins.delete(origin));
+        removed.forEach((origin) => state.grantedOrigins.delete(origin));
         return true;
       }
     },
@@ -104,7 +114,31 @@ function createPopupEnvironment({
       }
     }
   };
-  return { chrome, document, elements, grantedOrigins, values };
+  return {
+    chrome,
+    document,
+    elements,
+    grantedOrigins: state.grantedOrigins,
+    sessionValues: state.sessionValues,
+    state,
+    values: state.localValues
+  };
+}
+
+function createStorageArea(values) {
+  return {
+    async get(key) {
+      return { [key]: values.get(key) };
+    },
+    async set(entries) {
+      for (const [key, value] of Object.entries(entries)) {
+        values.set(key, value);
+      }
+    },
+    async remove(key) {
+      values.delete(key);
+    }
+  };
 }
 
 let importSequence = 0;
@@ -191,4 +225,123 @@ test("forget keeps permissions.remove false visible while returning to pairing",
     environment.elements.get("#error-message").textContent,
     /无法撤销/
   );
+});
+
+test("permission popup interruption restores the same pending pairing and finishes without a second prompt", async (context) => {
+  let markPermissionRequested;
+  const permissionRequested = new Promise((resolve) => {
+    markPermissionRequested = resolve;
+  });
+  const firstEnvironment = createPopupEnvironment({
+    permissionRequest({ requested, state }) {
+      requested.forEach((origin) => state.grantedOrigins.add(origin));
+      markPermissionRequested();
+      return new Promise(() => {});
+    }
+  });
+  const firstSetup = await loadSetupModule(context, firstEnvironment);
+  firstEnvironment.elements.get("#receiver-address").value = "192.168.3.112";
+  await firstSetup.updatePendingHost();
+  const firstPending = structuredClone(
+    firstEnvironment.sessionValues.get("pendingPairing")
+  );
+  const firstShortCode =
+    firstEnvironment.elements.get("#short-code").textContent;
+  const firstQr = structuredClone(
+    firstEnvironment.elements.get("#pairing-qr").drawOperations
+  );
+
+  void firstSetup.completePairing({
+    pair() {
+      throw new Error("pairing must not start before permission returns");
+    }
+  });
+  await permissionRequested;
+  assert.equal(firstEnvironment.state.requestCalls.length, 1);
+  assert.deepEqual(
+    firstEnvironment.sessionValues.get("pendingPairing"),
+    firstPending
+  );
+  assert.equal(firstEnvironment.values.has("pendingPairing"), false);
+
+  const secondEnvironment = createPopupEnvironment({
+    sharedState: firstEnvironment.state
+  });
+  const secondSetup = await loadSetupModule(context, secondEnvironment);
+  assert.equal(
+    secondEnvironment.elements.get("#receiver-address").value,
+    "192.168.3.112"
+  );
+  assert.equal(
+    secondEnvironment.elements.get("#short-code").textContent,
+    firstShortCode
+  );
+  assert.deepEqual(
+    secondEnvironment.elements.get("#pairing-qr").drawOperations,
+    firstQr
+  );
+  assert.match(
+    secondEnvironment.elements.get("#pair-button").textContent,
+    /地址权限已允许/
+  );
+  assert.equal(secondEnvironment.state.requestCalls.length, 1);
+
+  await secondSetup.completePairing({
+    async pair({ host, authorization, senderId }) {
+      assert.equal(host, "192.168.3.112");
+      assert.equal(
+        authorization.sessionId,
+        firstPending.authorization.sessionId
+      );
+      assert.equal(authorization.token, firstPending.authorization.token);
+      return {
+        ...TRUSTED,
+        host,
+        senderId
+      };
+    }
+  });
+  assert.equal(secondEnvironment.state.requestCalls.length, 1);
+  assert.equal(secondEnvironment.sessionValues.has("pendingPairing"), false);
+  assert.equal(secondEnvironment.values.has("trustedReceiver"), true);
+  assert.equal(secondEnvironment.values.has("pendingPairing"), false);
+  assert.equal(
+    JSON.stringify([...secondEnvironment.values.entries()])
+      .includes(firstPending.authorization.token),
+    false
+  );
+});
+
+test("expired pending state is replaced with a fresh authorization", async (context) => {
+  const expired = createPairingAuthorization(Date.now() - 120_000);
+  const environment = createPopupEnvironment();
+  environment.sessionValues.set("pendingPairing", {
+    host: "192.168.3.112",
+    authorization: {
+      sessionId: expired.sessionId,
+      token: expired.token,
+      shortCode: expired.shortCode,
+      expiresAt: expired.expiresAt
+    }
+  });
+  await loadSetupModule(context, environment);
+  const replacement = environment.sessionValues.get("pendingPairing");
+  assert.notEqual(replacement.authorization.token, expired.token);
+  assert.ok(replacement.authorization.expiresAt > Date.now());
+});
+
+test("manual QR refresh replaces the pending authorization in session storage", async (context) => {
+  const environment = createPopupEnvironment();
+  const setup = await loadSetupModule(context, environment);
+  const previous = structuredClone(
+    environment.sessionValues.get("pendingPairing")
+  );
+  await setup.refreshAuthorization();
+  const refreshed = environment.sessionValues.get("pendingPairing");
+  assert.notEqual(
+    refreshed.authorization.sessionId,
+    previous.authorization.sessionId
+  );
+  assert.notEqual(refreshed.authorization.token, previous.authorization.token);
+  assert.equal(environment.values.has("pendingPairing"), false);
 });

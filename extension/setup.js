@@ -13,8 +13,15 @@ import {
 } from "./pairing-store.js";
 import {
   cleanupUnusedManualHostPermissions,
+  hasHostPermission,
+  manualHostOrigin,
   withHostPermission
 } from "./host-permissions.js";
+import {
+  clearPendingPairing,
+  getPendingPairing,
+  savePendingPairing
+} from "./pending-pairing-store.js";
 
 const form = document.querySelector("#pairing-form");
 const pairedPanel = document.querySelector("#paired-panel");
@@ -30,12 +37,18 @@ const forgetButton = document.querySelector("#forget-button");
 const updateHostButton = document.querySelector("#update-host-button");
 const errorMessage = document.querySelector("#error-message");
 let authorization = null;
+let pendingStateWrite = Promise.resolve();
 
 form.addEventListener("submit", (event) => {
   event.preventDefault();
   void completePairing();
 });
-refreshButton.addEventListener("click", refreshAuthorization);
+refreshButton.addEventListener("click", () => {
+  void refreshAuthorization().catch(showError);
+});
+address.addEventListener("input", () => {
+  void updatePendingHost().catch(showError);
+});
 startButton.addEventListener("click", startCapture);
 forgetButton.addEventListener("click", forgetPairing);
 updateHostButton.addEventListener("click", updateTrustedHost);
@@ -45,40 +58,82 @@ export const setupReady = loadPairingState();
 export async function loadPairingState() {
   const trusted = await getTrustedReceiver();
   renderTrusted(trusted);
+  const pending = trusted ? null : await getPendingPairing();
+  const pendingPermissionHost = pending
+    ? validManualPermissionHost(pending.host)
+    : null;
   let cleanupSucceeded = true;
   try {
-    await cleanupUnusedManualHostPermissions(trusted ? [trusted.host] : []);
+    await cleanupUnusedManualHostPermissions(
+      trusted
+        ? [trusted.host]
+        : pendingPermissionHost
+          ? [pendingPermissionHost]
+          : []
+    );
   } catch (error) {
     cleanupSucceeded = false;
     showError(error);
   }
-  if (!trusted) {
-    refreshAuthorization({ clearError: cleanupSucceeded });
+  if (trusted) {
+    await clearPendingState();
+    return;
+  }
+  if (pending) {
+    authorization = pending.authorization;
+    address.value = pending.host;
+    const permissionGranted =
+      Boolean(pendingPermissionHost) &&
+      await hasHostPermission(pendingPermissionHost);
+    renderAuthorization({
+      clearError: cleanupSucceeded,
+      permissionGranted
+    });
+  } else {
+    await refreshAuthorization({ clearError: cleanupSucceeded });
   }
 }
 
-function refreshAuthorization({ clearError = true } = {}) {
+export async function refreshAuthorization({ clearError = true } = {}) {
   authorization = createPairingAuthorization();
+  await persistPendingState(address.value);
+  renderAuthorization({ clearError });
+}
+
+function renderAuthorization({
+  clearError = true,
+  permissionGranted = false
+} = {}) {
   shortCode.textContent = `摄像头不可用时，在平板输入短码 ${authorization.shortCode}`;
   renderQrCode(authorization.payload);
+  pairButton.textContent = permissionGranted
+    ? "地址权限已允许，继续连接平板"
+    : "已扫码，连接平板";
   if (clearError) {
     errorMessage.hidden = true;
   }
 }
 
-async function completePairing() {
+export async function updatePendingHost(host = address.value) {
+  if (!authorization) return;
+  await persistPendingState(host);
+}
+
+export async function completePairing({ pair = pairReceiver } = {}) {
   errorMessage.hidden = true;
   pairButton.disabled = true;
   pairButton.textContent = "正在连接平板…";
   try {
     if (!authorization || authorization.expiresAt <= Date.now()) {
-      refreshAuthorization();
+      await refreshAuthorization();
       throw new Error("二维码已过期，请用平板扫描新二维码");
     }
     const host = normalizeReceiverHost(address.value);
+    address.value = host;
+    await updatePendingHost(host);
     const senderId = await getOrCreateSenderId();
     const trusted = await withHostPermission(host, async () => {
-      const paired = await pairReceiver({
+      const paired = await pair({
         host,
         authorization,
         senderId
@@ -87,6 +142,7 @@ async function completePairing() {
     });
     authorization = null;
     renderTrusted(trusted);
+    await clearPendingState();
     await cleanupUnusedManualHostPermissions([trusted.host]);
   } catch (error) {
     showError(error);
@@ -127,7 +183,7 @@ export async function forgetPairing() {
     showError(error);
   }
   renderTrusted(null);
-  refreshAuthorization({ clearError: cleanupSucceeded });
+  await refreshAuthorization({ clearError: cleanupSucceeded });
 }
 
 async function updateTrustedHost() {
@@ -157,6 +213,31 @@ function renderTrusted(trusted) {
     ? `设备 ${trusted.deviceId.slice(0, 8)} · ${trusted.host}`
     : "";
   pairedHost.value = paired ? trusted.host : DEFAULT_RECEIVER_HOST;
+}
+
+function validManualPermissionHost(host) {
+  try {
+    const normalized = normalizeReceiverHost(host);
+    return manualHostOrigin(normalized) ? normalized : null;
+  } catch {
+    return null;
+  }
+}
+
+function persistPendingState(host) {
+  const snapshot = {
+    host,
+    authorization: { ...authorization }
+  };
+  pendingStateWrite = pendingStateWrite
+    .catch(() => {})
+    .then(() => savePendingPairing(snapshot));
+  return pendingStateWrite;
+}
+
+async function clearPendingState() {
+  await pendingStateWrite.catch(() => {});
+  await clearPendingPairing();
 }
 
 function renderQrCode(payload) {
