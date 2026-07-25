@@ -1,118 +1,79 @@
 # 系统架构
 
-## 产品目标
+## 产品边界
 
-让 Windows 11 用户把自己明确选择的 Microsoft Edge 标签页画面发送到 HarmonyOS 平板，作为独立的
-网页伴随屏观看；声音继续由 Windows 输出到现有耳机。
+用户明确点击后，把一个 Edge 标签页的视频画面发送到 HarmonyOS 原生 Receiver；PC 音频保持原输出。
+不枚举 Windows 显示器、不捕获桌面、不远程控制电脑。
 
-产品不向 Windows 枚举显示器，不支持窗口跨屏拖动，不捕获整个桌面，也不把镜像称为扩展屏。
-HarmonyOS 接收端必须是原生应用。
+## 两个用户组件
 
-## 组件边界
+| 组件 | 职责 |
+| --- | --- |
+| Edge 扩展 | 用户手势、一次性二维码、可信设备存储、当前标签页捕获、WebCodecs 编码、直连发送 |
+| HarmonyOS Receiver | Wi-Fi 确认、扫码/短码授权、DNS-SD 注册、可信电脑存储、WebSocket、AVCodec、XComponent |
 
-| 组件 | 职责 | v0.1 技术方向 |
-| --- | --- | --- |
-| Edge Extension | 接收用户手势、选择当前标签页、展示连接状态 | Manifest V3 + `activeTab` + `tabCapture` |
-| Capture Worker | 持有媒体流、缩放并编码视频 | offscreen document + WebCodecs `VideoEncoder` |
-| Local Bridge | 在扩展与 Relay 间传输控制消息和二进制编码帧 | Native Messaging 启动/授权 + 随机令牌保护的回环 WebSocket |
-| Windows Relay | 配对、关键帧转发、UDP 分片与工程日志 | 普通用户态进程；不注册系统服务、不要求管理员 |
-| LAN Transport | 可信局域网内的控制和视频 | Relay 主动连接平板 TCP 44000；向平板 UDP 47101 发送视频 |
-| Harmony Receiver | 展示配对信息、收包、解码、渲染和状态展示 | ArkTS + NDK AVCodec + XComponent |
+Windows Relay/Native Host 不再属于正常路径，也不由 `scripts/test.ps1` 构建。
 
 ## 数据流
 
 ```text
-用户点击 Edge 扩展按钮
-   ↓ chrome.tabCapture.getMediaStreamId（只请求 video）
-MV3 offscreen document
-   ↓ MediaStreamTrackProcessor / VideoFrame
-WebCodecs VideoEncoder
-   ↓ H.264 Annex-B EncodedVideoChunk
-回环 Local Bridge（127.0.0.1 + 临时令牌）
-   ↓
-Windows Relay（普通用户进程）
-   ↓ UDP 受限分片
-HarmonyOS Receiver
-   ↓ H.264 Annex-B
+用户点击“发送当前标签页”
+  ↓ activeTab + tabCapture
+唯一 video track
+  ↓ MediaStreamTrackProcessor
+唯一 VideoEncoder（H.264 Annex-B）
+  ↓ HWC3 binary WebSocket message
+Receiver 绑定用户确认的具体私网 wlan IPv4:44000
+  ↓ sourceEpoch 校验
 OH_VideoDecoder
-   ↓ Surface
-XComponent
+  ↓
+XComponent Surface
 ```
 
-控制流反向返回关键帧请求、停止原因和遥测：
+音频轨显式设为 `false`。扩展不读取 URL、标题、Cookie、页面正文，也不注入站点脚本。
 
-```text
-Harmony Receiver → TCP control → Windows Relay
-  → Local Bridge → offscreen document → VideoEncoder key frame
-```
+## 配对、身份与地址
 
-## 架构决策
+| 概念 | 生命周期 |
+| --- | --- |
+| QR session/token | 60 秒、成功一次后销毁，不持久化 |
+| 六位短码 | token 的人工校验回退，60 秒，不持久化 |
+| `deviceId` + credential | 两端应用沙箱持久化，直到用户忘记设备 |
+| IP / `.local` | 连接地址，可变化，不代表设备身份 |
+| WebSocket | Receiver 打开时按需建立，断开不清除信任 |
 
-### 捕获标签页，而不是窗口像素
+Receiver 只绑定 `wlan*` 上由用户确认的 RFC1918 或 IPv4 link-local 地址，拒绝通配、回环、VPN、
+蜂窝和公网地址；入站对端也必须来自私网/link-local。
 
-Deskreen 实验验证了通用投屏链路，但最小化 Edge 后窗口停止绘制。v0.1 使用 Edge 官方支持的
-`tabCapture` 获取用户主动选择的标签页媒体流，目标是让捕获生命周期不依赖窗口遮挡状态。
+HarmonyOS `mdns.addLocalService` 注册的是 DNS-SD 服务实例，不足以证明 Windows 一定能解析裸
+`harmony-web-companion.local`。扩展先尝试该固定地址，失败时允许用户输入 Receiver 显示的私网
+IPv4；不进行 mDNS 浏览或子网扫描。
 
-“Edge 窗口最小化后仍持续出帧”目前仍是 PoC 门禁，不因为 API 存在就视为已通过。
+## 竞态边界
 
-### 不采集音频
+每次开始捕获分配单调递增的 `sourceEpoch`。Receiver 记录最新 epoch，只接受当前 epoch 的视频头；
+旧 epoch 的迟到帧直接丢弃。扩展在开始新捕获前停止旧 reader、轨道和 encoder，确保单活动来源。
 
-扩展只请求视频轨，不获取音频轨。B 站等网页的声音继续走 Edge 原有本地输出设备，项目不编码、
-发送或在平板播放音频。这样满足“耳机只连接 PC”的核心需求，也避免双端回声。
+## 权限
 
-PC 本地音频与平板视频之间可能存在可感知偏移，必须实测并记录；不能用单独的视频延迟指标替代。
+| 权限 | 原因 |
+| --- | --- |
+| `activeTab` | 仅在用户点击时确认当前页面 |
+| `tabCapture` | 获取用户选择标签页的媒体流 |
+| `offscreen` | 扩展弹窗关闭后持有媒体流和编码器 |
+| `storage` | 保存设备身份、凭据、连接地址和 source epoch |
+| 固定 `.local` host permission | 只访问一个预定 Receiver 地址 |
+| 可选 `http://*/*` 声明 | Chrome match pattern 无法枚举所有 RFC1918；仅在用户输入并确认具体 IP 时请求该精确 origin |
 
-### H.264 能力必须探测
+扩展只保留当前可信设备实际使用的手动私网 origin；配对/保存失败回滚新授权，更新地址和忘记设备时
+枚举并撤销其余手动 origin，且不得把 `permissions.remove()` 的失败当成成功。
 
-WebCodecs 允许通过 `VideoEncoder.isConfigSupported()` 探测具体编码配置，AVC 注册允许
-`avc.format = "annexb"`。但标准不要求浏览器一定实现 H.264 编码。
-
-v0.1 在开始会话前探测至少 `1280×720 @ 30 fps` 的 H.264 Annex-B 配置。若不支持，扩展必须明确
-展示“不支持当前编码能力”，不得静默改成 VP8/VP9 后让 HarmonyOS 端黑屏。`1920×1080 @ 30 fps`
-作为增强能力协商，不是首个垂直切片的硬门禁。
-
-### 保留轻量 Relay，不把 libwebrtc 引入平板
-
-浏览器扩展不能直接发送任意 UDP。直接采用 WebRTC 会要求 HarmonyOS 原生端集成和维护 libwebrtc，
-其体积、ABI、构建和升级成本与当前轻量目标不符。
-
-v0.1 使用普通用户态 Relay：
-
-- Native Messaging 只负责启动 Relay、交换临时端口和随机令牌；
-- 视频块通过只绑定 `127.0.0.1` 的二进制 WebSocket 传输，避免 Base64/JSON 成为主数据面；
-- Relay 主动连接平板，不开放 Windows 局域网入站端口；
-- Relay 不安装为服务，不需要驱动签名或管理员权限。
-
-若回环 WebSocket PoC 不满足性能要求，只替换本地桥接层，不改变 Edge 捕获、局域网协议和 HarmonyOS
-接收端边界。
-
-### 原生 HarmonyOS 接收端
-
-接收端不使用 WebView、HTML5 Viewer 或 Android 兼容应用。ArkTS 负责生命周期、可信 Wi-Fi 确认、
-配对信息和状态；TCP/UDP、抖动缓冲和 AVCodec 解码由 C++ 完成。
-
-接收端只在用户明确确认的 Wi-Fi IPv4 上监听，不绑定蜂窝、VPN 或通配地址。运行时依据 API、编解码
-能力、Surface 与网络条件协商，不依据设备型号分支。
-
-### 迁移旧原型
-
-旧 IddCx 原型中的 H.264 UDP 分片、协议边界检查、AVCodec 解码器状态机和测试思路可以复用。以下
-组件不再属于产品：
-
-- `host/driver` IddCx 驱动；
-- D3D11 / Media Foundation 桌面帧编码管线；
-- Session 0 Host Service 与服务安装器；
-- Input Agent、`SendInput` 和触控坐标映射；
-- Windows 入站防火墙规则。
-
-具体处置见 [ADR-001](ADR-001-WEB-COMPANION-PIVOT.md)。
+不申请 `<all_urls>`、`nativeMessaging`、Cookie、history、正文读取或脚本注入。
 
 ## 非目标
 
-- Windows 真扩展屏、虚拟显示器或窗口跨屏拖动；
-- 捕获整个桌面、任意应用窗口或远程控制 PC；
-- 音频传输、平板扬声器播放或多音频设备同步；
-- DRM/受保护视频捕获或绕过站点保护；
-- 公网、访客 Wi-Fi、端口转发或云中继；
-- USB 视频传输、多平板、HDR、4K、触控/键鼠回传；
-- Windows 10、macOS、Android 或 iPadOS。
+- 多设备浏览、子网扫描、云 rendezvous、WebRTC、蓝牙或 USB；
+- 多标签页并发、#4 的候选页/完整切换 UI；
+- 音频、DRM 绕过、网页正文采集；
+- 公网、端口映射、远程控制；
+- 设备型号或网站业务分支。

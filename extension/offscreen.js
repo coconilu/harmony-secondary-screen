@@ -1,10 +1,10 @@
 import { FrameMonitor } from "./frame-monitor.js";
 import { EncoderMonitor } from "./encoder-monitor.js";
 import {
-  createLocalVideoMessage,
-  LOCAL_RELAY_PROTOCOL,
-  LOCAL_VIDEO_MAX_PAYLOAD_BYTES
-} from "./local-relay-protocol.js";
+  createDirectVideoMessage,
+  DIRECT_VIDEO_MAX_PAYLOAD_BYTES
+} from "./direct-protocol.js";
+import { DirectReceiverConnection } from "./direct-client.js";
 
 const TELEMETRY_INTERVAL_MS = 500;
 const ENCODE_WIDTH = 1280;
@@ -13,7 +13,6 @@ const ENCODE_FRAMERATE = 30;
 const ENCODE_BITRATE = 4_000_000;
 const MAX_ENCODE_QUEUE_SIZE = 2;
 const KEYFRAME_INTERVAL_FRAMES = ENCODE_FRAMERATE * 2;
-const LOCAL_RELAY_MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
 const H264_CONFIG = {
   codec: "avc1.42001f",
   width: ENCODE_WIDTH,
@@ -39,10 +38,10 @@ let videoEncoder = null;
 let encoderConfig = null;
 let encodeCanvas = null;
 let encodeContext = null;
-let relaySocket = null;
-let relayClosing = false;
-let relaySequence = 0;
-let relayTelemetry = createRelayTelemetry();
+let receiverConnection = null;
+let sourceEpoch = 0;
+let directSequence = 0;
+let directTelemetry = createDirectTelemetry();
 let forceKeyFrame = true;
 let running = false;
 let stopping = false;
@@ -53,7 +52,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message.type === "START_CAPTURE") {
-    startCapture(message.streamId, message.relayInfo)
+    startCapture(message.streamId, message.directInfo)
       .then((telemetry) => sendResponse({ ok: true, telemetry }))
       .catch((error) => sendResponse({ ok: false, error: normalizeError(error) }));
     return true;
@@ -78,18 +77,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   return false;
 });
 
-async function startCapture(streamId, relayInfo) {
+async function startCapture(streamId, directInfo) {
   if (!streamId) {
     throw new Error("缺少标签页媒体流标识");
   }
 
   await stopCapture();
   stopping = false;
-  relayClosing = false;
-  relaySequence = 0;
-  relayTelemetry = createRelayTelemetry();
+  directSequence = 0;
+  directTelemetry = createDirectTelemetry();
   forceKeyFrame = true;
-  await connectLocalRelay(relayInfo);
+  await connectReceiver(directInfo);
 
   mediaStream = await navigator.mediaDevices.getUserMedia({
     audio: false,
@@ -171,7 +169,7 @@ function publishTelemetry() {
 }
 
 async function stopCapture() {
-  if (!running && !mediaStream && !frameReader && !relaySocket) {
+  if (!running && !mediaStream && !frameReader && !receiverConnection) {
     return monitor?.sample() ?? null;
   }
 
@@ -207,7 +205,7 @@ async function stopCapture() {
   frameLoopPromise = null;
 
   await stopVideoEncoder();
-  await closeLocalRelay();
+  await closeReceiver();
   const telemetry = collectTelemetry();
   stopping = false;
   return telemetry;
@@ -338,16 +336,16 @@ async function stopVideoEncoder() {
 }
 
 function collectTelemetry() {
-  if (!monitor && !encoderMonitor && !relaySocket) {
+  if (!monitor && !encoderMonitor && !receiverConnection) {
     return null;
   }
   return {
     ...(monitor?.sample() ?? {}),
     ...(encoderMonitor?.sample(videoEncoder?.encodeQueueSize ?? 0) ?? {}),
     encoderConfig,
-    ...relayTelemetry,
-    relayConnected: relaySocket?.readyState === WebSocket.OPEN,
-    relayBufferedAmount: relaySocket?.bufferedAmount ?? 0
+    ...directTelemetry,
+    directConnected: receiverConnection?.connected ?? false,
+    directBufferedAmount: receiverConnection?.bufferedAmount ?? 0
   };
 }
 
@@ -367,242 +365,138 @@ function normalizeEncoderConfig(config) {
 function handleEncodedChunk(chunk) {
   encoderMonitor?.onChunk(chunk);
   try {
-    sendChunkToRelay(chunk);
+    sendChunkToReceiver(chunk);
   } catch (error) {
-    relayTelemetry.relayErrors += 1;
+    directTelemetry.directErrors += 1;
     if (!stopping) {
       running = false;
       void sendToServiceWorker("CAPTURE_FAILURE", {
-        error: `回环 Relay 传输失败：${normalizeError(error)}`,
+        error: `Receiver 直连传输失败：${normalizeError(error)}`,
         telemetry: collectTelemetry()
       });
     }
   }
 }
 
-function sendChunkToRelay(chunk) {
-  const socket = relaySocket;
-  if (!socket || socket.readyState !== WebSocket.OPEN) {
-    throw new Error("本地 Relay WebSocket 未连接");
+function sendChunkToReceiver(chunk) {
+  const connection = receiverConnection;
+  if (!connection?.connected) {
+    throw new Error("Receiver WebSocket 未连接");
   }
-  if (chunk.byteLength > LOCAL_VIDEO_MAX_PAYLOAD_BYTES) {
+  if (chunk.byteLength > DIRECT_VIDEO_MAX_PAYLOAD_BYTES) {
     throw new Error("单个 H.264 编码块超过 8 MiB");
   }
-  if (socket.bufferedAmount >= LOCAL_RELAY_MAX_BUFFERED_BYTES) {
-    relayTelemetry.relayDroppedFrames += 1;
+  const message = createDirectVideoMessage(chunk, sourceEpoch, directSequence);
+  if (!connection.sendVideo(message)) {
+    directTelemetry.directDroppedFrames += 1;
     return;
   }
-
-  const message = createLocalVideoMessage(chunk, relaySequence);
-  socket.send(message);
-
-  relaySequence = (relaySequence + 1) >>> 0;
-  relayTelemetry.relaySentFrames += 1;
-  relayTelemetry.relaySentBytes += chunk.byteLength;
+  directSequence = (directSequence + 1) >>> 0;
+  directTelemetry.directSentFrames += 1;
+  directTelemetry.directSentBytes += chunk.byteLength;
 }
 
-function connectLocalRelay(relayInfo) {
+async function connectReceiver(directInfo) {
   if (
-    relayInfo?.protocol !== LOCAL_RELAY_PROTOCOL ||
-    !Number.isInteger(relayInfo.port) ||
-    relayInfo.port < 1 ||
-    relayInfo.port > 65535 ||
-    typeof relayInfo.token !== "string" ||
-    !/^[0-9a-f]{64}$/.test(relayInfo.token)
+    !directInfo ||
+    !Number.isInteger(directInfo.sourceEpoch) ||
+    directInfo.sourceEpoch <= 0
   ) {
-    return Promise.reject(new Error("本地 Relay 启动信息无效"));
+    throw new Error("直连 Receiver 参数无效");
   }
-
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const socket = new WebSocket(
-      `ws://127.0.0.1:${relayInfo.port}/capture`
-    );
-    socket.binaryType = "arraybuffer";
-    relaySocket = socket;
-
-    const timeout = setTimeout(() => {
-      if (!settled) {
-        settled = true;
-        reject(new Error("连接本地 Relay 超时"));
-        socket.close();
-      }
-    }, 5000);
-
-    socket.addEventListener("open", () => {
-      socket.send(
-        JSON.stringify({
-          type: "auth",
-          token: relayInfo.token
-        })
-      );
-    });
-    socket.addEventListener("message", (event) => {
-      if (typeof event.data !== "string") {
-        relayTelemetry.relayErrors += 1;
-        return;
-      }
-      let message;
-      try {
-        message = JSON.parse(event.data);
-      } catch {
-        relayTelemetry.relayErrors += 1;
-        return;
-      }
-
-      if (!settled) {
-        if (
-          message?.type !== "ready" ||
-          message.protocol !== LOCAL_RELAY_PROTOCOL
-        ) {
-          settled = true;
-          clearTimeout(timeout);
-          reject(new Error("本地 Relay 鉴权响应无效"));
-          socket.close();
-          return;
-        }
-        settled = true;
-        clearTimeout(timeout);
-        relayTelemetry.relayConnected = true;
-        resolve();
-        return;
-      }
-
-      if (message?.type === "telemetry") {
-        applyRelayTelemetry(message);
-        return;
-      }
-      if (message?.type === "keyframe") {
-        forceKeyFrame = true;
-        return;
-      }
-      if (message?.type === "error") {
-        const code =
-          typeof message.code === "string"
-            ? message.code.slice(0, 64)
-            : "unknown_relay_error";
-        const detail =
-          typeof message.detail === "string"
-            ? message.detail.slice(0, 240)
-            : "Relay 未提供错误详情";
-        relayTelemetry.relayLastErrorCode = code;
-        relayTelemetry.relayLastErrorDetail = detail;
-        relayTelemetry.relayErrors += 1;
-        if (!stopping) {
-          running = false;
-          void sendToServiceWorker("CAPTURE_FAILURE", {
-            error: `本地 Relay 拒绝数据（${code}）：${detail}`,
-            telemetry: collectTelemetry()
-          });
-        }
-      }
-    });
-    socket.addEventListener("error", () => {
-      relayTelemetry.relayErrors += 1;
-      if (!settled) {
-        settled = true;
-        clearTimeout(timeout);
-        reject(new Error("本地 Relay WebSocket 连接失败"));
-      }
-    });
-    socket.addEventListener("close", () => {
-      relayTelemetry.relayConnected = false;
-      relaySocket = null;
-      if (!settled) {
-        settled = true;
-        clearTimeout(timeout);
-        reject(new Error("本地 Relay 在鉴权前断开"));
-        return;
-      }
-      if (!relayClosing && !stopping && running) {
-        relayTelemetry.relayErrors += 1;
-        running = false;
-        void sendToServiceWorker("CAPTURE_FAILURE", {
-          error: "本地 Relay WebSocket 意外断开",
-          telemetry: collectTelemetry()
-        });
-      }
-    });
+  sourceEpoch = directInfo.sourceEpoch;
+  const connection = new DirectReceiverConnection({
+    trustedDevice: directInfo.trustedDevice,
+    sourceEpoch
   });
+  connection.onControl = applyReceiverControl;
+  connection.onClose = () => {
+    directTelemetry.directConnected = false;
+    if (!stopping && running) {
+      directTelemetry.directErrors += 1;
+      running = false;
+      void sendToServiceWorker("CAPTURE_FAILURE", {
+        error: "Receiver 直连 WebSocket 意外断开",
+        telemetry: collectTelemetry()
+      });
+    }
+  };
+  await connection.connect();
+  receiverConnection = connection;
+  directTelemetry.directConnected = true;
 }
 
-function applyRelayTelemetry(message) {
+function applyReceiverControl(message) {
+  if (message?.type === "telemetry") {
+    applyReceiverTelemetry(message);
+    return;
+  }
+  if (message?.type === "keyframe") {
+    forceKeyFrame = true;
+    directTelemetry.directKeyframeRequests += 1;
+    return;
+  }
+  if (message?.type === "pong") {
+    directTelemetry.lastPongAt = Date.now();
+    return;
+  }
+  if (message?.type === "error") {
+    directTelemetry.directErrors += 1;
+    if (!stopping) {
+      running = false;
+      void sendToServiceWorker("CAPTURE_FAILURE", {
+        error: `Receiver 拒绝数据（${String(message.code ?? "unknown").slice(0, 64)}）`,
+        telemetry: collectTelemetry()
+      });
+    }
+  }
+}
+
+function applyReceiverTelemetry(message) {
   for (const [source, target] of [
-    ["receivedFrames", "relayReceivedFrames"],
-    ["receivedBytes", "relayReceivedBytes"],
-    ["keyFrames", "relayKeyFrames"],
-    ["invalidMessages", "relayInvalidMessages"],
-    ["lanSentFrames", "lanSentFrames"],
-    ["lanSentBytes", "lanSentBytes"],
-    ["lanSentDatagrams", "lanSentDatagrams"],
-    ["lanSendErrors", "lanSendErrors"],
+    ["receivedFrames", "receiverReceivedFrames"],
+    ["receivedBytes", "receiverReceivedBytes"],
     ["receiverDecodedFrames", "receiverDecodedFrames"],
     ["receiverDroppedFrames", "receiverDroppedFrames"]
   ]) {
     if (Number.isSafeInteger(message[source]) && message[source] >= 0) {
-      relayTelemetry[target] = message[source];
+      directTelemetry[target] = message[source];
     } else {
-      relayTelemetry.relayErrors += 1;
+      directTelemetry.directErrors += 1;
     }
-  }
-  if (typeof message.lanConnected === "boolean") {
-    relayTelemetry.lanConnected = message.lanConnected;
   }
 }
 
-async function closeLocalRelay() {
-  const socket = relaySocket;
-  if (!socket) {
+async function closeReceiver() {
+  const connection = receiverConnection;
+  if (!connection) {
     return;
   }
-  relayClosing = true;
   const deadline = performance.now() + 2000;
   while (
-    socket.readyState === WebSocket.OPEN &&
-    socket.bufferedAmount > 0 &&
+    connection.connected &&
+    connection.bufferedAmount > 0 &&
     performance.now() < deadline
   ) {
     await delay(20);
   }
-
-  if (socket.readyState === WebSocket.OPEN) {
-    socket.send(JSON.stringify({ type: "close" }));
-    await Promise.race([
-      new Promise((resolve) => {
-        socket.addEventListener("close", resolve, { once: true });
-      }),
-      delay(1000)
-    ]);
-  }
-  if (
-    socket.readyState === WebSocket.OPEN ||
-    socket.readyState === WebSocket.CONNECTING
-  ) {
-    socket.close();
-  }
-  relaySocket = null;
-  relayTelemetry.relayConnected = false;
+  await connection.close();
+  receiverConnection = null;
+  directTelemetry.directConnected = false;
 }
 
-function createRelayTelemetry() {
+function createDirectTelemetry() {
   return {
-    relayConnected: false,
-    relaySentFrames: 0,
-    relaySentBytes: 0,
-    relayReceivedFrames: 0,
-    relayReceivedBytes: 0,
-    relayKeyFrames: 0,
-    relayInvalidMessages: 0,
-    relayDroppedFrames: 0,
-    relayBufferedAmount: 0,
-    relayErrors: 0,
-    relayLastErrorCode: null,
-    relayLastErrorDetail: null,
-    lanConnected: false,
-    lanSentFrames: 0,
-    lanSentBytes: 0,
-    lanSentDatagrams: 0,
-    lanSendErrors: 0,
+    directConnected: false,
+    directSentFrames: 0,
+    directSentBytes: 0,
+    directDroppedFrames: 0,
+    directBufferedAmount: 0,
+    directErrors: 0,
+    directKeyframeRequests: 0,
+    lastPongAt: null,
+    receiverReceivedFrames: 0,
+    receiverReceivedBytes: 0,
     receiverDecodedFrames: 0,
     receiverDroppedFrames: 0
   };

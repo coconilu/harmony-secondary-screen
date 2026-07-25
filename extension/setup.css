@@ -61,6 +61,36 @@ form {
   gap: 9px;
 }
 
+.qr-wrap {
+  display: grid;
+  place-items: center;
+  padding: 10px;
+  border-radius: 12px;
+  background: #fff;
+}
+
+#pairing-qr {
+  width: 224px;
+  height: 224px;
+}
+
+.muted {
+  color: #93a4b8;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.success {
+  color: #5eead4;
+  font-weight: 700;
+}
+
+.short-code {
+  color: #fbbf24;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
 label {
   margin-top: 6px;
   color: #cbd5e1;
@@ -104,6 +134,12 @@ button {
 button:disabled {
   cursor: wait;
   opacity: 0.55;
+}
+
+button.secondary {
+  border: 1px solid #33475e;
+  background: #142238;
+  color: #cbd5e1;
 }
 
 .error {

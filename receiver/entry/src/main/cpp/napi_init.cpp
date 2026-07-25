@@ -35,6 +35,61 @@ napi_value StopReceiver(napi_env env, napi_callback_info) {
   return result;
 }
 
+napi_value ConfigureTrust(napi_env env, napi_callback_info info) {
+  std::array<napi_value, 4> arguments{};
+  std::size_t count = arguments.size();
+  napi_get_cb_info(env, info, &count, arguments.data(), nullptr, nullptr);
+  double version = 0;
+  if (count == arguments.size()) {
+    napi_get_value_double(env, arguments[3], &version);
+  }
+  const bool configured =
+      count == arguments.size() &&
+      ReceiverSession::Instance().ConfigureTrust(
+          ArgumentString(env, arguments[0]), ArgumentString(env, arguments[1]),
+          ArgumentString(env, arguments[2]), static_cast<std::uint64_t>(version));
+  napi_value result;
+  napi_get_boolean(env, configured, &result);
+  return result;
+}
+
+napi_value AuthorizeQr(napi_env env, napi_callback_info info) {
+  std::array<napi_value, 3> arguments{};
+  std::size_t count = arguments.size();
+  napi_get_cb_info(env, info, &count, arguments.data(), nullptr, nullptr);
+  double expiresAt = 0;
+  if (count == arguments.size()) {
+    napi_get_value_double(env, arguments[2], &expiresAt);
+  }
+  const bool accepted =
+      count == arguments.size() &&
+      ReceiverSession::Instance().AuthorizeQr(
+          ArgumentString(env, arguments[0]), ArgumentString(env, arguments[1]),
+          static_cast<std::int64_t>(expiresAt));
+  napi_value result;
+  napi_get_boolean(env, accepted, &result);
+  return result;
+}
+
+napi_value AuthorizeShortCode(napi_env env, napi_callback_info info) {
+  std::array<napi_value, 1> arguments{};
+  std::size_t count = arguments.size();
+  napi_get_cb_info(env, info, &count, arguments.data(), nullptr, nullptr);
+  const bool accepted =
+      count == arguments.size() &&
+      ReceiverSession::Instance().AuthorizeShortCode(ArgumentString(env, arguments[0]));
+  napi_value result;
+  napi_get_boolean(env, accepted, &result);
+  return result;
+}
+
+napi_value ForgetDevice(napi_env env, napi_callback_info) {
+  ReceiverSession::Instance().ForgetDevice();
+  napi_value result;
+  napi_get_undefined(env, &result);
+  return result;
+}
+
 void SetString(napi_env env, napi_value object, const char* key, const std::string& value) {
   napi_value text;
   napi_create_string_utf8(env, value.c_str(), value.size(), &text);
@@ -60,12 +115,37 @@ napi_value GetStatus(napi_env env, napi_callback_info) {
   SetString(env, result, "state", status.state);
   SetString(env, result, "detail", status.detail);
   SetString(env, result, "listenAddress", status.listenAddress);
-  SetString(env, result, "pairingCode", status.pairingCode);
   SetString(env, result, "pairedAddress", status.pairedAddress);
+  SetString(env, result, "deviceId", status.deviceId);
   SetBoolean(env, result, "listening", status.listening);
   SetBoolean(env, result, "connected", status.connected);
+  SetBoolean(env, result, "paired", status.paired);
   SetInteger(env, result, "framesDecoded", status.framesDecoded);
   SetInteger(env, result, "framesDropped", status.framesDropped);
+  SetInteger(env, result, "receivedFrames", status.receivedFrames);
+  return result;
+}
+
+napi_value GetPairing(napi_env env, napi_callback_info) {
+  const auto pairing = ReceiverSession::Instance().Pairing();
+  napi_value result;
+  napi_create_object(env, &result);
+  SetString(env, result, "deviceId", pairing.deviceId);
+  SetString(env, result, "senderId", pairing.senderId);
+  SetString(env, result, "credential", pairing.credential);
+  SetInteger(env, result, "version", pairing.version);
+  return result;
+}
+
+napi_value GetWifiAddresses(napi_env env, napi_callback_info) {
+  const auto addresses = ReceiverSession::Instance().WifiAddresses();
+  napi_value result;
+  napi_create_array_with_length(env, addresses.size(), &result);
+  for (std::size_t index = 0; index < addresses.size(); ++index) {
+    napi_value text;
+    napi_create_string_utf8(env, addresses[index].c_str(), addresses[index].size(), &text);
+    napi_set_element(env, result, index, text);
+  }
   return result;
 }
 
@@ -82,10 +162,16 @@ void SurfaceDestroyed(OH_NativeXComponent*, void*) {
 }
 
 napi_value Init(napi_env env, napi_value exports) {
-  const std::array<napi_property_descriptor, 3> properties{{
+  const std::array<napi_property_descriptor, 9> properties{{
       {"startReceiver", nullptr, StartReceiver, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"stopReceiver", nullptr, StopReceiver, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"configureTrust", nullptr, ConfigureTrust, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"authorizeQr", nullptr, AuthorizeQr, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"authorizeShortCode", nullptr, AuthorizeShortCode, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"forgetDevice", nullptr, ForgetDevice, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"getStatus", nullptr, GetStatus, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"getPairing", nullptr, GetPairing, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"getWifiAddresses", nullptr, GetWifiAddresses, nullptr, nullptr, nullptr, napi_default, nullptr},
   }};
   napi_define_properties(env, exports, properties.size(), properties.data());
 
