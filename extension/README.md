@@ -45,7 +45,9 @@ Edge 首次请求手动私网 IP 权限时可能关闭 popup。扩展会先把�
 - H.264 Annex-B `1280×720 @ 30 fps`，目标 4 Mbps；
 - 关键帧最长约 2 秒，并响应 Receiver 请求；
 - `audio: false`，声音留在 PC；
-- 不保存 QR token/短码，不记录 URL、标题、正文、Cookie 或视频帧；
+- QR token/短码仅在当前浏览器内存会话的 `chrome.storage.session` 暂存 60 秒；成功、主动刷新或
+  过期时清除或替换，不写入 `storage.local`、日志或测试导出；
+- 不记录 URL、标题、正文、Cookie 或视频帧；
 - 单活动捕获轨、编码器和媒体流；
 - source epoch 防止旧来源迟到帧。
 
