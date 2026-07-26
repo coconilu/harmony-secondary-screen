@@ -143,6 +143,10 @@ Receiver 在会话开始、解码 Flush 或丢失恢复时发送：
 {"type":"keyframe","protocol":4,"reason":"loss_flush_or_session_start","requireCodecConfig":true}
 ```
 
+Receiver 从后台返回前台或取得新的有效 Surface 时，仍使用上述 HWC4 `keyframe` 消息请求
+SPS/PPS + IDR；本地 Ability、Surface 和 AVCodec 生命周期修复不新增控制消息，也不改变端口、
+字段、二进制帧格式或兼容性边界。
+
 Receiver 遥测：
 
 ```json

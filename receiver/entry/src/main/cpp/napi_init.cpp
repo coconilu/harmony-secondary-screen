@@ -171,8 +171,8 @@ void SurfaceChanged(OH_NativeXComponent* component, void* window) {
   ReceiverSession::Instance().OnSurfaceChanged(component, window);
 }
 
-void SurfaceDestroyed(OH_NativeXComponent*, void*) {
-  ReceiverSession::Instance().OnSurfaceDestroyed();
+void SurfaceDestroyed(OH_NativeXComponent* component, void* window) {
+  ReceiverSession::Instance().OnSurfaceDestroyed(component, window);
 }
 
 napi_value Init(napi_env env, napi_value exports) {

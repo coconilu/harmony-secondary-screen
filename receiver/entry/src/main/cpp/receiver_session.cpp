@@ -1,6 +1,7 @@
 #include "receiver_session.h"
 
 #include "avc_decoder_input.h"
+#include "receiver_lifecycle_policy.h"
 
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -676,10 +677,21 @@ void ReceiverSession::CloseSockets() {
   CloseSocket(&listener_socket_);
 }
 
-bool ReceiverSession::StartDecoder() {
-  std::scoped_lock lifecycleLock(decoder_lifecycle_mutex_);
+bool ReceiverSession::ReconcileDecoderLocked() {
+  const bool shouldRun =
+      DecoderShouldRun(app_foreground_.load(), native_window_ != nullptr);
+  if (!shouldRun) {
+    if (decoder_.load() != nullptr ||
+        decoder_state_.load() != DecoderLifecycleState::kStopped) {
+      DestroyDecoderLocked();
+    }
+    return false;
+  }
+  if (!DecoderRequiresRebuild(shouldRun, decoder_state_.load(),
+                              decoder_.load() != nullptr)) {
+    return false;
+  }
   DestroyDecoderLocked();
-  if (!app_foreground_.load() || native_window_ == nullptr) return false;
   return CreateDecoderLocked();
 }
 
@@ -778,11 +790,6 @@ void ReceiverSession::DestroyDecoderLocked() {
   }
   decoder_state_ = DecoderLifecycleState::kStopped;
   decoder_recovery_state_ = DecoderRecoveryState::kNeedsCodecData;
-}
-
-void ReceiverSession::StopDecoder() {
-  std::scoped_lock lifecycleLock(decoder_lifecycle_mutex_);
-  DestroyDecoderLocked();
 }
 
 bool ReceiverSession::FlushDecoder() {
@@ -951,36 +958,81 @@ void ReceiverSession::OnCodecOutput(OH_AVCodec* decoder, std::uint32_t index,
   static_cast<ReceiverSession*>(userData)->DecoderOutput(decoder, index, buffer);
 }
 
-void ReceiverSession::OnSurfaceCreated(OH_NativeXComponent*, void* window) {
+void ReceiverSession::OnSurfaceCreated(OH_NativeXComponent* component, void* window) {
+  bool decoderStarted = false;
   {
     std::scoped_lock lifecycleLock(decoder_lifecycle_mutex_);
-    native_window_ = window;
+    const auto currentSurface = reinterpret_cast<std::uintptr_t>(native_window_);
+    const auto callbackSurface = reinterpret_cast<std::uintptr_t>(window);
+    if (callbackSurface == 0) return;
+    if (ShouldReplaceSurface(currentSurface, callbackSurface) ||
+        !ShouldAcceptSurfaceChange(
+            reinterpret_cast<std::uintptr_t>(native_component_),
+            reinterpret_cast<std::uintptr_t>(component))) {
+      DestroyDecoderLocked();
+      native_component_ = component;
+      native_window_ = window;
+    } else if (native_component_ == nullptr) {
+      native_component_ = component;
+    }
+    decoderStarted = ReconcileDecoderLocked();
   }
-  if (StartDecoder()) RequestKeyframe();
+  if (decoderStarted) RequestKeyframe();
 }
 
-void ReceiverSession::OnSurfaceChanged(OH_NativeXComponent*, void* window) {
+void ReceiverSession::OnSurfaceChanged(OH_NativeXComponent* component, void* window) {
+  bool decoderStarted = false;
   {
     std::scoped_lock lifecycleLock(decoder_lifecycle_mutex_);
-    native_window_ = window;
+    const auto currentSurface = reinterpret_cast<std::uintptr_t>(native_window_);
+    const auto callbackSurface = reinterpret_cast<std::uintptr_t>(window);
+    if (callbackSurface == 0) return;
+    if (!ShouldAcceptSurfaceChange(
+            reinterpret_cast<std::uintptr_t>(native_component_),
+            reinterpret_cast<std::uintptr_t>(component))) {
+      return;
+    }
+    if (ShouldReplaceSurface(currentSurface, callbackSurface)) {
+      DestroyDecoderLocked();
+      native_component_ = component;
+      native_window_ = window;
+    }
+    decoderStarted = ReconcileDecoderLocked();
   }
-  if (StartDecoder()) RequestKeyframe();
+  if (decoderStarted) RequestKeyframe();
 }
 
-void ReceiverSession::OnSurfaceDestroyed() {
+void ReceiverSession::OnSurfaceDestroyed(OH_NativeXComponent* component, void* window) {
   std::scoped_lock lifecycleLock(decoder_lifecycle_mutex_);
+  if (!ShouldAcceptSurfaceChange(
+          reinterpret_cast<std::uintptr_t>(native_component_),
+          reinterpret_cast<std::uintptr_t>(component))) {
+    return;
+  }
+  if (!ShouldDestroyCurrentSurface(
+          reinterpret_cast<std::uintptr_t>(native_window_),
+          reinterpret_cast<std::uintptr_t>(window))) {
+    return;
+  }
   DestroyDecoderLocked();
+  native_component_ = nullptr;
   native_window_ = nullptr;
 }
 
 void ReceiverSession::OnAppForeground() {
-  app_foreground_ = true;
-  if (StartDecoder()) RequestKeyframe();
+  bool decoderStarted = false;
+  {
+    std::scoped_lock lifecycleLock(decoder_lifecycle_mutex_);
+    app_foreground_ = true;
+    decoderStarted = ReconcileDecoderLocked();
+  }
+  if (decoderStarted) RequestKeyframe();
 }
 
 void ReceiverSession::OnAppBackground() {
+  std::scoped_lock lifecycleLock(decoder_lifecycle_mutex_);
   app_foreground_ = false;
-  StopDecoder();
+  ReconcileDecoderLocked();
 }
 
 }  // namespace hss::receiver

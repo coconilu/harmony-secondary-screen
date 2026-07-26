@@ -70,10 +70,15 @@ try {
     @{ Path = 'receiver\entry\src\main\ets\pages\Index.ets'; Pattern = 'scanBarcode.startScanForResult' },
     @{ Path = 'receiver\entry\src\main\ets\pages\Index.ets'; Pattern = 'mdns.addLocalService' },
     @{ Path = 'receiver\entry\src\main\ets\pages\Index.ets'; Pattern = 'preferences.getPreferences' },
-    @{ Path = 'receiver\entry\src\main\ets\pages\Index.ets'; Pattern = 'setWindowKeepScreenOn' },
+    @{ Path = 'receiver\entry\src\main\ets\pages\Index.ets'; Pattern = 'PLAYBACK_ACTIVE_EVENT' },
+    @{ Path = 'receiver\entry\src\main\ets\entryability\EntryAbility.ets'; Pattern = 'setWindowKeepScreenOn' },
+    @{ Path = 'receiver\entry\src\main\ets\entryability\EntryAbility.ets'; Pattern = 'onWindowStageDestroy' },
     @{ Path = 'receiver\entry\src\main\ets\entryability\EntryAbility.ets'; Pattern = 'onAppForeground' },
     @{ Path = 'receiver\entry\src\main\ets\entryability\EntryAbility.ets'; Pattern = 'onAppBackground' },
-    @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'if (StartDecoder()) RequestKeyframe();' },
+    @{ Path = 'receiver\entry\src\main\cpp\napi_init.cpp'; Pattern = 'OnSurfaceDestroyed(component, window)' },
+    @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'ShouldDestroyCurrentSurface' },
+    @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'ReconcileDecoderLocked' },
+    @{ Path = 'receiver\tests\receiver_lifecycle_tests.cpp'; Pattern = 'a stale Surface destruction must not stop the current decoder' },
     @{ Path = 'docs\PROTOCOL.md'; Pattern = 'HWC4' },
     @{ Path = 'docs\PROTOCOL.md'; Pattern = 'sourceEpoch' }
   )) {
