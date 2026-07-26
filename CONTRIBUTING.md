@@ -12,3 +12,15 @@
 6. 没有把设备型号或具体视频网站写成业务逻辑条件。
 7. 变更带有可重复的验证步骤；涉及协议时已经同步更新 `docs/PROTOCOL.md`。
 8. 安全默认值仍只允许用户确认的可信局域网。
+
+## 本地验证
+
+提交前运行：
+
+```powershell
+.\scripts\test.ps1 -Configuration Release
+```
+
+默认 DevEco Studio 根目录是 `C:\Program Files\Huawei\DevEco Studio`。非默认安装可通过
+`HSS_DEVECO_ROOT` 指定；不要把个人绝对路径、SDK、Hvigor 包或签名材料提交到仓库。Receiver 构建工具
+及 Hvigor、npm、ohpm 缓存位于已忽略的 `out/harmony-build-tools/`，不会修改用户全局 cache。

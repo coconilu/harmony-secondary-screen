@@ -21,7 +21,7 @@ try {
 & (Join-Path $PSScriptRoot 'test-receiver-protocol.ps1')
 if ($LASTEXITCODE -ne 0) { throw "Receiver protocol tests failed: $LASTEXITCODE" }
 
-& (Join-Path $PSScriptRoot 'build-receiver.ps1')
+& (Join-Path $PSScriptRoot 'build-receiver.ps1') -Configuration $Configuration
 if ($LASTEXITCODE -ne 0) { throw "Receiver build failed: $LASTEXITCODE" }
 
 Write-Host 'Direct Edge-to-Receiver tests and build passed. Real Edge and tablet acceptance remain separate.'
