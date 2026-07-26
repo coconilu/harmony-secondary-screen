@@ -75,6 +75,17 @@ Edge tabCapture（video only）
 ```
 
 该命令执行扩展测试与依赖审计、Receiver 直连协议单元测试、静态安全检查和 HarmonyOS 原生构建。
+默认从 `C:\Program Files\Huawei\DevEco Studio` 读取 DevEco Studio；若安装在其他位置，先设置项目专用
+环境变量：
+
+```powershell
+$env:HSS_DEVECO_ROOT = 'D:\Huawei\DevEco Studio'
+.\scripts\test.ps1 -Configuration Release
+```
+
+脚本读取 DevEco 自带插件版本，并把完全同版的 Hvigor 引擎与插件安装到已忽略的
+`out/harmony-build-tools/`。它不会修改 DevEco 安装目录或用户全局 Hvigor cache；首次构建需要访问
+HarmonyOS 官方 npm 仓库，后续复用项目隔离工具链。
 
 Receiver 仓库配置不包含证书、私钥、口令或本机绝对签名路径。本地仍有效的旧签名材料应由拥有者
 轮换；本 Issue 不重写 Git 历史。
