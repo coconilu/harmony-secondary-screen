@@ -3,6 +3,7 @@
 #include "bounded_control_queue.h"
 #include "decoder_state.h"
 #include "native_protocol.h"
+#include "receiver_lifecycle_state.h"
 #include "websocket_protocol.h"
 
 #include <ace/xcomponent/native_interface_xcomponent.h>
@@ -90,7 +91,8 @@ class ReceiverSession final {
   void CloseSockets();
   void SetState(std::string state, std::string detail, bool listening, bool connected);
 
-  bool ReconcileDecoderLocked();
+  DecoderRuntimeSnapshot DecoderRuntimeLocked() const;
+  bool ApplyLifecycleDecisionLocked(ReceiverLifecycleDecision decision);
   bool CreateDecoderLocked();
   void DestroyDecoderLocked();
   void ClearDecoderQueues();
@@ -144,9 +146,7 @@ class ReceiverSession final {
   std::atomic<OH_AVCodec*> decoder_{nullptr};
   std::atomic<DecoderRecoveryState> decoder_recovery_state_{
       DecoderRecoveryState::kNeedsCodecData};
-  std::atomic<bool> app_foreground_{true};
-  OH_NativeXComponent* native_component_ = nullptr;
-  void* native_window_ = nullptr;
+  ReceiverLifecycleState lifecycle_state_;
   std::deque<InputSlot> input_slots_;
   std::deque<DecodedInput> decode_queue_;
   std::atomic<std::uint64_t> frames_decoded_{0};

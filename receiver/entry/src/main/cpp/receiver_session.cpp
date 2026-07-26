@@ -1,7 +1,6 @@
 #include "receiver_session.h"
 
 #include "avc_decoder_input.h"
-#include "receiver_lifecycle_policy.h"
 
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -677,21 +676,15 @@ void ReceiverSession::CloseSockets() {
   CloseSocket(&listener_socket_);
 }
 
-bool ReceiverSession::ReconcileDecoderLocked() {
-  const bool shouldRun =
-      DecoderShouldRun(app_foreground_.load(), native_window_ != nullptr);
-  if (!shouldRun) {
-    if (decoder_.load() != nullptr ||
-        decoder_state_.load() != DecoderLifecycleState::kStopped) {
-      DestroyDecoderLocked();
-    }
-    return false;
-  }
-  if (!DecoderRequiresRebuild(shouldRun, decoder_state_.load(),
-                              decoder_.load() != nullptr)) {
-    return false;
-  }
-  DestroyDecoderLocked();
+DecoderRuntimeSnapshot ReceiverSession::DecoderRuntimeLocked() const {
+  return {decoder_state_.load(), decoder_.load() != nullptr};
+}
+
+bool ReceiverSession::ApplyLifecycleDecisionLocked(
+    ReceiverLifecycleDecision decision) {
+  if (!decision.accepted) return false;
+  if (decision.stopDecoder) DestroyDecoderLocked();
+  if (!decision.startDecoder) return false;
   return CreateDecoderLocked();
 }
 
@@ -707,7 +700,7 @@ bool ReceiverSession::CreateDecoderLocked() {
              connected, connected);
   };
 
-  if (native_window_ == nullptr) {
+  if (!lifecycle_state_.DecoderShouldRun()) {
     fail("Surface", AV_ERR_INVALID_VAL);
     return false;
   }
@@ -743,7 +736,9 @@ bool ReceiverSession::CreateDecoderLocked() {
     return false;
   }
   const OH_AVErrCode setSurface =
-      OH_VideoDecoder_SetSurface(decoder, static_cast<OHNativeWindow*>(native_window_));
+      OH_VideoDecoder_SetSurface(
+          decoder,
+          reinterpret_cast<OHNativeWindow*>(lifecycle_state_.surface()));
   if (setSurface != AV_ERR_OK) {
     fail("SetSurface", setSurface);
     OH_VideoDecoder_Destroy(decoder);
@@ -810,7 +805,8 @@ bool ReceiverSession::FlushDecoder() {
       recovered = true;
     } else {
       DestroyDecoderLocked();
-      recovered = CreateDecoderLocked();
+      recovered =
+          lifecycle_state_.DecoderShouldRun() && CreateDecoderLocked();
     }
     decoder_recovery_state_ = DecoderRecoveryState::kNeedsCodecData;
   }
@@ -962,20 +958,11 @@ void ReceiverSession::OnSurfaceCreated(OH_NativeXComponent* component, void* win
   bool decoderStarted = false;
   {
     std::scoped_lock lifecycleLock(decoder_lifecycle_mutex_);
-    const auto currentSurface = reinterpret_cast<std::uintptr_t>(native_window_);
-    const auto callbackSurface = reinterpret_cast<std::uintptr_t>(window);
-    if (callbackSurface == 0) return;
-    if (ShouldReplaceSurface(currentSurface, callbackSurface) ||
-        !ShouldAcceptSurfaceChange(
-            reinterpret_cast<std::uintptr_t>(native_component_),
-            reinterpret_cast<std::uintptr_t>(component))) {
-      DestroyDecoderLocked();
-      native_component_ = component;
-      native_window_ = window;
-    } else if (native_component_ == nullptr) {
-      native_component_ = component;
-    }
-    decoderStarted = ReconcileDecoderLocked();
+    decoderStarted = ApplyLifecycleDecisionLocked(
+        lifecycle_state_.SurfaceCreated(
+            reinterpret_cast<std::uintptr_t>(component),
+            reinterpret_cast<std::uintptr_t>(window),
+            DecoderRuntimeLocked()));
   }
   if (decoderStarted) RequestKeyframe();
 }
@@ -984,55 +971,38 @@ void ReceiverSession::OnSurfaceChanged(OH_NativeXComponent* component, void* win
   bool decoderStarted = false;
   {
     std::scoped_lock lifecycleLock(decoder_lifecycle_mutex_);
-    const auto currentSurface = reinterpret_cast<std::uintptr_t>(native_window_);
-    const auto callbackSurface = reinterpret_cast<std::uintptr_t>(window);
-    if (callbackSurface == 0) return;
-    if (!ShouldAcceptSurfaceChange(
-            reinterpret_cast<std::uintptr_t>(native_component_),
-            reinterpret_cast<std::uintptr_t>(component))) {
-      return;
-    }
-    if (ShouldReplaceSurface(currentSurface, callbackSurface)) {
-      DestroyDecoderLocked();
-      native_component_ = component;
-      native_window_ = window;
-    }
-    decoderStarted = ReconcileDecoderLocked();
+    decoderStarted = ApplyLifecycleDecisionLocked(
+        lifecycle_state_.SurfaceChanged(
+            reinterpret_cast<std::uintptr_t>(component),
+            reinterpret_cast<std::uintptr_t>(window),
+            DecoderRuntimeLocked()));
   }
   if (decoderStarted) RequestKeyframe();
 }
 
 void ReceiverSession::OnSurfaceDestroyed(OH_NativeXComponent* component, void* window) {
   std::scoped_lock lifecycleLock(decoder_lifecycle_mutex_);
-  if (!ShouldAcceptSurfaceChange(
-          reinterpret_cast<std::uintptr_t>(native_component_),
-          reinterpret_cast<std::uintptr_t>(component))) {
-    return;
-  }
-  if (!ShouldDestroyCurrentSurface(
-          reinterpret_cast<std::uintptr_t>(native_window_),
-          reinterpret_cast<std::uintptr_t>(window))) {
-    return;
-  }
-  DestroyDecoderLocked();
-  native_component_ = nullptr;
-  native_window_ = nullptr;
+  ApplyLifecycleDecisionLocked(
+      lifecycle_state_.SurfaceDestroyed(
+          reinterpret_cast<std::uintptr_t>(component),
+          reinterpret_cast<std::uintptr_t>(window),
+          DecoderRuntimeLocked()));
 }
 
 void ReceiverSession::OnAppForeground() {
   bool decoderStarted = false;
   {
     std::scoped_lock lifecycleLock(decoder_lifecycle_mutex_);
-    app_foreground_ = true;
-    decoderStarted = ReconcileDecoderLocked();
+    decoderStarted = ApplyLifecycleDecisionLocked(
+        lifecycle_state_.Foreground(DecoderRuntimeLocked()));
   }
   if (decoderStarted) RequestKeyframe();
 }
 
 void ReceiverSession::OnAppBackground() {
   std::scoped_lock lifecycleLock(decoder_lifecycle_mutex_);
-  app_foreground_ = false;
-  ReconcileDecoderLocked();
+  ApplyLifecycleDecisionLocked(
+      lifecycle_state_.Background(DecoderRuntimeLocked()));
 }
 
 }  // namespace hss::receiver
