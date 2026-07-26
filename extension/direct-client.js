@@ -2,6 +2,9 @@ import {
   createDirectWebSocketUrl,
   DIRECT_MAX_BUFFERED_BYTES,
   DIRECT_PROTOCOL,
+  DIRECT_VIDEO_FRAMERATE,
+  DIRECT_VIDEO_HEIGHT,
+  DIRECT_VIDEO_WIDTH,
   validateTrustedDevice
 } from "./direct-protocol.js";
 
@@ -62,13 +65,13 @@ export class DirectReceiverConnection {
       sourceEpoch: this.sourceEpoch,
       codec: "video/avc",
       avcFormat: "annexb",
-      width: 1280,
-      height: 720,
-      fps: 30
+      width: DIRECT_VIDEO_WIDTH,
+      height: DIRECT_VIDEO_HEIGHT,
+      fps: DIRECT_VIDEO_FRAMERATE
     }, "ready");
     if (response.sourceEpoch !== this.sourceEpoch) {
       socket.close(1008, "epoch_mismatch");
-      throw new Error("Receiver 返回了错误的来源 epoch");
+      throw new Error("平板返回了过期的页面来源状态");
     }
     this.socket = socket;
     socket.addEventListener("message", (event) => {
@@ -113,7 +116,7 @@ export class DirectReceiverConnection {
 
   sendVideo(message) {
     if (!this.connected) {
-      throw new Error("Receiver WebSocket 未连接");
+      throw new Error("平板连接尚未建立");
     }
     if (!(message instanceof ArrayBuffer)) {
       throw new Error("视频消息必须是 ArrayBuffer");
@@ -155,7 +158,7 @@ function openAndExchange(socket, request, expectedType) {
   return new Promise((resolve, reject) => {
     let settled = false;
     const timeout = setTimeout(() => {
-      finish(new Error("连接 Receiver 超时"));
+      finish(new Error("连接平板超时"));
       socket.close();
     }, CONNECT_TIMEOUT_MS);
 
@@ -178,14 +181,14 @@ function openAndExchange(socket, request, expectedType) {
     }, { once: true });
     socket.addEventListener("message", (event) => {
       if (typeof event.data !== "string") {
-        finish(new Error("Receiver 在鉴权阶段返回了二进制数据"));
+        finish(new Error("平板在连接过程中返回了无法识别的数据"));
         return;
       }
       let message;
       try {
         message = JSON.parse(event.data);
       } catch {
-        finish(new Error("Receiver 返回了无效控制消息"));
+        finish(new Error("平板返回了无法识别的响应"));
         return;
       }
       if (message?.type === "error") {
@@ -196,16 +199,16 @@ function openAndExchange(socket, request, expectedType) {
         message?.type !== expectedType ||
         message.protocol !== DIRECT_PROTOCOL
       ) {
-        finish(new Error("Receiver 返回了无效鉴权响应"));
+        finish(new Error("平板返回了无效的连接响应"));
         return;
       }
       finish(null, message);
     });
     socket.addEventListener("error", () => {
-      finish(new Error("无法连接 Receiver，请检查同一 Wi-Fi 和地址"));
+      finish(new Error("无法连接平板，请检查电脑和平板是否在同一 Wi-Fi，以及平板地址是否正确"));
     });
     socket.addEventListener("close", () => {
-      finish(new Error("Receiver 在鉴权完成前断开"));
+      finish(new Error("平板在连接完成前断开"));
     });
   });
 }
@@ -217,8 +220,8 @@ function describeReceiverError(code) {
     identity_mismatch: "平板身份不匹配，请忘记设备后重新配对",
     not_paired: "该电脑尚未获得平板授权",
     pairing_failed: "一次性授权不匹配",
-    protocol_mismatch: "扩展与 Receiver 协议版本不兼容",
-    codec_unsupported: "平板不支持当前 H.264 参数",
-    epoch_stale: "Receiver 已切换到更新的页面来源"
-  }[code] ?? `Receiver 拒绝连接（${String(code ?? "unknown").slice(0, 64)}）`;
+    protocol_mismatch: "电脑扩展与平板应用版本不兼容，请同时更新后重试",
+    codec_unsupported: "当前平板无法播放这组视频参数",
+    epoch_stale: "平板已切换到更新的页面来源"
+  }[code] ?? `平板拒绝连接（${String(code ?? "unknown").slice(0, 64)}）`;
 }

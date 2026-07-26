@@ -22,7 +22,7 @@ test("QR authorization pairs with a fake Receiver and returns stable credentials
       assert.equal(pair.token, "2".repeat(64));
       socket.send(JSON.stringify({
         type: "paired",
-        protocol: 3,
+        protocol: 4,
         deviceId: "00112233445566778899aabbccddeeff",
         credential: "a".repeat(64)
       }));
@@ -59,11 +59,14 @@ test("direct WebSocket authenticates and delivers one Annex-B AU to a fake Recei
           assert.equal(isBinary, false);
           const auth = JSON.parse(data.toString("utf8"));
           assert.equal(auth.type, "auth");
-          assert.equal(auth.protocol, 3);
+          assert.equal(auth.protocol, 4);
           assert.equal(auth.sourceEpoch, 7);
+          assert.equal(auth.width, 1280);
+          assert.equal(auth.height, 720);
+          assert.equal(auth.fps, 60);
           socket.send(JSON.stringify({
             type: "ready",
-            protocol: 3,
+            protocol: 4,
             sourceEpoch: 7
           }));
           socket.once("message", (video, videoIsBinary) => {

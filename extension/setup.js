@@ -104,11 +104,11 @@ function renderAuthorization({
   clearError = true,
   permissionGranted = false
 } = {}) {
-  shortCode.textContent = `摄像头不可用时，在平板输入短码 ${authorization.shortCode}`;
+  shortCode.textContent = `也可以在平板输入 6 位连接码 ${authorization.shortCode}`;
   renderQrCode(authorization.payload);
   pairButton.textContent = permissionGranted
-    ? "地址权限已允许，继续连接平板"
-    : "已扫码，连接平板";
+    ? "继续连接平板"
+    : "完成连接";
   if (clearError) {
     errorMessage.hidden = true;
   }
@@ -148,7 +148,7 @@ export async function completePairing({ pair = pairReceiver } = {}) {
     showError(error);
   } finally {
     pairButton.disabled = false;
-    pairButton.textContent = "已扫码，连接平板";
+    pairButton.textContent = "完成连接";
   }
 }
 
@@ -210,7 +210,7 @@ function renderTrusted(trusted) {
   form.hidden = paired;
   pairedPanel.hidden = !paired;
   pairedAddress.textContent = paired
-    ? `设备 ${trusted.deviceId.slice(0, 8)} · ${trusted.host}`
+    ? `平板地址：${trusted.host}`
     : "";
   pairedHost.value = paired ? trusted.host : DEFAULT_RECEIVER_HOST;
 }

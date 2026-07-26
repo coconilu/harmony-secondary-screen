@@ -61,6 +61,8 @@ class ReceiverSession final {
   void OnSurfaceCreated(OH_NativeXComponent* component, void* window);
   void OnSurfaceChanged(OH_NativeXComponent* component, void* window);
   void OnSurfaceDestroyed();
+  void OnAppForeground();
+  void OnAppBackground();
 
  private:
   ReceiverSession() = default;
@@ -110,7 +112,7 @@ class ReceiverSession final {
 
   mutable std::mutex state_mutex_;
   std::string state_ = "idle";
-  std::string detail_ = "请输入本机 Wi-Fi IPv4";
+  std::string detail_ = "正在检查当前 Wi-Fi";
   std::string listen_address_;
   std::string paired_address_;
   bool listening_ = false;
@@ -143,6 +145,7 @@ class ReceiverSession final {
   std::atomic<OH_AVCodec*> decoder_{nullptr};
   std::atomic<DecoderRecoveryState> decoder_recovery_state_{
       DecoderRecoveryState::kNeedsCodecData};
+  std::atomic<bool> app_foreground_{true};
   void* native_window_ = nullptr;
   std::deque<InputSlot> input_slots_;
   std::deque<DecodedInput> decode_queue_;

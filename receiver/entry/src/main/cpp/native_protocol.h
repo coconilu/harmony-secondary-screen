@@ -9,8 +9,8 @@
 
 namespace hss::receiver::protocol {
 
-constexpr std::uint32_t kVideoMagic = 0x48574333U;
-constexpr std::uint8_t kVersion = 3;
+constexpr std::uint32_t kVideoMagic = 0x48574334U;
+constexpr std::uint8_t kVersion = 4;
 constexpr std::size_t kHeaderSize = 32;
 constexpr std::uint32_t kMaxControlPayload = 64U * 1024U;
 constexpr std::size_t kMaxFrameBytes = 8U * 1024U * 1024U;

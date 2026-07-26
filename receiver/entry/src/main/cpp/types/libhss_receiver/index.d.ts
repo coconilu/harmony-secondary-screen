@@ -37,6 +37,8 @@ export const forgetDevice: () => void;
 export const getStatus: () => ReceiverStatus;
 export const getPairing: () => PairingRecord;
 export const getWifiAddresses: () => string[];
+export const onAppForeground: () => void;
+export const onAppBackground: () => void;
 
 declare const receiver: {
   startReceiver: typeof startReceiver;
@@ -48,6 +50,8 @@ declare const receiver: {
   getStatus: typeof getStatus;
   getPairing: typeof getPairing;
   getWifiAddresses: typeof getWifiAddresses;
+  onAppForeground: typeof onAppForeground;
+  onAppBackground: typeof onAppBackground;
 };
 
 export default receiver;

@@ -22,7 +22,7 @@ Windows Relay/Native Host 不再属于正常路径，也不由 `scripts/test.ps1
 唯一 video track
   ↓ MediaStreamTrackProcessor
 唯一 VideoEncoder（H.264 Annex-B）
-  ↓ HWC3 binary WebSocket message
+  ↓ HWC4 binary WebSocket message
 Receiver 绑定用户确认的具体私网 wlan IPv4:44000
   ↓ sourceEpoch 校验
 OH_VideoDecoder

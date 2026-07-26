@@ -44,7 +44,7 @@ HarmonyOS 使用公共 DNS-SD API 注册 `_hwc._tcp` 服务实例。是否能在
 ```text
 Edge tabCapture（video only）
   → offscreen document
-  → WebCodecs H.264 Annex-B 1280×720 @ 30 fps
+  → WebCodecs H.264 Annex-B 1280×720 @ 60 fps（目标 8 Mbps，实测帧率以监控页为准）
   → ws://<Receiver>:44000/direct
   → HarmonyOS C++ WebSocket server
   → OH_VideoDecoder
@@ -82,7 +82,7 @@ Receiver 仓库配置不包含证书、私钥、口令或本机绝对签名路�
 ## 文档
 
 - [系统架构](docs/ARCHITECTURE.md)
-- [HWC3 直连协议](docs/PROTOCOL.md)
+- [HWC4 直连协议](docs/PROTOCOL.md)
 - [真实设备测试](docs/REAL_DEVICE_TEST.md)
 - [兼容性策略](docs/COMPATIBILITY.md)
 - [Edge 扩展说明](extension/README.md)

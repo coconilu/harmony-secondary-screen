@@ -144,7 +144,7 @@ ReceiverSession::~ReceiverSession() {
 bool ReceiverSession::Start(std::string listenAddress) {
   in_addr address{};
   if (!IsCurrentWifiIpv4(listenAddress, &address)) {
-    SetState("error", "该地址不是本机当前启用的 Wi-Fi IPv4", false, false);
+    SetState("error", "这个地址不是平板当前使用的 Wi-Fi 地址", false, false);
     return false;
   }
   Stop();
@@ -174,7 +174,7 @@ bool ReceiverSession::Start(std::string listenAddress) {
   received_frames_ = 0;
   received_bytes_ = 0;
   desired_ = true;
-  SetState("starting", "正在绑定已确认的 Wi-Fi 地址", false, false);
+  SetState("starting", "正在准备接收电脑画面", false, false);
   worker_ = std::thread(&ReceiverSession::NetworkLoop, this);
   return true;
 }
@@ -188,7 +188,7 @@ void ReceiverSession::Stop() {
   websocket_decoder_.Reset();
   telemetry_queue_.Clear();
   keyframe_request_pending_ = false;
-  SetState("idle", "请输入本机 Wi-Fi IPv4", false, false);
+  SetState("idle", "尚未开始接收画面", false, false);
 }
 
 bool ReceiverSession::ConfigureTrust(std::string deviceId, std::string senderId,
@@ -296,17 +296,17 @@ void ReceiverSession::SetState(std::string state, std::string detail, bool liste
 
 void ReceiverSession::NetworkLoop() {
   if (!OpenListener()) {
-    if (desired_) SetState("error", "无法在该 Wi-Fi 地址绑定 44000", false, false);
+    if (desired_) SetState("error", "无法开始接收，请检查 Wi-Fi 后重试", false, false);
     CloseSockets();
     return;
   }
-  SetState("listening", "等待已配对 Edge；首次使用请扫码或输入短码", true, false);
+  SetState("listening", "等待电脑发送画面；首次使用请先连接电脑", true, false);
   while (desired_) {
     AcceptWebSocket();
     CloseControlSocket();
     websocket_decoder_.Reset();
     if (desired_) {
-      SetState("listening", "等待已配对 Edge；首次使用请扫码或输入短码", true, false);
+      SetState("listening", "等待电脑发送画面；首次使用请先连接电脑", true, false);
     }
   }
   CloseSockets();
@@ -407,7 +407,7 @@ bool ReceiverSession::AuthenticateConnection() {
       const std::string json(reinterpret_cast<const char*>(message.payload.data()),
                              message.payload.size());
       if (protocol::JsonInteger(json, "protocol") != protocol::kVersion) {
-        SendControl(R"({"type":"error","protocol":3,"code":"protocol_mismatch"})");
+        SendControl(R"({"type":"error","protocol":4,"code":"protocol_mismatch"})");
         return false;
       }
       const auto type = protocol::JsonString(json, "type");
@@ -460,19 +460,19 @@ bool ReceiverSession::AuthenticateConnection() {
           }
         }
         if (!error.empty()) {
-          return SendControl("{\"type\":\"error\",\"protocol\":3,\"code\":\"" + error + "\"}") &&
+          return SendControl("{\"type\":\"error\",\"protocol\":4,\"code\":\"" + error + "\"}") &&
                  false;
         }
         std::ostringstream reply;
-        reply << "{\"type\":\"paired\",\"protocol\":3,\"deviceId\":\""
+        reply << "{\"type\":\"paired\",\"protocol\":4,\"deviceId\":\""
               << protocol::EscapeJson(deviceId) << "\",\"credential\":\""
               << protocol::EscapeJson(credential) << "\"}";
         SendControl(reply.str());
-        SetState("paired", "配对成功，凭据将在应用沙箱中保存", true, false);
+        SetState("paired", "电脑连接成功，下次使用无需再次扫码", true, false);
         return false;
       }
       if (type != "auth") {
-        SendControl(R"({"type":"error","protocol":3,"code":"not_paired"})");
+        SendControl(R"({"type":"error","protocol":4,"code":"not_paired"})");
         return false;
       }
       const std::string senderId = protocol::JsonString(json, "senderId").value_or("");
@@ -497,11 +497,11 @@ bool ReceiverSession::AuthenticateConnection() {
         }
       }
       if (!trusted) {
-        SendControl(R"({"type":"error","protocol":3,"code":"identity_mismatch"})");
+        SendControl(R"({"type":"error","protocol":4,"code":"identity_mismatch"})");
         return false;
       }
       if (stale) {
-        SendControl(R"({"type":"error","protocol":3,"code":"epoch_stale"})");
+        SendControl(R"({"type":"error","protocol":4,"code":"epoch_stale"})");
         return false;
       }
       const bool codecValid =
@@ -509,16 +509,16 @@ bool ReceiverSession::AuthenticateConnection() {
           protocol::JsonString(json, "avcFormat") == "annexb" &&
           protocol::JsonInteger(json, "width") == 1280 &&
           protocol::JsonInteger(json, "height") == 720 &&
-          protocol::JsonInteger(json, "fps") == 30;
+          protocol::JsonInteger(json, "fps") == 60;
       if (!codecValid) {
-        SendControl(R"({"type":"error","protocol":3,"code":"codec_unsupported"})");
+        SendControl(R"({"type":"error","protocol":4,"code":"codec_unsupported"})");
         return false;
       }
       if (epochChanged) FlushDecoder();
       std::ostringstream reply;
-      reply << "{\"type\":\"ready\",\"protocol\":3,\"sourceEpoch\":" << *epoch << "}";
+      reply << "{\"type\":\"ready\",\"protocol\":4,\"sourceEpoch\":" << *epoch << "}";
       if (!SendControl(reply.str())) return false;
-      SetState("connected", "Edge 已鉴权，等待 H.264 关键帧", true, true);
+      SetState("connected", "电脑已连接，正在准备播放画面", true, true);
       keyframe_request_pending_ = true;
       return true;
     }
@@ -563,7 +563,7 @@ bool ReceiverSession::RunConnectedSession() {
       }
     }
     if (keyframe_request_pending_.exchange(false) &&
-        !SendControl(R"({"type":"keyframe","protocol":3,"reason":"loss_flush_or_session_start","requireCodecConfig":true})")) {
+        !SendControl(R"({"type":"keyframe","protocol":4,"reason":"loss_flush_or_session_start","requireCodecConfig":true})")) {
       return false;
     }
     std::string telemetry;
@@ -611,7 +611,7 @@ bool ReceiverSession::HandleControl(std::string_view json) {
     const auto at = protocol::JsonInteger(json, "at");
     if (!at) return false;
     std::ostringstream pong;
-    pong << "{\"type\":\"pong\",\"protocol\":3,\"at\":" << *at << "}";
+    pong << "{\"type\":\"pong\",\"protocol\":4,\"at\":" << *at << "}";
     return SendControl(pong.str());
   }
   return type != "close";
@@ -630,6 +630,10 @@ void ReceiverSession::HandleVideo(const std::byte* data, std::size_t size) {
   }
   ++received_frames_;
   received_bytes_ += header->payloadLength;
+  if (!DecoderCallbacksAllowed(decoder_state_.load()) || decoder_.load() == nullptr) {
+    ++frames_dropped_;
+    return;
+  }
   const auto recoveryState = decoder_recovery_state_.load();
   const bool keyframe = (header->flags & protocol::kKeyframe) != 0;
   std::vector<std::byte> bytes(data + protocol::kHeaderSize,
@@ -675,6 +679,7 @@ void ReceiverSession::CloseSockets() {
 bool ReceiverSession::StartDecoder() {
   std::scoped_lock lifecycleLock(decoder_lifecycle_mutex_);
   DestroyDecoderLocked();
+  if (!app_foreground_.load() || native_window_ == nullptr) return false;
   return CreateDecoderLocked();
 }
 
@@ -685,7 +690,7 @@ bool ReceiverSession::CreateDecoderLocked() {
                  "AVCodec initialization failed at %{public}s, error=%{public}d",
                  operation, errorCode);
     SetState("error",
-             std::string("解码器初始化失败：") + operation + "（错误码 " +
+             std::string("视频播放准备失败：") + operation + "（错误码 " +
                  std::to_string(errorCode) + "）",
              connected, connected);
   };
@@ -888,7 +893,8 @@ void ReceiverSession::PumpDecoderLocked(OH_AVCodec* decoder) {
 
 void ReceiverSession::DecoderError(int32_t errorCode) {
   const bool connected = Status().connected;
-  SetState("error", "AVCodec 解码错误: " + std::to_string(errorCode), connected, connected);
+  SetState("error", "视频播放出错（错误码 " + std::to_string(errorCode) + "）",
+           connected, connected);
 }
 
 void ReceiverSession::DecoderNeedInput(OH_AVCodec* callbackDecoder, std::uint32_t index,
@@ -913,10 +919,10 @@ void ReceiverSession::DecoderOutput(OH_AVCodec* decoder, std::uint32_t index,
     if (OH_VideoDecoder_RenderOutputBuffer(decoder, index) == AV_ERR_OK) {
       const auto decoded = ++frames_decoded_;
       if (decoded == 1) {
-        SetState("displaying", "首个 H.264 关键帧已由 AVCodec 显示", true, true);
+        SetState("displaying", "正在播放电脑发送的画面", true, true);
       }
       std::ostringstream telemetry;
-      telemetry << "{\"type\":\"telemetry\",\"protocol\":3,\"captureUs\":" << attributes.pts
+      telemetry << "{\"type\":\"telemetry\",\"protocol\":4,\"captureUs\":" << attributes.pts
                 << ",\"displayUs\":" << ClockMicroseconds()
                 << ",\"receivedFrames\":" << received_frames_.load()
                 << ",\"receivedBytes\":" << received_bytes_.load()
@@ -950,7 +956,7 @@ void ReceiverSession::OnSurfaceCreated(OH_NativeXComponent*, void* window) {
     std::scoped_lock lifecycleLock(decoder_lifecycle_mutex_);
     native_window_ = window;
   }
-  StartDecoder();
+  if (StartDecoder()) RequestKeyframe();
 }
 
 void ReceiverSession::OnSurfaceChanged(OH_NativeXComponent*, void* window) {
@@ -958,14 +964,23 @@ void ReceiverSession::OnSurfaceChanged(OH_NativeXComponent*, void* window) {
     std::scoped_lock lifecycleLock(decoder_lifecycle_mutex_);
     native_window_ = window;
   }
-  StartDecoder();
-  RequestKeyframe();
+  if (StartDecoder()) RequestKeyframe();
 }
 
 void ReceiverSession::OnSurfaceDestroyed() {
   std::scoped_lock lifecycleLock(decoder_lifecycle_mutex_);
   DestroyDecoderLocked();
   native_window_ = nullptr;
+}
+
+void ReceiverSession::OnAppForeground() {
+  app_foreground_ = true;
+  if (StartDecoder()) RequestKeyframe();
+}
+
+void ReceiverSession::OnAppBackground() {
+  app_foreground_ = false;
+  StopDecoder();
 }
 
 }  // namespace hss::receiver

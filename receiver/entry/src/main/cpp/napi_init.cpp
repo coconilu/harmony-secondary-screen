@@ -149,6 +149,20 @@ napi_value GetWifiAddresses(napi_env env, napi_callback_info) {
   return result;
 }
 
+napi_value OnAppForeground(napi_env env, napi_callback_info) {
+  ReceiverSession::Instance().OnAppForeground();
+  napi_value result;
+  napi_get_undefined(env, &result);
+  return result;
+}
+
+napi_value OnAppBackground(napi_env env, napi_callback_info) {
+  ReceiverSession::Instance().OnAppBackground();
+  napi_value result;
+  napi_get_undefined(env, &result);
+  return result;
+}
+
 void SurfaceCreated(OH_NativeXComponent* component, void* window) {
   ReceiverSession::Instance().OnSurfaceCreated(component, window);
 }
@@ -162,7 +176,7 @@ void SurfaceDestroyed(OH_NativeXComponent*, void*) {
 }
 
 napi_value Init(napi_env env, napi_value exports) {
-  const std::array<napi_property_descriptor, 9> properties{{
+  const std::array<napi_property_descriptor, 11> properties{{
       {"startReceiver", nullptr, StartReceiver, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"stopReceiver", nullptr, StopReceiver, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"configureTrust", nullptr, ConfigureTrust, nullptr, nullptr, nullptr, napi_default, nullptr},
@@ -172,6 +186,8 @@ napi_value Init(napi_env env, napi_value exports) {
       {"getStatus", nullptr, GetStatus, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"getPairing", nullptr, GetPairing, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"getWifiAddresses", nullptr, GetWifiAddresses, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"onAppForeground", nullptr, OnAppForeground, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"onAppBackground", nullptr, OnAppBackground, nullptr, nullptr, nullptr, napi_default, nullptr},
   }};
   napi_define_properties(env, exports, properties.size(), properties.data());
 

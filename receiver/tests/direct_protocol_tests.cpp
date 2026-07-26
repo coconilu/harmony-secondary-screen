@@ -76,6 +76,10 @@ void ExtensionWireVectorTest(const char* fixturePath) {
   auto invalidHeaderSize = message;
   invalidHeaderSize[7] = std::byte{31};
   CHECK(!DecodeVideoHeader(invalidHeaderSize.data(), invalidHeaderSize.size()));
+  auto legacyHwc3 = message;
+  legacyHwc3[3] = std::byte{0x33};
+  legacyHwc3[4] = std::byte{3};
+  CHECK(!DecodeVideoHeader(legacyHwc3.data(), legacyHwc3.size()));
   auto invalidFlags = message;
   invalidFlags[5] = std::byte{0x80};
   CHECK(!DecodeVideoHeader(invalidFlags.data(), invalidFlags.size()));

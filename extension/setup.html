@@ -20,11 +20,12 @@
       <p id="error-message" class="error" role="alert" hidden></p>
 
       <section id="paired-panel" hidden>
-        <p class="success">已配对 HarmonyOS Receiver</p>
+        <p class="success">已连接这台平板</p>
         <p id="paired-address" class="muted"></p>
-        <label for="paired-host">连接地址</label>
+        <label for="paired-host">平板地址</label>
         <input id="paired-host" autocomplete="off">
-        <button id="update-host-button" class="secondary" type="button">更新地址（不重新配对）</button>
+        <p class="muted">通常无需修改；只有平板 Wi-Fi 地址变化且无法连接时才需要更新。</p>
+        <button id="update-host-button" class="secondary" type="button">保存平板地址</button>
         <button id="start-button" type="button">发送当前标签页</button>
         <button id="forget-button" class="secondary" type="button">忘记这台平板</button>
       </section>
@@ -33,9 +34,9 @@
         <div class="qr-wrap">
           <canvas id="pairing-qr" width="224" height="224" aria-label="一次性配对二维码"></canvas>
         </div>
-        <p class="muted">在平板 Receiver 点击“扫码配对”，二维码 60 秒内有效且只能使用一次。</p>
+        <p class="muted">在平板的“网页伴随屏”中点击“连接电脑”，然后扫描此二维码。二维码 60 秒内有效。</p>
 
-        <label for="receiver-address">Receiver 地址</label>
+        <label for="receiver-address">平板地址</label>
         <input
           id="receiver-address"
           name="receiver-address"
@@ -44,7 +45,7 @@
           required>
 
         <p id="short-code" class="short-code"></p>
-        <button id="pair-button" type="submit">已扫码，连接平板</button>
+        <button id="pair-button" type="submit">完成连接</button>
         <button id="refresh-button" class="secondary" type="button">刷新二维码</button>
       </form>
 

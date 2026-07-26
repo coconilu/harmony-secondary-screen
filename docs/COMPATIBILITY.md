@@ -5,7 +5,7 @@
 | 层 | 运行时门禁 |
 | --- | --- |
 | Edge | MV3、`tabCapture`、offscreen、MediaStreamTrackProcessor、WebCodecs |
-| 编码 | H.264 `avc1.42001f`、Annex-B、1280×720 @ 30 fps |
+| 编码 | H.264 `avc1.420028`、Annex-B、1280×720 @ 60 fps、目标 8 Mbps |
 | 局域网 | Edge Local Network Access、WebSocket、私网 Wi-Fi |
 | HarmonyOS | API 23+、ScanKit、NetworkKit mDNS、Preferences、AVCodec、XComponent |
 
@@ -48,5 +48,6 @@ VPN 的“阻止局域网”可能阻止连接，产品不修改 VPN、代理、
 - Receiver 构建成功不等于目标平板扫码或 AVCodec 显示成功；
 - DNS-SD API 成功不等于裸 `.local` 可解析；
 - 假 Receiver 收到 Annex-B 不等于真实 Edge/平板端到端通过；
-- 旧 Relay 的 13 分 24 秒结果不等于 HWC3 直连链路通过；
+- 配置 60 fps 不等于实际源视频或 Edge 一定持续产出 60 帧；
+- 旧 Relay 的 13 分 24 秒结果不等于 HWC4 直连链路通过；
 - 短时画面不等于 #3 的 30 分钟、延迟、丢包和恢复验收。
