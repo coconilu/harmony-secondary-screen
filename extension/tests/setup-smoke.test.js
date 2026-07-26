@@ -170,7 +170,7 @@ test("fresh install renders the pairing form and initializes a QR code", async (
   );
   assert.match(
     environment.elements.get("#short-code").textContent,
-    /在平板输入短码 \d{6}/
+    /在平板输入 6 位连接码 \d{6}/
   );
   assert.equal(environment.elements.get("#error-message").hidden, true);
 });
@@ -282,7 +282,7 @@ test("permission popup interruption restores the same pending pairing and finish
   );
   assert.match(
     secondEnvironment.elements.get("#pair-button").textContent,
-    /地址权限已允许/
+    /继续连接平板/
   );
   assert.equal(secondEnvironment.state.requestCalls.length, 1);
 

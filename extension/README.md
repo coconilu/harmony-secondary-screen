@@ -42,7 +42,7 @@ Edge 首次请求手动私网 IP 权限时可能关闭 popup。扩展会先把�
 
 ## 编码与隐私
 
-- H.264 Annex-B `1280×720 @ 30 fps`，目标 4 Mbps；
+- H.264 Annex-B `1280×720 @ 60 fps`，目标 8 Mbps；不复制源帧，实际帧率以监控页为准；
 - 关键帧最长约 2 秒，并响应 Receiver 请求；
 - `audio: false`，声音留在 PC；
 - QR token/短码仅在当前浏览器内存会话的 `chrome.storage.session` 暂存 60 秒；成功、主动刷新或

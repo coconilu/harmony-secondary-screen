@@ -1,10 +1,15 @@
-export const DIRECT_PROTOCOL = 3;
+export const DIRECT_PROTOCOL = 4;
 export const DIRECT_PORT = 44000;
 export const DEFAULT_RECEIVER_HOST = "harmony-web-companion.local";
-export const DIRECT_VIDEO_MAGIC = 0x48574333;
+export const DIRECT_VIDEO_MAGIC = 0x48574334;
 export const DIRECT_VIDEO_HEADER_SIZE = 32;
 export const DIRECT_VIDEO_MAX_PAYLOAD_BYTES = 8 * 1024 * 1024;
 export const DIRECT_MAX_BUFFERED_BYTES = 4 * 1024 * 1024;
+export const DIRECT_VIDEO_CODEC = "avc1.420028";
+export const DIRECT_VIDEO_WIDTH = 1280;
+export const DIRECT_VIDEO_HEIGHT = 720;
+export const DIRECT_VIDEO_FRAMERATE = 60;
+export const DIRECT_VIDEO_BITRATE = 8_000_000;
 export const PAIRING_TTL_MS = 60_000;
 
 const PRIVATE_IPV4_ERROR = "v0.1 只允许可信局域网 IPv4 地址";

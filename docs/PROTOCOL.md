@@ -1,6 +1,12 @@
-# HWC3 直连协议
+# HWC4 直连协议
 
-协议版本：`3`，magic：`0x48574333`（`HWC3`）。
+协议版本：`4`，magic：`0x48574334`（`HWC4`）。
+
+HWC4 将固定媒体合同从 1280×720 @ 30 fps / 4 Mbps 升级为 1280×720 @ 60 fps / 8 Mbps，
+属于不兼容升级。Edge 扩展和平板应用必须同时更新；新旧版本混用时返回
+`protocol_mismatch`，不会误报为平板编解码能力不足。
+已有 `deviceId`、senderId 和 credential 不因版本升级而删除，双端更新后无需重新配对；
+未完成的一次性二维码或短码需要刷新。
 
 状态：自动化协议测试与 targetSdk 24 构建通过；真实 Edge + HarmonyOS 平板直连尚未验证。
 
@@ -25,7 +31,7 @@ Receiver 随后继续接受下一条连接，避免单个客户端长期占用�
 
 ```json
 {
-  "v": 3,
+  "v": 4,
   "sid": "32-lowercase-hex",
   "token": "64-lowercase-hex",
   "exp": 1784952000000
@@ -44,7 +50,7 @@ Receiver 随后继续接受下一条连接，避免单个客户端长期占用�
 ```json
 {
   "type": "pair",
-  "protocol": 3,
+  "protocol": 4,
   "sessionId": "32-lowercase-hex",
   "token": "64-lowercase-hex",
   "senderId": "stable-extension-uuid"
@@ -56,7 +62,7 @@ Receiver 校验授权未过期、未使用且内容匹配，随后销毁一次�
 ```json
 {
   "type": "paired",
-  "protocol": 3,
+  "protocol": 4,
   "deviceId": "32-lowercase-hex",
   "credential": "64-lowercase-hex"
 }
@@ -74,7 +80,7 @@ v0.1 运行于用户确认的可信局域网，使用明文 `ws://`；它不支�
 ```json
 {
   "type": "auth",
-  "protocol": 3,
+  "protocol": 4,
   "senderId": "stable-extension-uuid",
   "deviceId": "32-lowercase-hex",
   "credential": "64-lowercase-hex",
@@ -83,14 +89,16 @@ v0.1 运行于用户确认的可信局域网，使用明文 `ws://`；它不支�
   "avcFormat": "annexb",
   "width": 1280,
   "height": 720,
-  "fps": 30
+  "fps": 60
 }
 ```
 
 Receiver 只接受已保存身份、固定编码参数以及不小于历史最新值的 `sourceEpoch`：
+发送端请求并配置 60 fps，但不复制帧；若源视频、Edge 合成或设备刷新率不足 60 Hz，监控页显示的
+实际捕获/编码帧率会低于 60。
 
 ```json
-{"type":"ready","protocol":3,"sourceEpoch":12}
+{"type":"ready","protocol":4,"sourceEpoch":12}
 ```
 
 用户在任一端忘记设备后，本地长期凭据立即删除；Receiver 同时关闭当前连接。
@@ -101,8 +109,8 @@ Receiver 只接受已保存身份、固定编码参数以及不小于历史最�
 
 | 偏移 | 字段 | 类型 | 说明 |
 | ---: | --- | --- | --- |
-| 0 | magic | u32 | `0x48574333` |
-| 4 | version | u8 | `3` |
+| 0 | magic | u32 | `0x48574334` |
+| 4 | version | u8 | `4` |
 | 5 | flags | u8 | bit0 keyframe；其他位必须为 0 |
 | 6 | headerSize | u16 | 固定 `32` |
 | 8 | sourceEpoch | u32 | 当前唯一来源的 epoch |
@@ -120,19 +128,19 @@ Receiver 只接受已保存身份、固定编码参数以及不小于历史最�
 扩展每 5 秒发送：
 
 ```json
-{"type":"ping","protocol":3,"at":1784952000000}
+{"type":"ping","protocol":4,"at":1784952000000}
 ```
 
 Receiver 回应：
 
 ```json
-{"type":"pong","protocol":3,"at":1784952000000}
+{"type":"pong","protocol":4,"at":1784952000000}
 ```
 
 Receiver 在会话开始、解码 Flush 或丢失恢复时发送：
 
 ```json
-{"type":"keyframe","protocol":3,"reason":"loss_flush_or_session_start","requireCodecConfig":true}
+{"type":"keyframe","protocol":4,"reason":"loss_flush_or_session_start","requireCodecConfig":true}
 ```
 
 Receiver 遥测：
@@ -140,7 +148,7 @@ Receiver 遥测：
 ```json
 {
   "type": "telemetry",
-  "protocol": 3,
+  "protocol": 4,
   "captureUs": 8101000,
   "displayUs": 8161200,
   "receivedFrames": 3600,
@@ -150,14 +158,14 @@ Receiver 遥测：
 }
 ```
 
-正常停止使用 `{"type":"close","protocol":3}`。遥测、日志和导出不得包含秘密、网页 URL/标题、
+正常停止使用 `{"type":"close","protocol":4}`。遥测、日志和导出不得包含秘密、网页 URL/标题、
 Cookie、正文或视频 payload。
 
 ## 错误码
 
 | code | 含义 |
 | --- | --- |
-| `protocol_mismatch` | 不是 HWC3 |
+| `protocol_mismatch` | 不是 HWC4；扩展与平板应用需要同时更新 |
 | `authorization_expired` | 一次性授权过期 |
 | `authorization_replayed` | sid 已成功使用 |
 | `pairing_failed` | QR/短码内容不匹配 |
@@ -175,5 +183,5 @@ Receiver 通过 HarmonyOS 公共 `mdns.addLocalService` 注册 `_hwc._tcp` /
 
 ## 不存在的能力
 
-HWC3 不传输 audio、pointer、keyboard、scroll、URL、Cookie、正文、桌面枚举，也没有 UDP、公网、
+HWC4 不传输 audio、pointer、keyboard、scroll、URL、Cookie、正文、桌面枚举，也没有 UDP、公网、
 云中继、设备浏览或多路标签页媒体流。

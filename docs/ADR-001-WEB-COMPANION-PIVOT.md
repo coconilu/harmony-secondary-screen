@@ -1,7 +1,7 @@
 # ADR-001：从真扩展屏转向网页伴随屏
 
 - 状态：产品方向已接受；其中 Relay/Native Host 安装与 HSS2 传输部分已被
-  [HWC3 直连协议](PROTOCOL.md)取代
+  [HWC4 直连协议](PROTOCOL.md)取代
 - 日期：2026-07-24
 - 决策范围：v0.1 产品目标、Windows 捕获入口、局域网角色与安装模型
 

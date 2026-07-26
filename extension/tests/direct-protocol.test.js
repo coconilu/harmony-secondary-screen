@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   createDirectVideoMessage,
   createPairingAuthorization,
+  DIRECT_PROTOCOL,
   DIRECT_VIDEO_HEADER_SIZE,
   DIRECT_VIDEO_MAGIC,
   isLatestEpoch,
@@ -12,6 +13,8 @@ import {
 } from "../direct-protocol.js";
 
 test("serializes an Annex-B access unit byte-for-byte for the direct Receiver", () => {
+  assert.equal(DIRECT_PROTOCOL, 4);
+  assert.equal(DIRECT_VIDEO_MAGIC, 0x48574334);
   const annexB = Uint8Array.from([
     0, 0, 0, 1, 0x67, 0x42, 0, 0x1f,
     0, 0, 0, 1, 0x65, 0x88, 0x84
@@ -27,7 +30,7 @@ test("serializes an Annex-B access unit byte-for-byte for the direct Receiver", 
   const receivedByFakeReceiver = createDirectVideoMessage(chunk, 9, 42);
   const view = new DataView(receivedByFakeReceiver);
   assert.equal(view.getUint32(0, false), DIRECT_VIDEO_MAGIC);
-  assert.equal(view.getUint8(4), 3);
+  assert.equal(view.getUint8(4), DIRECT_PROTOCOL);
   assert.equal(view.getUint8(5), 1);
   assert.equal(view.getUint16(6, false), DIRECT_VIDEO_HEADER_SIZE);
   assert.equal(view.getUint32(8, false), 9);
@@ -56,6 +59,7 @@ test("pairing authorization is valid once within sixty seconds", () => {
     return target;
   });
   assert.equal(authorization.expiresAt, 61_000);
+  assert.equal(JSON.parse(authorization.payload).v, 4);
   assert.deepEqual(parsePairingAuthorization(authorization.payload, 60_999), {
     sessionId: authorization.sessionId,
     token: authorization.token,

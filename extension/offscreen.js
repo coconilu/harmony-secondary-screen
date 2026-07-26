@@ -2,23 +2,24 @@ import { FrameMonitor } from "./frame-monitor.js";
 import { EncoderMonitor } from "./encoder-monitor.js";
 import {
   createDirectVideoMessage,
-  DIRECT_VIDEO_MAX_PAYLOAD_BYTES
+  DIRECT_VIDEO_BITRATE,
+  DIRECT_VIDEO_CODEC,
+  DIRECT_VIDEO_FRAMERATE,
+  DIRECT_VIDEO_HEIGHT,
+  DIRECT_VIDEO_MAX_PAYLOAD_BYTES,
+  DIRECT_VIDEO_WIDTH
 } from "./direct-protocol.js";
 import { DirectReceiverConnection } from "./direct-client.js";
+import { shouldRequestPeriodicKeyFrame } from "./keyframe-policy.js";
 
 const TELEMETRY_INTERVAL_MS = 500;
-const ENCODE_WIDTH = 1280;
-const ENCODE_HEIGHT = 720;
-const ENCODE_FRAMERATE = 30;
-const ENCODE_BITRATE = 4_000_000;
 const MAX_ENCODE_QUEUE_SIZE = 2;
-const KEYFRAME_INTERVAL_FRAMES = ENCODE_FRAMERATE * 2;
 const H264_CONFIG = {
-  codec: "avc1.42001f",
-  width: ENCODE_WIDTH,
-  height: ENCODE_HEIGHT,
-  bitrate: ENCODE_BITRATE,
-  framerate: ENCODE_FRAMERATE,
+  codec: DIRECT_VIDEO_CODEC,
+  width: DIRECT_VIDEO_WIDTH,
+  height: DIRECT_VIDEO_HEIGHT,
+  bitrate: DIRECT_VIDEO_BITRATE,
+  framerate: DIRECT_VIDEO_FRAMERATE,
   hardwareAcceleration: "prefer-hardware",
   latencyMode: "realtime",
   alpha: "discard",
@@ -43,6 +44,7 @@ let sourceEpoch = 0;
 let directSequence = 0;
 let directTelemetry = createDirectTelemetry();
 let forceKeyFrame = true;
+let lastKeyFrameTimestampUs = Number.NaN;
 let running = false;
 let stopping = false;
 
@@ -87,6 +89,7 @@ async function startCapture(streamId, directInfo) {
   directSequence = 0;
   directTelemetry = createDirectTelemetry();
   forceKeyFrame = true;
+  lastKeyFrameTimestampUs = Number.NaN;
   await connectReceiver(directInfo);
 
   mediaStream = await navigator.mediaDevices.getUserMedia({
@@ -94,7 +97,8 @@ async function startCapture(streamId, directInfo) {
     video: {
       mandatory: {
         chromeMediaSource: "tab",
-        chromeMediaSourceId: streamId
+        chromeMediaSourceId: streamId,
+        maxFrameRate: DIRECT_VIDEO_FRAMERATE
       }
     }
   });
@@ -114,6 +118,14 @@ async function startCapture(streamId, directInfo) {
   }
 
   videoTrack = tracks[0];
+  try {
+    await videoTrack.applyConstraints({
+      frameRate: DIRECT_VIDEO_FRAMERATE
+    });
+  } catch {
+    // 部分 Edge/Chromium 版本只识别上面的 legacy maxFrameRate。
+    // 监控面板仍显示实测帧率，不把配置目标误报成已达到的帧率。
+  }
   videoTrack.addEventListener("ended", handleTrackEnded, { once: true });
 
   await createVideoEncoder();
@@ -226,7 +238,8 @@ async function createVideoEncoder() {
   const support = await VideoEncoder.isConfigSupported(H264_CONFIG);
   if (!support.supported) {
     throw new Error(
-      "当前 Edge 不支持 1280×720 @ 30 fps 的 H.264 Annex-B 编码"
+      `当前 Edge 不支持 ${DIRECT_VIDEO_WIDTH}×${DIRECT_VIDEO_HEIGHT} @ ` +
+      `${DIRECT_VIDEO_FRAMERATE} fps 的 H.264 编码`
     );
   }
 
@@ -248,7 +261,7 @@ async function createVideoEncoder() {
   });
   videoEncoder.configure(support.config ?? H264_CONFIG);
 
-  encodeCanvas = new OffscreenCanvas(ENCODE_WIDTH, ENCODE_HEIGHT);
+  encodeCanvas = new OffscreenCanvas(DIRECT_VIDEO_WIDTH, DIRECT_VIDEO_HEIGHT);
   encodeContext = encodeCanvas.getContext("2d", {
     alpha: false,
     desynchronized: true
@@ -276,16 +289,21 @@ function encodeFrame(sourceFrame) {
     }
 
     const scale = Math.min(
-      ENCODE_WIDTH / sourceWidth,
-      ENCODE_HEIGHT / sourceHeight
+      DIRECT_VIDEO_WIDTH / sourceWidth,
+      DIRECT_VIDEO_HEIGHT / sourceHeight
     );
     const targetWidth = Math.max(1, Math.round(sourceWidth * scale));
     const targetHeight = Math.max(1, Math.round(sourceHeight * scale));
-    const targetX = Math.floor((ENCODE_WIDTH - targetWidth) / 2);
-    const targetY = Math.floor((ENCODE_HEIGHT - targetHeight) / 2);
+    const targetX = Math.floor((DIRECT_VIDEO_WIDTH - targetWidth) / 2);
+    const targetY = Math.floor((DIRECT_VIDEO_HEIGHT - targetHeight) / 2);
 
     encodeContext.fillStyle = "#000";
-    encodeContext.fillRect(0, 0, ENCODE_WIDTH, ENCODE_HEIGHT);
+    encodeContext.fillRect(
+      0,
+      0,
+      DIRECT_VIDEO_WIDTH,
+      DIRECT_VIDEO_HEIGHT
+    );
     encodeContext.drawImage(
       sourceFrame,
       targetX,
@@ -299,12 +317,13 @@ function encodeFrame(sourceFrame) {
     const encodeFrame = new VideoFrame(encodeCanvas, { timestamp });
     const keyFrame =
       forceKeyFrame ||
-      encoderMonitor.submittedFrames % KEYFRAME_INTERVAL_FRAMES === 0;
+      shouldRequestPeriodicKeyFrame(timestamp, lastKeyFrameTimestampUs);
     try {
       videoEncoder.encode(encodeFrame, { keyFrame });
       encoderMonitor.onSubmitted();
       if (keyFrame) {
         forceKeyFrame = false;
+        lastKeyFrameTimestampUs = timestamp;
       }
     } finally {
       encodeFrame.close();
@@ -371,7 +390,7 @@ function handleEncodedChunk(chunk) {
     if (!stopping) {
       running = false;
       void sendToServiceWorker("CAPTURE_FAILURE", {
-        error: `Receiver 直连传输失败：${normalizeError(error)}`,
+        error: `发送到平板失败：${normalizeError(error)}`,
         telemetry: collectTelemetry()
       });
     }
@@ -381,7 +400,7 @@ function handleEncodedChunk(chunk) {
 function sendChunkToReceiver(chunk) {
   const connection = receiverConnection;
   if (!connection?.connected) {
-    throw new Error("Receiver WebSocket 未连接");
+    throw new Error("平板连接尚未建立");
   }
   if (chunk.byteLength > DIRECT_VIDEO_MAX_PAYLOAD_BYTES) {
     throw new Error("单个 H.264 编码块超过 8 MiB");
@@ -402,7 +421,7 @@ async function connectReceiver(directInfo) {
     !Number.isInteger(directInfo.sourceEpoch) ||
     directInfo.sourceEpoch <= 0
   ) {
-    throw new Error("直连 Receiver 参数无效");
+    throw new Error("平板连接信息无效");
   }
   sourceEpoch = directInfo.sourceEpoch;
   const connection = new DirectReceiverConnection({
@@ -416,7 +435,7 @@ async function connectReceiver(directInfo) {
       directTelemetry.directErrors += 1;
       running = false;
       void sendToServiceWorker("CAPTURE_FAILURE", {
-        error: "Receiver 直连 WebSocket 意外断开",
+        error: "平板连接意外断开",
         telemetry: collectTelemetry()
       });
     }
@@ -445,7 +464,7 @@ function applyReceiverControl(message) {
     if (!stopping) {
       running = false;
       void sendToServiceWorker("CAPTURE_FAILURE", {
-        error: `Receiver 拒绝数据（${String(message.code ?? "unknown").slice(0, 64)}）`,
+        error: `平板拒绝接收画面（${String(message.code ?? "unknown").slice(0, 64)}）`,
         telemetry: collectTelemetry()
       });
     }
