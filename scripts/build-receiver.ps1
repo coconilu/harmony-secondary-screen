@@ -1,5 +1,7 @@
 param(
-  [string]$DevEcoRoot = $env:HSS_DEVECO_ROOT
+  [string]$DevEcoRoot = $env:HSS_DEVECO_ROOT,
+  [ValidateSet('Debug', 'Release')]
+  [string]$Configuration = 'Release'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -45,12 +47,15 @@ if ($hvigorVersion -notmatch '^\d+\.\d+\.\d+$') {
   throw "Unsupported bundled Hvigor plugin version '$hvigorVersion': $bundledPluginPackage"
 }
 
-$toolchainRoot = Join-Path $projectRoot "out\harmony-build-tools\hvigor-$hvigorVersion"
+$buildToolsRoot = Join-Path $projectRoot 'out\harmony-build-tools'
+$toolchainRoot = Join-Path $buildToolsRoot "hvigor-$hvigorVersion"
 $toolchainModules = Join-Path $toolchainRoot 'node_modules'
 $hvigor = Join-Path $toolchainModules '@ohos\hvigor\bin\hvigor.js'
 $localEnginePackage = Join-Path $toolchainModules '@ohos\hvigor\package.json'
 $localPluginPackage = Join-Path $toolchainModules '@ohos\hvigor-ohos-plugin\package.json'
-$hvigorUserHome = Join-Path $projectRoot 'out\harmony-build-tools\hvigor-user-home'
+$hvigorUserHome = Join-Path $buildToolsRoot 'hvigor-user-home'
+$npmCache = Join-Path $buildToolsRoot 'npm-cache'
+$ohpmCache = Join-Path $buildToolsRoot 'ohpm-cache'
 
 function Get-PackageVersion {
   param([string]$PackageFile)
@@ -79,6 +84,7 @@ if ($needsToolchain) {
     "@ohos/hvigor@$hvigorVersion" `
     "@ohos/hvigor-ohos-plugin@$hvigorVersion" `
     --registry 'https://repo.harmonyos.com/npm/' `
+    --cache $npmCache `
     --no-audit `
     --no-fund `
     --package-lock=false `
@@ -105,6 +111,7 @@ Toolchain: $toolchainRoot
 $environmentNames = @(
   'DEVECO_SDK_HOME',
   'JAVA_HOME',
+  'NODE_HOME',
   'NODE_PATH',
   'HVIGOR_USER_HOME',
   'Path'
@@ -117,20 +124,29 @@ foreach ($name in $environmentNames) {
 try {
   $env:DEVECO_SDK_HOME = $sdkRoot
   $env:JAVA_HOME = $jbrRoot
+  $env:NODE_HOME = Split-Path -Parent $node
   $env:NODE_PATH = $toolchainModules
   $env:HVIGOR_USER_HOME = $hvigorUserHome
-  $env:Path = "$(Join-Path $jbrRoot 'bin');$env:Path"
+  $env:Path = "$(Join-Path $jbrRoot 'bin');$env:NODE_HOME;$env:Path"
 
   Push-Location $receiverRoot
   try {
-    & $ohpm install
+    & $ohpm install --cache $ohpmCache
     if ($LASTEXITCODE -ne 0) { throw "ohpm install failed: $LASTEXITCODE" }
 
-    & $node $hvigor assembleApp --no-daemon
+    $buildMode = $Configuration.ToLowerInvariant()
+    & $node $hvigor assembleApp -p "buildMode=$buildMode" --no-daemon
     if ($LASTEXITCODE -ne 0) { throw "assembleApp failed: $LASTEXITCODE" }
   } finally {
     Pop-Location
   }
+
+  $expectedArtifact = Join-Path $receiverRoot `
+    'entry\build\default\outputs\default\entry-default-unsigned.hap'
+  if (-not (Test-Path -LiteralPath $expectedArtifact -PathType Leaf)) {
+    throw "Expected unsigned Receiver artifact was not produced: $expectedArtifact"
+  }
+  Write-Host "Receiver $Configuration unsigned HAP: $expectedArtifact"
 } finally {
   foreach ($name in $environmentNames) {
     [Environment]::SetEnvironmentVariable(

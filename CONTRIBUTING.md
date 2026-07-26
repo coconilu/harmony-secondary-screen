@@ -23,4 +23,4 @@
 
 默认 DevEco Studio 根目录是 `C:\Program Files\Huawei\DevEco Studio`。非默认安装可通过
 `HSS_DEVECO_ROOT` 指定；不要把个人绝对路径、SDK、Hvigor 包或签名材料提交到仓库。Receiver 构建工具
-缓存位于已忽略的 `out/harmony-build-tools/`，不会修改用户全局 Hvigor cache。
+及 Hvigor、npm、ohpm 缓存位于已忽略的 `out/harmony-build-tools/`，不会修改用户全局 cache。
