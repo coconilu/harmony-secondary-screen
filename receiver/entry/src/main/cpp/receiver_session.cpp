@@ -536,12 +536,24 @@ bool ReceiverSession::RunConnectedSession() {
     FD_SET(socket, &readSet);
     timeval timeout{0, 100'000};
     const int ready = select(socket + 1, &readSet, nullptr, nullptr, &timeout);
-    if (ready < 0 && errno != EINTR) return false;
+    if (ready < 0 && errno != EINTR) {
+      OH_LOG_Print(LOG_APP, LOG_WARN, kLogDomain, kLogTag,
+                   "Receiver WebSocket select failed, errno=%{public}d", errno);
+      return false;
+    }
     if (ready > 0) {
       const ssize_t count = recv(socket, buffer.data(), buffer.size(), 0);
-      if (count <= 0) return false;
+      if (count <= 0) {
+        const int readError = count < 0 ? errno : 0;
+        OH_LOG_Print(LOG_APP, LOG_WARN, kLogDomain, kLogTag,
+                     "Receiver WebSocket read ended, result=%{public}ld errno=%{public}d",
+                     static_cast<long>(count), readError);
+        return false;
+      }
       std::vector<websocket::Message> messages;
       if (!websocket_decoder_.Push(buffer.data(), static_cast<std::size_t>(count), &messages)) {
+        OH_LOG_Print(LOG_APP, LOG_WARN, kLogDomain, kLogTag,
+                     "Receiver WebSocket frame decode failed");
         return false;
       }
       for (const auto& message : messages) {
@@ -558,16 +570,24 @@ bool ReceiverSession::RunConnectedSession() {
           if (send(socket, pong.data(), pong.size(), MSG_NOSIGNAL) !=
               static_cast<ssize_t>(pong.size())) return false;
         } else if (message.opcode == websocket::Opcode::kClose) {
+          OH_LOG_Print(LOG_APP, LOG_INFO, kLogDomain, kLogTag,
+                       "Receiver WebSocket peer requested close");
           return false;
         }
       }
     }
     if (keyframe_request_pending_.exchange(false) &&
         !SendControl(R"({"type":"keyframe","protocol":4,"reason":"loss_flush_or_session_start","requireCodecConfig":true})")) {
+      OH_LOG_Print(LOG_APP, LOG_WARN, kLogDomain, kLogTag,
+                   "Receiver WebSocket keyframe request send failed");
       return false;
     }
     std::string telemetry;
-    if (telemetry_queue_.TryPop(&telemetry) && !SendControl(telemetry)) return false;
+    if (telemetry_queue_.TryPop(&telemetry) && !SendControl(telemetry)) {
+      OH_LOG_Print(LOG_APP, LOG_WARN, kLogDomain, kLogTag,
+                   "Receiver WebSocket telemetry send failed");
+      return false;
+    }
   }
   return false;
 }

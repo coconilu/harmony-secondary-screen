@@ -248,6 +248,15 @@ async function applyTelemetry(telemetry, options = {}) {
     } else if (telemetry.transition === "recovered") {
       events = appendEvent(events, "INFO", "视频帧已恢复");
     }
+    if (!current.directReconnecting && telemetry.directReconnecting) {
+      events = appendEvent(events, "WARN", "平板连接中断，正在保持捕获并自动恢复");
+    } else if (
+      current.directReconnecting &&
+      !telemetry.directReconnecting &&
+      telemetry.directConnected
+    ) {
+      events = appendEvent(events, "INFO", "平板连接已恢复，正在请求关键帧");
+    }
 
     const next = {
       ...current,
@@ -399,6 +408,11 @@ function createInitialState() {
     directBufferedAmount: 0,
     directErrors: 0,
     directKeyframeRequests: 0,
+    directReconnecting: false,
+    directReconnectAttempts: 0,
+    directReconnects: 0,
+    directLastCloseCode: null,
+    directLastCloseWasClean: null,
     lastPongAt: null,
     receiverReceivedFrames: 0,
     receiverReceivedBytes: 0,
@@ -443,6 +457,11 @@ function telemetryToState(telemetry) {
     directBufferedAmount: telemetry.directBufferedAmount,
     directErrors: telemetry.directErrors,
     directKeyframeRequests: telemetry.directKeyframeRequests,
+    directReconnecting: telemetry.directReconnecting,
+    directReconnectAttempts: telemetry.directReconnectAttempts,
+    directReconnects: telemetry.directReconnects,
+    directLastCloseCode: telemetry.directLastCloseCode,
+    directLastCloseWasClean: telemetry.directLastCloseWasClean,
     lastPongAt: telemetry.lastPongAt,
     receiverReceivedFrames: telemetry.receiverReceivedFrames,
     receiverReceivedBytes: telemetry.receiverReceivedBytes,
@@ -494,7 +513,9 @@ function createTelemetrySnapshot(state) {
     directSentFrames: state.directSentFrames,
     receiverReceivedFrames: state.receiverReceivedFrames,
     directDroppedFrames: state.directDroppedFrames,
-    directErrors: state.directErrors
+    directErrors: state.directErrors,
+    directReconnectAttempts: state.directReconnectAttempts,
+    directReconnects: state.directReconnects
   };
 }
 

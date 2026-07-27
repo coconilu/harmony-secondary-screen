@@ -86,7 +86,7 @@ async function exportResult() {
   const result = await chrome.storage.session.get(STATE_KEY);
   const state = result[STATE_KEY] ?? createFallbackState();
   const safeResult = {
-    schemaVersion: 3,
+    schemaVersion: 4,
     exportedAt: new Date().toISOString(),
     mode: state.mode,
     currentStage: state.currentStage,
@@ -114,6 +114,11 @@ async function exportResult() {
     directBufferedAmount: state.directBufferedAmount,
     directErrors: state.directErrors,
     directKeyframeRequests: state.directKeyframeRequests,
+    directReconnecting: state.directReconnecting,
+    directReconnectAttempts: state.directReconnectAttempts,
+    directReconnects: state.directReconnects,
+    directLastCloseCode: state.directLastCloseCode,
+    directLastCloseWasClean: state.directLastCloseWasClean,
     lastPongAt: state.lastPongAt,
     receiverReceivedFrames: state.receiverReceivedFrames,
     receiverReceivedBytes: state.receiverReceivedBytes,
@@ -227,6 +232,9 @@ function getDirectStatusText(state) {
   if (state.directConnected) {
     return "已连接";
   }
+  if (state.directReconnecting) {
+    return "正在恢复";
+  }
   if (state.mode === "stopped" && Number(state.directSentFrames || 0) > 0) {
     return "已停止";
   }
@@ -310,6 +318,11 @@ function createFallbackState() {
     directBufferedAmount: 0,
     directErrors: 0,
     directKeyframeRequests: 0,
+    directReconnecting: false,
+    directReconnectAttempts: 0,
+    directReconnects: 0,
+    directLastCloseCode: null,
+    directLastCloseWasClean: null,
     lastPongAt: null,
     receiverReceivedFrames: 0,
     receiverReceivedBytes: 0,

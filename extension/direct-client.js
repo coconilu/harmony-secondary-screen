@@ -9,6 +9,15 @@ import {
 } from "./direct-protocol.js";
 
 const CONNECT_TIMEOUT_MS = 5_000;
+export const DIRECT_RECOVERY_TIMEOUT_MS = 120_000;
+export const DIRECT_RECOVERY_CONNECT_TIMEOUT_MS = 1_500;
+export const DIRECT_RECOVERY_RETRY_DELAYS_MS = Object.freeze([
+  0,
+  250,
+  500,
+  1_000,
+  2_000
+]);
 
 export async function pairReceiver({
   host,
@@ -40,40 +49,57 @@ export class DirectReceiverConnection {
     trustedDevice,
     sourceEpoch,
     socketFactory = (url) => new WebSocket(url),
-    heartbeatIntervalMs = 5_000
+    heartbeatIntervalMs = 5_000,
+    connectTimeoutMs = CONNECT_TIMEOUT_MS
   }) {
     this.trustedDevice = validateTrustedDevice(trustedDevice);
     this.sourceEpoch = sourceEpoch;
     this.socketFactory = socketFactory;
     this.heartbeatIntervalMs = heartbeatIntervalMs;
+    this.connectTimeoutMs = connectTimeoutMs;
     this.socket = null;
     this.onControl = () => {};
     this.onClose = () => {};
     this.heartbeatTimer = null;
   }
 
-  async connect() {
+  async connect({ timeoutMs = this.connectTimeoutMs } = {}) {
+    if (this.socket !== null) {
+      throw new Error("平板连接已存在");
+    }
     const socket = this.socketFactory(
       createDirectWebSocketUrl(this.trustedDevice.host)
     );
-    const response = await openAndExchange(socket, {
-      type: "auth",
-      protocol: DIRECT_PROTOCOL,
-      senderId: this.trustedDevice.senderId,
-      deviceId: this.trustedDevice.deviceId,
-      credential: this.trustedDevice.credential,
-      sourceEpoch: this.sourceEpoch,
-      codec: "video/avc",
-      avcFormat: "annexb",
-      width: DIRECT_VIDEO_WIDTH,
-      height: DIRECT_VIDEO_HEIGHT,
-      fps: DIRECT_VIDEO_FRAMERATE
-    }, "ready");
+    this.socket = socket;
+    let response;
+    try {
+      response = await openAndExchange(socket, {
+        type: "auth",
+        protocol: DIRECT_PROTOCOL,
+        senderId: this.trustedDevice.senderId,
+        deviceId: this.trustedDevice.deviceId,
+        credential: this.trustedDevice.credential,
+        sourceEpoch: this.sourceEpoch,
+        codec: "video/avc",
+        avcFormat: "annexb",
+        width: DIRECT_VIDEO_WIDTH,
+        height: DIRECT_VIDEO_HEIGHT,
+        fps: DIRECT_VIDEO_FRAMERATE
+      }, "ready", timeoutMs);
+    } catch (error) {
+      if (this.socket === socket) {
+        this.socket = null;
+      }
+      closeSocket(socket);
+      throw error;
+    }
     if (response.sourceEpoch !== this.sourceEpoch) {
       socket.close(1008, "epoch_mismatch");
+      if (this.socket === socket) {
+        this.socket = null;
+      }
       throw new Error("平板返回了过期的页面来源状态");
     }
-    this.socket = socket;
     socket.addEventListener("message", (event) => {
       if (typeof event.data !== "string") {
         return;
@@ -104,6 +130,54 @@ export class DirectReceiverConnection {
       }
     }, this.heartbeatIntervalMs);
     return response;
+  }
+
+  async recover({
+    timeoutMs = DIRECT_RECOVERY_TIMEOUT_MS,
+    connectTimeoutMs = DIRECT_RECOVERY_CONNECT_TIMEOUT_MS,
+    retryDelaysMs = DIRECT_RECOVERY_RETRY_DELAYS_MS,
+    shouldContinue = () => true,
+    onAttempt = () => {}
+  } = {}) {
+    const startedAt = Date.now();
+    let attempts = 0;
+    let lastError = null;
+    while (shouldContinue()) {
+      const elapsedMs = Date.now() - startedAt;
+      if (elapsedMs >= timeoutMs) {
+        break;
+      }
+      const delayIndex = Math.min(attempts, retryDelaysMs.length - 1);
+      const retryDelayMs = retryDelaysMs[delayIndex] ?? 0;
+      if (retryDelayMs > 0) {
+        await delay(Math.min(retryDelayMs, timeoutMs - elapsedMs));
+      }
+      if (!shouldContinue()) {
+        break;
+      }
+      attempts += 1;
+      onAttempt(attempts);
+      try {
+        const response = await this.connect({
+          timeoutMs: Math.min(
+            connectTimeoutMs,
+            Math.max(1, timeoutMs - (Date.now() - startedAt))
+          )
+        });
+        return {
+          response,
+          attempts,
+          elapsedMs: Date.now() - startedAt
+        };
+      } catch (error) {
+        if (error?.recoverable === false) {
+          throw error;
+        }
+        lastError = error;
+      }
+    }
+    const suffix = lastError instanceof Error ? `：${lastError.message}` : "";
+    throw new Error(`平板连接恢复超时${suffix}`);
   }
 
   get connected() {
@@ -154,13 +228,13 @@ export class DirectReceiverConnection {
   }
 }
 
-function openAndExchange(socket, request, expectedType) {
+function openAndExchange(socket, request, expectedType, timeoutMs = CONNECT_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
     let settled = false;
     const timeout = setTimeout(() => {
       finish(new Error("连接平板超时"));
       socket.close();
-    }, CONNECT_TIMEOUT_MS);
+    }, timeoutMs);
 
     const finish = (error, value) => {
       if (settled) {
@@ -192,7 +266,7 @@ function openAndExchange(socket, request, expectedType) {
         return;
       }
       if (message?.type === "error") {
-        finish(new Error(describeReceiverError(message.code)));
+        finish(new ReceiverProtocolError(message.code));
         return;
       }
       if (
@@ -211,6 +285,28 @@ function openAndExchange(socket, request, expectedType) {
       finish(new Error("平板在连接完成前断开"));
     });
   });
+}
+
+function closeSocket(socket) {
+  if (
+    socket.readyState === WebSocket.OPEN ||
+    socket.readyState === WebSocket.CONNECTING
+  ) {
+    socket.close();
+  }
+}
+
+function delay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+class ReceiverProtocolError extends Error {
+  constructor(code) {
+    super(describeReceiverError(code));
+    this.name = "ReceiverProtocolError";
+    this.code = String(code ?? "unknown").slice(0, 64);
+    this.recoverable = false;
+  }
 }
 
 function describeReceiverError(code) {

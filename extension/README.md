@@ -58,8 +58,9 @@ npm test
 npm audit --audit-level=high
 ```
 
-测试包含真实本机 WebSocket 假 Receiver、逐字节比对至少一个 Annex-B Access Unit，以及模拟
-权限弹窗中断和 popup 重建的模块测试。自动化不等同于 Edge + HarmonyOS 真机复验。
+测试包含真实本机 WebSocket 假 Receiver、逐字节比对至少一个 Annex-B Access Unit、同一
+`sourceEpoch` 的异常断线恢复与关键帧请求，以及模拟权限弹窗中断和 popup 重建的模块测试。
+自动化不等同于 Edge + HarmonyOS 真机复验。
 
 真实 Edge、Local Network Access、裸 `.local` 与 HarmonyOS 平板仍按
 [`docs/REAL_DEVICE_TEST.md`](../docs/REAL_DEVICE_TEST.md) 验收。

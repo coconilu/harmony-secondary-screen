@@ -9,7 +9,12 @@ import {
   DIRECT_VIDEO_MAX_PAYLOAD_BYTES,
   DIRECT_VIDEO_WIDTH
 } from "./direct-protocol.js";
-import { DirectReceiverConnection } from "./direct-client.js";
+import {
+  DIRECT_RECOVERY_CONNECT_TIMEOUT_MS,
+  DIRECT_RECOVERY_RETRY_DELAYS_MS,
+  DIRECT_RECOVERY_TIMEOUT_MS,
+  DirectReceiverConnection
+} from "./direct-client.js";
 import { shouldRequestPeriodicKeyFrame } from "./keyframe-policy.js";
 
 const TELEMETRY_INTERVAL_MS = 500;
@@ -40,6 +45,8 @@ let encoderConfig = null;
 let encodeCanvas = null;
 let encodeContext = null;
 let receiverConnection = null;
+let receiverRecoveryGeneration = 0;
+let receiverRecoveryPromise = null;
 let sourceEpoch = 0;
 let directSequence = 0;
 let directTelemetry = createDirectTelemetry();
@@ -187,6 +194,7 @@ async function stopCapture() {
 
   stopping = true;
   running = false;
+  receiverRecoveryGeneration += 1;
 
   if (telemetryTimer !== null) {
     clearInterval(telemetryTimer);
@@ -383,6 +391,10 @@ function normalizeEncoderConfig(config) {
 
 function handleEncodedChunk(chunk) {
   encoderMonitor?.onChunk(chunk);
+  if (!receiverConnection?.connected) {
+    directTelemetry.directDroppedFrames += 1;
+    return;
+  }
   try {
     sendChunkToReceiver(chunk);
   } catch (error) {
@@ -399,11 +411,12 @@ function handleEncodedChunk(chunk) {
 
 function sendChunkToReceiver(chunk) {
   const connection = receiverConnection;
-  if (!connection?.connected) {
-    throw new Error("平板连接尚未建立");
-  }
   if (chunk.byteLength > DIRECT_VIDEO_MAX_PAYLOAD_BYTES) {
     throw new Error("单个 H.264 编码块超过 8 MiB");
+  }
+  if (!connection?.connected) {
+    directTelemetry.directDroppedFrames += 1;
+    return;
   }
   const message = createDirectVideoMessage(chunk, sourceEpoch, directSequence);
   if (!connection.sendVideo(message)) {
@@ -429,20 +442,87 @@ async function connectReceiver(directInfo) {
     sourceEpoch
   });
   connection.onControl = applyReceiverControl;
-  connection.onClose = () => {
+  connection.onClose = (event) => {
+    if (receiverConnection !== connection) {
+      return;
+    }
     directTelemetry.directConnected = false;
+    directTelemetry.directLastCloseCode =
+      Number.isInteger(event?.code) ? event.code : null;
+    directTelemetry.directLastCloseWasClean =
+      typeof event?.wasClean === "boolean" ? event.wasClean : null;
     if (!stopping && running) {
       directTelemetry.directErrors += 1;
-      running = false;
-      void sendToServiceWorker("CAPTURE_FAILURE", {
-        error: "平板连接意外断开",
-        telemetry: collectTelemetry()
-      });
+      beginReceiverRecovery(connection);
     }
   };
-  await connection.connect();
   receiverConnection = connection;
+  try {
+    await connection.connect();
+  } catch (error) {
+    if (receiverConnection === connection) {
+      receiverConnection = null;
+    }
+    throw error;
+  }
   directTelemetry.directConnected = true;
+}
+
+function beginReceiverRecovery(connection) {
+  if (receiverRecoveryPromise !== null || stopping || !running) {
+    return;
+  }
+  const generation = ++receiverRecoveryGeneration;
+  directTelemetry.directReconnecting = true;
+  void publishTelemetry();
+  receiverRecoveryPromise = connection.recover({
+    timeoutMs: DIRECT_RECOVERY_TIMEOUT_MS,
+    connectTimeoutMs: DIRECT_RECOVERY_CONNECT_TIMEOUT_MS,
+    retryDelaysMs: DIRECT_RECOVERY_RETRY_DELAYS_MS,
+    shouldContinue: () =>
+      generation === receiverRecoveryGeneration &&
+      receiverConnection === connection &&
+      running &&
+      !stopping,
+    onAttempt: () => {
+      directTelemetry.directReconnectAttempts += 1;
+    }
+  }).then(() => {
+    if (
+      generation !== receiverRecoveryGeneration ||
+      receiverConnection !== connection ||
+      stopping ||
+      !running
+    ) {
+      void connection.close();
+      return;
+    }
+    directTelemetry.directConnected = true;
+    directTelemetry.directReconnecting = false;
+    directTelemetry.directReconnects += 1;
+    forceKeyFrame = true;
+    void publishTelemetry();
+  }).catch((error) => {
+    if (
+      generation !== receiverRecoveryGeneration ||
+      receiverConnection !== connection ||
+      stopping ||
+      !running
+    ) {
+      return;
+    }
+    directTelemetry.directReconnecting = false;
+    directTelemetry.directErrors += 1;
+    running = false;
+    void sendToServiceWorker("CAPTURE_FAILURE", {
+      error: `平板连接恢复失败：${normalizeError(error)}`,
+      telemetry: collectTelemetry()
+    });
+  }).finally(() => {
+    if (generation === receiverRecoveryGeneration) {
+      receiverRecoveryPromise = null;
+    }
+  });
 }
 
 function applyReceiverControl(message) {
@@ -487,10 +567,14 @@ function applyReceiverTelemetry(message) {
 }
 
 async function closeReceiver() {
+  receiverRecoveryGeneration += 1;
   const connection = receiverConnection;
   if (!connection) {
     return;
   }
+  const recovery = receiverRecoveryPromise;
+  receiverRecoveryPromise = null;
+  directTelemetry.directReconnecting = false;
   const deadline = performance.now() + 2000;
   while (
     connection.connected &&
@@ -500,6 +584,13 @@ async function closeReceiver() {
     await delay(20);
   }
   await connection.close();
+  if (recovery !== null) {
+    try {
+      await recovery;
+    } catch {
+      // Recovery cancellation is expected during an explicit stop.
+    }
+  }
   receiverConnection = null;
   directTelemetry.directConnected = false;
 }
@@ -513,6 +604,11 @@ function createDirectTelemetry() {
     directBufferedAmount: 0,
     directErrors: 0,
     directKeyframeRequests: 0,
+    directReconnecting: false,
+    directReconnectAttempts: 0,
+    directReconnects: 0,
+    directLastCloseCode: null,
+    directLastCloseWasClean: null,
     lastPongAt: null,
     receiverReceivedFrames: 0,
     receiverReceivedBytes: 0,
