@@ -53,10 +53,17 @@ Receiver 只绑定 `wlan*` 上由用户确认的 RFC1918 或 IPv4 link-local 地
 | DNS-SD 服务实例 | HarmonyOS `mdns.addLocalService` 注册 `_hwc._tcp` | 裸 `.local` 一定可解析 |
 | 身份鉴权 | 一次性 QR 后保存 `deviceId`、senderId、credential | IP 或主机名永久不变 |
 
-mDNS 响应器不浏览服务、不枚举邻居、不扫描子网，不回答其他名称或记录类型。它在开始接收时探测
-同名 A 记录；发现不同地址即停止自动发布并提示数字 IPv4 回退。停止接收、Wi-Fi 地址失效或重新
-选择地址时，旧地址发送 TTL 0 goodbye 并关闭对应接口的 UDP socket。该 socket 只加入已确认
-接口的 `224.0.0.251:5353` 组；TCP 控制与媒体仍只绑定具体私网地址。
+mDNS 响应器不浏览服务、不枚举邻居、不扫描子网，不回答其他名称或记录类型。Receiver 在用户确认
+地址时同时保存 `wlan*` 的 interface index；UDP socket 只加入该 index 的
+`224.0.0.251:5353` 组，并通过 `recvmsg` 元数据要求入站目的组、interface index、源端口 5353
+和 IPv4 TTL 255 全部匹配。OpenHarmony NDK 提供 `IP_PKTINFO`、`IP_RECVTTL` 和
+`IP_MULTICAST_ALL`；生产 adapter 关闭跨接口 multicast 接收，任一 socket option 不可用即发布
+失败并保留数字 IPv4 回退。
+
+发布采用随机 0–250 ms 延迟与三次间隔 250 ms 的 probe。同时启动者按 A 记录字节序确定性仲裁；
+已发布所有者收到后来者 probe 时发送权威 A 防御，不把名称让给后启动者。正式同名不同 A
+response 才进入冲突状态。停止接收、Wi-Fi 地址或 interface index 失效、重新选择地址时，旧地址
+恰好发送一次 TTL 0 goodbye 后关闭 socket；TCP 控制与媒体仍只绑定具体私网地址。
 
 ## 竞态边界
 
@@ -79,9 +86,10 @@ mDNS 响应器不浏览服务、不枚举邻居、不扫描子网，不回答其
 枚举并撤销其余手动 origin，且不得把 `permissions.remove()` 的失败当成成功。
 
 扩展只有在观察到固定 `.local` 实际落到 RFC1918 或 IPv4 link-local 后才发送 QR token 或长期
-credential；非私网或无法确认时在鉴权前断开。它不解析浏览器错误字符串，也不保存观察到的原始
-IP。不申请 `<all_urls>`、`webRequestBlocking`、`nativeMessaging`、Cookie、history、正文读取或
-脚本注入。
+credential；非私网或无法确认时在鉴权前断开。在地址观察完成且请求成功发出前，任何主动
+`paired` / `ready` 响应都按未请求消息拒绝，不能保存身份或打开媒体发送。它不解析浏览器错误
+字符串，也不保存观察到的原始 IP。不申请 `<all_urls>`、`webRequestBlocking`、
+`nativeMessaging`、Cookie、history、正文读取或脚本注入。
 
 ## 非目标
 

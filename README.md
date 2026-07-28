@@ -62,7 +62,7 @@ Edge tabCapture（video only）
 | --- | --- |
 | 扩展直连协议与逐字节 Annex-B 假 Receiver 测试 | 自动化通过 |
 | Receiver WebSocket 握手、二进制头和 source epoch 单元测试 | 自动化通过 |
-| 固定 mDNS A 报文、畸形输入、冲突与 TTL 0 撤销测试 | 自动化通过 |
+| 固定 mDNS A 报文与生产响应器 seam（接口过滤、所有权、撤销、频率） | 自动化通过 |
 | HarmonyOS targetSdk 24 原生构建 | 通过 |
 | 无签名配置的可移植构建 | 通过；真机安装需开发者在本机配置签名 |
 | 扫码、直连、首帧、重启后信任、IP 变化重连 | **真实 Edge + 平板未验证** |

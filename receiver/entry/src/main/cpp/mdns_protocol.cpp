@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <charconv>
 #include <limits>
 #include <utility>
 
@@ -147,6 +148,78 @@ bool DecodeName(std::span<const std::byte> packet, std::size_t offset, ParsedNam
   return false;
 }
 
+bool ParseIpv4Address(std::string_view text, Ipv4Address* address) {
+  if (address == nullptr || text.empty()) return false;
+  Ipv4Address parsed{};
+  std::size_t start = 0;
+  for (std::size_t index = 0; index < parsed.size(); ++index) {
+    const std::size_t end = text.find('.', start);
+    if ((index + 1U < parsed.size() && end == std::string_view::npos) ||
+        (index + 1U == parsed.size() && end != std::string_view::npos)) {
+      return false;
+    }
+    const std::string_view part = text.substr(
+        start, (end == std::string_view::npos ? text.size() : end) - start);
+    if (part.empty() || part.size() > 3U) return false;
+    unsigned int value = 0;
+    const auto result =
+        std::from_chars(part.data(), part.data() + part.size(), value);
+    if (result.ec != std::errc{} || result.ptr != part.data() + part.size() ||
+        value > 255U || (part.size() > 1U && part.front() == '0')) {
+      return false;
+    }
+    parsed[index] = static_cast<std::byte>(value);
+    start = end == std::string_view::npos ? text.size() : end + 1U;
+  }
+  if (start != text.size()) return false;
+  *address = parsed;
+  return true;
+}
+
+bool IsTrustedLanAddress(Ipv4Address address) {
+  const auto first = Byte(address[0]);
+  const auto second = Byte(address[1]);
+  return first == 10U ||
+         (first == 172U && second >= 16U && second <= 31U) ||
+         (first == 192U && second == 168U) ||
+         (first == 169U && second == 254U);
+}
+
+int CompareAddresses(Ipv4Address left, Ipv4Address right) {
+  for (std::size_t index = 0; index < left.size(); ++index) {
+    const auto leftByte = Byte(left[index]);
+    const auto rightByte = Byte(right[index]);
+    if (leftByte < rightByte) return -1;
+    if (leftByte > rightByte) return 1;
+  }
+  return 0;
+}
+
+MessageKind ClassifyMessage(std::span<const std::byte> packet) {
+  if (packet.size() < kHeaderBytes || packet.size() > kMaximumQueryBytes) {
+    return MessageKind::kInvalid;
+  }
+  std::uint16_t flags = 0;
+  std::uint16_t questionCount = 0;
+  std::uint16_t answerCount = 0;
+  std::uint16_t authorityCount = 0;
+  std::uint16_t additionalCount = 0;
+  if (!ReadU16(packet, 2, &flags) || !ReadU16(packet, 4, &questionCount) ||
+      !ReadU16(packet, 6, &answerCount) ||
+      !ReadU16(packet, 8, &authorityCount) ||
+      !ReadU16(packet, 10, &additionalCount) ||
+      (flags & (kOpcodeMask | kTruncated)) != 0U) {
+    return MessageKind::kInvalid;
+  }
+  if ((flags & kQueryResponse) != 0U) {
+    return answerCount + authorityCount + additionalCount > 0U
+               ? MessageKind::kResponse
+               : MessageKind::kInvalid;
+  }
+  if (questionCount != 1U) return MessageKind::kInvalid;
+  return authorityCount > 0U ? MessageKind::kProbe : MessageKind::kQuery;
+}
+
 std::vector<std::byte> BuildAQuery() {
   std::vector<std::byte> query(kHeaderBytes, std::byte{0});
   query[5] = std::byte{1};
@@ -253,7 +326,7 @@ std::vector<std::byte> BuildAResponse(std::span<const std::byte> query,
         std::equal(address.begin(), address.end(), query.begin() + offset);
     suppressKnownAnswer =
         suppressKnownAnswer ||
-        (sameAddress && answerTtl > kRecordTtlSeconds / 2U);
+        (sameAddress && answerTtl >= kRecordTtlSeconds / 2U);
     offset += answerLength;
   }
   if (offset != query.size() || suppressKnownAnswer) return {};

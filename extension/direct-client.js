@@ -280,7 +280,8 @@ function openAndExchange(
   return new Promise((resolve, reject) => {
     let settled = false;
     let timeout = null;
-    let opened = false;
+    let gatePassed = false;
+    let requestSent = false;
     let transportVerdict = null;
     const cleanup = () => {
       if (timeout !== null) {
@@ -318,19 +319,32 @@ function openAndExchange(
     const handleOpen = async () => {
       try {
         const verdict = await assessTransport("open");
+        if (settled) {
+          closeSocket(socket);
+          return;
+        }
         if (verdict && !verdict.allowAuthentication) {
           finish(new DirectTransportError(verdict));
           closeSocket(socket);
           return;
         }
-        opened = true;
+        gatePassed = true;
         socket.send(JSON.stringify(request));
+        requestSent = true;
       } catch (error) {
         finish(error);
         closeSocket(socket);
       }
     };
     const handleMessage = (event) => {
+      if (settled) {
+        return;
+      }
+      if (!gatePassed || !requestSent) {
+        finish(new ReceiverProtocolError("unsolicited_response"));
+        closeSocket(socket);
+        return;
+      }
       if (typeof event.data !== "string") {
         finish(new ReceiverProtocolError("invalid_response"));
         return;
@@ -366,7 +380,7 @@ function openAndExchange(
       }
     };
     const handleClose = async () => {
-      if (opened) {
+      if (requestSent) {
         finish(new Error("Receiver WebSocket 已建立，但在鉴权完成前断开"));
         return;
       }
@@ -379,7 +393,7 @@ function openAndExchange(
 
     timeout = setTimeout(() => {
       void (async () => {
-        if (opened) {
+        if (requestSent) {
           finish(new ReceiverProtocolError("handshake_timeout"));
         } else {
           try {
@@ -482,6 +496,7 @@ function describeReceiverError(code) {
     codec_unsupported: "当前平板无法播放这组视频参数",
     epoch_stale: "平板已切换到更新的页面来源",
     invalid_response: "平板返回了无效的连接响应",
+    unsolicited_response: "Receiver 在请求发送前返回了响应，已拒绝该连接",
     handshake_timeout: "WebSocket 已建立，但 Receiver 鉴权响应超时"
   }[code] ?? `平板拒绝连接（${String(code ?? "unknown").slice(0, 64)}）`;
 }

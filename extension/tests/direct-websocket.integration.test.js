@@ -76,6 +76,90 @@ test("expired QR is reported as authorization expiry, not a network failure", as
   );
 });
 
+test("unsolicited paired response cannot bypass the private-address gate", async (context) => {
+  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  context.after(() => server.close());
+  await once(server, "listening");
+  const address = server.address();
+  assert.equal(typeof address, "object");
+  let receivedRequests = 0;
+  server.once("connection", (socket) => {
+    socket.on("message", () => {
+      receivedRequests += 1;
+    });
+    socket.send(JSON.stringify({
+      type: "paired",
+      protocol: 4,
+      deviceId: "00112233445566778899aabbccddeeff",
+      credential: "a".repeat(64)
+    }));
+  });
+
+  await assert.rejects(
+    pairReceiver({
+      host: "harmony-web-companion.local",
+      authorization: {
+        sessionId: "1".repeat(32),
+        token: "2".repeat(64)
+      },
+      senderId: "019fa3cf-75c7-7000-8000-000000000001",
+      socketFactory: () => new WebSocket(`ws://127.0.0.1:${address.port}`),
+      beginTransportObservation: async () => "delayed-gate",
+      finishTransportObservation: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return { allowAuthentication: true };
+      }
+    }),
+    /请求发送前返回了响应/
+  );
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(receivedRequests, 0);
+});
+
+test("unsolicited ready response cannot authenticate or enable media", async (context) => {
+  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  context.after(() => server.close());
+  await once(server, "listening");
+  const address = server.address();
+  assert.equal(typeof address, "object");
+  let receivedRequests = 0;
+  server.once("connection", (socket) => {
+    socket.on("message", () => {
+      receivedRequests += 1;
+    });
+    socket.send(JSON.stringify({
+      type: "ready",
+      protocol: 4,
+      sourceEpoch: 9
+    }));
+  });
+
+  const connection = new DirectReceiverConnection({
+    trustedDevice: {
+      senderId: "019fa3cf-75c7-7000-8000-000000000001",
+      deviceId: "00112233445566778899aabbccddeeff",
+      credential: "a".repeat(64),
+      host: "harmony-web-companion.local",
+      pairedAt: 1
+    },
+    sourceEpoch: 9,
+    socketFactory: () => new WebSocket(`ws://127.0.0.1:${address.port}`),
+    beginTransportObservation: async () => "delayed-gate",
+    finishTransportObservation: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return { allowAuthentication: true };
+    }
+  });
+  await assert.rejects(connection.connect(), /请求发送前返回了响应/);
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(connection.connected, false);
+  assert.equal(receivedRequests, 0);
+  assert.throws(
+    () => connection.sendVideo(new ArrayBuffer(1)),
+    /平板连接尚未建立/
+  );
+});
+
 test("direct WebSocket authenticates and delivers one Annex-B AU to a fake Receiver", async (context) => {
   const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
   context.after(() => server.close());

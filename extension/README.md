@@ -67,6 +67,8 @@ npm audit --audit-level=high
 视频 payload、认证 ready 前禁止发送、AU 丢弃后的关键帧恢复、STOP/换源取消旧恢复，以及模拟
 权限弹窗中断和 popup 重建的模块测试；地址诊断测试分别覆盖解析失败、非私网、连接超时和
 WebSocket 不可达，并验证固定 `.local` 未观察到私网地址前不会发送 token/credential。
+真实 ws 恶意 Receiver 测试还会在地址观察完成前主动发送 `paired` / `ready`，验证扩展不保存身份、
+不进入 authenticated、不发送 auth 或媒体。
 Receiver 测试覆盖 same-epoch 重连、完整 SPS/PPS/IDR
 门禁、Flush 窗口的 `NeedInput` 竞态、重复/缺失 codec data、解码队列溢出恢复和正常连续播放；
 发送端测试通过 offscreen 实际使用的编排 seam 验证序号、发送计数与 key 成功送达前的 delta 门禁。

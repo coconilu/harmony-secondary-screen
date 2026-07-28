@@ -1,79 +1,64 @@
 #include "mdns_responder.h"
 
-#include "mdns_protocol.h"
-
-#include <sys/select.h>
-#include <sys/socket.h>
-#include <unistd.h>
-
 #include <algorithm>
-#include <array>
 #include <chrono>
-#include <cstring>
 #include <vector>
 
 namespace hss::receiver {
 namespace {
 
-constexpr char kMulticastAddress[] = "224.0.0.251";
-constexpr std::uint16_t kMulticastPort = 5353;
-constexpr int kMulticastTtl = 255;
-constexpr int kProbeWindowMilliseconds = 500;
+constexpr int kMaximumInitialProbeDelayMilliseconds = 250;
+constexpr int kProbeIntervalMilliseconds = 250;
+constexpr int kProbeCount = 3;
+constexpr int kReceiveSliceMilliseconds = 50;
+constexpr int kPublishedReceiveMilliseconds = 100;
+constexpr std::uint64_t kResponseWindowMilliseconds = 1000;
 
-bool TrustedLanSource(in_addr address) {
-  const std::uint32_t hostOrder = ntohl(address.s_addr);
-  const std::uint8_t first = static_cast<std::uint8_t>(hostOrder >> 24U);
-  const std::uint8_t second = static_cast<std::uint8_t>((hostOrder >> 16U) & 0xffU);
-  return first == 10U ||
-         (first == 172U && second >= 16U && second <= 31U) ||
-         (first == 192U && second == 168U) ||
-         (first == 169U && second == 254U);
-}
-
-mdns::Ipv4Address ProtocolAddress(in_addr address) {
-  mdns::Ipv4Address bytes{};
-  std::memcpy(bytes.data(), &address.s_addr, bytes.size());
-  return bytes;
-}
-
-bool ContainsDifferentAddress(const std::vector<mdns::Ipv4Address>& addresses,
-                              in_addr selectedAddress) {
-  const auto selected = ProtocolAddress(selectedAddress);
+bool ContainsDifferentAddress(
+    const std::vector<mdns::Ipv4Address>& addresses,
+    mdns::Ipv4Address selectedAddress) {
   return std::any_of(addresses.begin(), addresses.end(),
-                     [&selected](const mdns::Ipv4Address& candidate) {
-                       return candidate != selected;
+                     [selectedAddress](mdns::Ipv4Address candidate) {
+                       return candidate != selectedAddress;
                      });
 }
 
 }  // namespace
 
+MdnsResponder::MdnsResponder(std::unique_ptr<MdnsTransport> transport)
+    : transport_(std::move(transport)) {}
+
 MdnsResponder::~MdnsResponder() {
   Stop();
 }
 
-bool MdnsResponder::Start(const std::string& addressText) {
+bool MdnsResponder::Start(const std::string& addressText,
+                          std::uint32_t interfaceIndex) {
   Stop();
-  in_addr address{};
-  if (inet_pton(AF_INET, addressText.c_str(), &address) != 1 ||
-      !TrustedLanSource(address)) {
+  mdns::Ipv4Address address{};
+  if (transport_ == nullptr ||
+      !mdns::ParseIpv4Address(addressText, &address) ||
+      !mdns::IsTrustedLanAddress(address) || interfaceIndex == 0U) {
     state_ = MdnsPublisherState::kError;
     return false;
   }
   std::scoped_lock lock(lifecycle_mutex_);
-  const int descriptor = OpenSocket(address);
-  if (descriptor < 0) {
+  selected_interface_ = {address, interfaceIndex};
+  if (!transport_->Open(selected_interface_)) {
     state_ = MdnsPublisherState::kError;
     return false;
   }
-  socket_ = descriptor;
-  published_address_ = ProtocolAddress(address);
   desired_ = true;
+  goodbye_sent_ = false;
+  response_window_initialized_ = false;
+  response_window_started_ms_ = 0;
+  responses_in_window_ = 0;
   state_ = MdnsPublisherState::kProbing;
   try {
-    worker_ = std::thread(&MdnsResponder::Run, this, address);
+    worker_ = std::thread(&MdnsResponder::Run, this);
   } catch (...) {
     desired_ = false;
-    CloseSocket();
+    transport_->Close();
     state_ = MdnsPublisherState::kError;
     return false;
   }
@@ -85,11 +70,10 @@ void MdnsResponder::Stop() {
   {
     std::scoped_lock lock(lifecycle_mutex_);
     if (state_.load() == MdnsPublisherState::kPublished) {
-      static_cast<void>(
-          SendPacket(mdns::BuildARecord(published_address_, 0)));
+      SendGoodbyeLocked();
     }
     desired_ = false;
-    CloseSocket();
+    if (transport_ != nullptr) transport_->Close();
     if (worker_.joinable()) worker = std::move(worker_);
   }
   if (worker.joinable() && worker.get_id() != std::this_thread::get_id()) {
@@ -98,162 +82,199 @@ void MdnsResponder::Stop() {
   state_ = MdnsPublisherState::kStopped;
 }
 
-int MdnsResponder::OpenSocket(in_addr address) {
-  const int descriptor = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-  if (descriptor < 0) return -1;
-  int reuse = 1;
-  if (setsockopt(descriptor, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) != 0) {
-    close(descriptor);
-    return -1;
-  }
-#ifdef SO_REUSEPORT
-  if (setsockopt(descriptor, SOL_SOCKET, SO_REUSEPORT, &reuse, sizeof(reuse)) != 0) {
-    close(descriptor);
-    return -1;
-  }
-#endif
-  sockaddr_in multicast{};
-  multicast.sin_family = AF_INET;
-  multicast.sin_port = htons(kMulticastPort);
-  if (inet_pton(AF_INET, kMulticastAddress, &multicast.sin_addr) != 1 ||
-      bind(descriptor, reinterpret_cast<sockaddr*>(&multicast), sizeof(multicast)) != 0) {
-    close(descriptor);
-    return -1;
-  }
-  ip_mreq membership{};
-  membership.imr_multiaddr = multicast.sin_addr;
-  membership.imr_interface = address;
-  if (setsockopt(descriptor, IPPROTO_IP, IP_ADD_MEMBERSHIP, &membership,
-                 sizeof(membership)) != 0 ||
-      setsockopt(descriptor, IPPROTO_IP, IP_MULTICAST_IF, &address,
-                 sizeof(address)) != 0 ||
-      setsockopt(descriptor, IPPROTO_IP, IP_MULTICAST_TTL, &kMulticastTtl,
-                 sizeof(kMulticastTtl)) != 0) {
-    close(descriptor);
-    return -1;
-  }
-  unsigned char loopback = 1;
-  if (setsockopt(descriptor, IPPROTO_IP, IP_MULTICAST_LOOP, &loopback,
-                 sizeof(loopback)) != 0) {
-    close(descriptor);
-    return -1;
-  }
-  return descriptor;
-}
+void MdnsResponder::Run() {
+  const int initialDelay = std::clamp(
+      transport_->RandomDelayMilliseconds(
+          kMaximumInitialProbeDelayMilliseconds),
+      0, kMaximumInitialProbeDelayMilliseconds);
+  if (!ObserveFor(initialDelay)) return;
 
-void MdnsResponder::Run(in_addr address) {
-  if (!SendPacket(mdns::BuildAProbe(ProtocolAddress(address)))) {
-    state_ = MdnsPublisherState::kError;
-    desired_ = false;
-    CloseSocket();
-    return;
-  }
-  const auto probeDeadline = std::chrono::steady_clock::now() +
-                             std::chrono::milliseconds(kProbeWindowMilliseconds);
-  while (desired_ && std::chrono::steady_clock::now() < probeDeadline) {
-    std::vector<std::byte> packet;
-    in_addr source{};
-    if (!ReceivePacket(&packet, &source, 50)) continue;
-    if (TrustedLanSource(source) &&
-        ContainsDifferentAddress(mdns::ExtractARecords(packet), address)) {
-      state_ = MdnsPublisherState::kConflict;
-      desired_ = false;
-      CloseSocket();
-      return;
+  for (int probeIndex = 0; probeIndex < kProbeCount && desired_;
+       ++probeIndex) {
+    {
+      std::scoped_lock lock(lifecycle_mutex_);
+      if (!desired_) return;
+      if (!SendProbeLocked()) {
+        FailLocked();
+        return;
+      }
     }
+    if (!ObserveFor(kProbeIntervalMilliseconds)) return;
   }
-  if (!desired_) return;
   {
     std::scoped_lock lock(lifecycle_mutex_);
     if (!desired_) return;
-    if (!SendPacket(mdns::BuildARecord(ProtocolAddress(address),
-                                       mdns::kRecordTtlSeconds))) {
-      state_ = MdnsPublisherState::kError;
-      desired_ = false;
-      CloseSocket();
+    if (!SendAnnouncementLocked()) {
+      FailLocked();
       return;
     }
     state_ = MdnsPublisherState::kPublished;
   }
 
   while (desired_) {
-    std::vector<std::byte> packet;
-    in_addr source{};
-    if (!ReceivePacket(&packet, &source, 100) || !TrustedLanSource(source)) continue;
-    if (ContainsDifferentAddress(mdns::ExtractARecords(packet), address)) {
+    MdnsDatagram datagram;
+    const auto result =
+        transport_->Receive(kPublishedReceiveMilliseconds, &datagram);
+    if (!desired_) break;
+    if (result == MdnsReceiveResult::kTimeout) continue;
+    if (result == MdnsReceiveResult::kError) {
       std::scoped_lock lock(lifecycle_mutex_);
-      if (desired_) {
-        static_cast<void>(
-            SendPacket(mdns::BuildARecord(ProtocolAddress(address), 0)));
-        state_ = MdnsPublisherState::kConflict;
-        desired_ = false;
-      }
+      if (desired_) FailLocked();
       break;
     }
-    const auto response = mdns::BuildAResponse(packet, ProtocolAddress(address));
-    if (!response.empty()) {
+    if (!HandlePublishedDatagram(datagram)) break;
+  }
+}
+
+bool MdnsResponder::ObserveFor(int milliseconds) {
+  const std::uint64_t started = transport_->NowMilliseconds();
+  const std::uint64_t deadline =
+      started + static_cast<std::uint64_t>(std::max(0, milliseconds));
+  while (desired_) {
+    const std::uint64_t now = transport_->NowMilliseconds();
+    if (now >= deadline) return true;
+    const auto remaining = static_cast<int>(
+        std::min<std::uint64_t>(deadline - now,
+                                kReceiveSliceMilliseconds));
+    MdnsDatagram datagram;
+    const auto result = transport_->Receive(remaining, &datagram);
+    if (!desired_) return false;
+    if (result == MdnsReceiveResult::kTimeout) continue;
+    if (result == MdnsReceiveResult::kError) {
       std::scoped_lock lock(lifecycle_mutex_);
-      if (desired_ && !SendPacket(response)) {
-        state_ = MdnsPublisherState::kError;
-        desired_ = false;
-        break;
-      }
+      if (desired_) FailLocked();
+      return false;
     }
+    if (!HandleProbingDatagram(datagram)) return false;
   }
-  CloseSocket();
+  return false;
 }
 
-bool MdnsResponder::SendPacket(const std::vector<std::byte>& packet) {
-  const int descriptor = socket_.load();
-  if (descriptor < 0 || packet.empty() ||
-      packet.size() > mdns::kMaximumResponseBytes) {
-    return false;
-  }
-  sockaddr_in destination{};
-  destination.sin_family = AF_INET;
-  destination.sin_port = htons(kMulticastPort);
-  if (inet_pton(AF_INET, kMulticastAddress, &destination.sin_addr) != 1) {
-    return false;
-  }
-  const ssize_t sent =
-      sendto(descriptor, packet.data(), packet.size(), MSG_NOSIGNAL,
-             reinterpret_cast<sockaddr*>(&destination), sizeof(destination));
-  return sent == static_cast<ssize_t>(packet.size());
+bool MdnsResponder::AcceptDatagram(const MdnsDatagram& datagram) const {
+  return datagram.bytes.size() <= mdns::kMaximumQueryBytes &&
+         mdns::IsTrustedLanAddress(datagram.sourceAddress) &&
+         datagram.sourcePort == mdns::kMulticastPort &&
+         datagram.destinationAddress == mdns::kMulticastAddress &&
+         datagram.interfaceIndex == selected_interface_.index &&
+         datagram.hopLimit == mdns::kRequiredHopLimit;
 }
 
-bool MdnsResponder::ReceivePacket(std::vector<std::byte>* packet, in_addr* source,
-                                  int timeoutMilliseconds) {
-  if (packet == nullptr || source == nullptr || timeoutMilliseconds < 0) return false;
-  const int descriptor = socket_.load();
-  if (descriptor < 0) return false;
-  fd_set readSet;
-  FD_ZERO(&readSet);
-  FD_SET(descriptor, &readSet);
-  timeval timeout{timeoutMilliseconds / 1000,
-                  (timeoutMilliseconds % 1000) * 1000};
-  const int ready = select(descriptor + 1, &readSet, nullptr, nullptr, &timeout);
-  if (ready <= 0 || !desired_) return false;
-  std::array<std::byte, mdns::kMaximumQueryBytes + 1U> buffer{};
-  sockaddr_in peer{};
-  socklen_t peerLength = sizeof(peer);
-  const ssize_t count =
-      recvfrom(descriptor, buffer.data(), buffer.size(), 0,
-               reinterpret_cast<sockaddr*>(&peer), &peerLength);
-  if (count <= 0 || static_cast<std::size_t>(count) > mdns::kMaximumQueryBytes ||
-      peer.sin_family != AF_INET) {
+bool MdnsResponder::HandleProbingDatagram(const MdnsDatagram& datagram) {
+  if (!AcceptDatagram(datagram)) return true;
+  const auto addresses = mdns::ExtractARecords(datagram.bytes);
+  if (!ContainsDifferentAddress(addresses, selected_interface_.address)) {
+    return true;
+  }
+  const auto kind = mdns::ClassifyMessage(datagram.bytes);
+  if (kind == mdns::MessageKind::kProbe) {
+    const bool losesTieBreak =
+        std::any_of(addresses.begin(), addresses.end(),
+                    [this](mdns::Ipv4Address candidate) {
+                      return mdns::CompareAddresses(
+                                 candidate, selected_interface_.address) > 0;
+                    });
+    std::scoped_lock lock(lifecycle_mutex_);
+    if (!desired_) return false;
+    if (losesTieBreak) {
+      ConflictLocked(false);
+      return false;
+    }
+    if (!SendProbeLocked()) {
+      FailLocked();
+      return false;
+    }
+    return true;
+  }
+  if (kind == mdns::MessageKind::kResponse ||
+      kind == mdns::MessageKind::kQuery) {
+    std::scoped_lock lock(lifecycle_mutex_);
+    if (desired_) ConflictLocked(false);
     return false;
   }
-  packet->assign(buffer.begin(), buffer.begin() + count);
-  *source = peer.sin_addr;
   return true;
 }
 
-void MdnsResponder::CloseSocket() {
-  const int descriptor = socket_.exchange(-1);
-  if (descriptor >= 0) {
-    shutdown(descriptor, SHUT_RDWR);
-    close(descriptor);
+bool MdnsResponder::HandlePublishedDatagram(
+    const MdnsDatagram& datagram) {
+  if (!AcceptDatagram(datagram)) return true;
+  const auto kind = mdns::ClassifyMessage(datagram.bytes);
+  const auto addresses = mdns::ExtractARecords(datagram.bytes);
+  if (ContainsDifferentAddress(addresses, selected_interface_.address)) {
+    std::scoped_lock lock(lifecycle_mutex_);
+    if (!desired_) return false;
+    if (kind == mdns::MessageKind::kProbe) {
+      if (!SendAnnouncementLocked()) {
+        FailLocked();
+        return false;
+      }
+      return true;
+    }
+    if (kind == mdns::MessageKind::kResponse ||
+        kind == mdns::MessageKind::kQuery) {
+      ConflictLocked(true);
+      return false;
+    }
   }
+  const auto response =
+      mdns::BuildAResponse(datagram.bytes, selected_interface_.address);
+  if (response.empty() ||
+      !AllowQueryResponse(transport_->NowMilliseconds())) {
+    return true;
+  }
+  std::scoped_lock lock(lifecycle_mutex_);
+  if (!desired_) return false;
+  if (!transport_->Send(response)) {
+    FailLocked();
+    return false;
+  }
+  return true;
+}
+
+bool MdnsResponder::SendProbeLocked() {
+  const auto probe = mdns::BuildAProbe(selected_interface_.address);
+  return !probe.empty() && transport_->Send(probe);
+}
+
+bool MdnsResponder::SendAnnouncementLocked() {
+  const auto announcement = mdns::BuildARecord(
+      selected_interface_.address, mdns::kRecordTtlSeconds);
+  return !announcement.empty() && transport_->Send(announcement);
+}
+
+void MdnsResponder::SendGoodbyeLocked() {
+  if (goodbye_sent_ || transport_ == nullptr) return;
+  goodbye_sent_ = true;
+  const auto goodbye =
+      mdns::BuildARecord(selected_interface_.address, 0);
+  if (!goodbye.empty()) static_cast<void>(transport_->Send(goodbye));
+}
+
+void MdnsResponder::FailLocked() {
+  state_ = MdnsPublisherState::kError;
+  desired_ = false;
+  transport_->Close();
+}
+
+void MdnsResponder::ConflictLocked(bool wasPublished) {
+  if (wasPublished) SendGoodbyeLocked();
+  state_ = MdnsPublisherState::kConflict;
+  desired_ = false;
+  transport_->Close();
+}
+
+bool MdnsResponder::AllowQueryResponse(std::uint64_t nowMilliseconds) {
+  if (!response_window_initialized_ ||
+      nowMilliseconds - response_window_started_ms_ >=
+          kResponseWindowMilliseconds) {
+    response_window_initialized_ = true;
+    response_window_started_ms_ = nowMilliseconds;
+    responses_in_window_ = 0;
+  }
+  if (responses_in_window_ >= mdns::kMaximumResponsesPerSecond) {
+    return false;
+  }
+  ++responses_in_window_;
+  return true;
 }
 
 }  // namespace hss::receiver

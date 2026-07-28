@@ -47,7 +47,8 @@ bool ValidIpv4(const std::string& value, in_addr* address) {
   return inet_pton(AF_INET, value.c_str(), address) == 1;
 }
 
-bool IsCurrentWifiIpv4(const std::string& value, in_addr* address) {
+bool IsCurrentWifiIpv4(const std::string& value, in_addr* address,
+                       std::uint32_t* interfaceIndex = nullptr) {
   if (!ValidIpv4(value, address)) return false;
   const std::uint32_t hostOrder = ntohl(address->s_addr);
   const std::uint8_t first = static_cast<std::uint8_t>(hostOrder >> 24U);
@@ -70,7 +71,11 @@ bool IsCurrentWifiIpv4(const std::string& value, in_addr* address) {
     }
     const auto* candidate = reinterpret_cast<const sockaddr_in*>(item->ifa_addr);
     if (candidate->sin_addr.s_addr == address->s_addr) {
-      matched = true;
+      const unsigned int index = if_nametoindex(item->ifa_name);
+      matched = index != 0U;
+      if (matched && interfaceIndex != nullptr) {
+        *interfaceIndex = static_cast<std::uint32_t>(index);
+      }
       break;
     }
   }
@@ -143,7 +148,8 @@ ReceiverSession::~ReceiverSession() {
 
 bool ReceiverSession::Start(std::string listenAddress) {
   in_addr address{};
-  if (!IsCurrentWifiIpv4(listenAddress, &address)) {
+  std::uint32_t interfaceIndex = 0;
+  if (!IsCurrentWifiIpv4(listenAddress, &address, &interfaceIndex)) {
     SetState("error", "这个地址不是平板当前使用的 Wi-Fi 地址", false, false);
     return false;
   }
@@ -167,6 +173,7 @@ bool ReceiverSession::Start(std::string listenAddress) {
       return false;
     }
     listen_address_ = std::move(listenAddress);
+    listen_interface_index_ = interfaceIndex;
     paired_address_.clear();
   }
   frames_decoded_ = 0;
@@ -309,11 +316,13 @@ void ReceiverSession::NetworkLoop() {
     return;
   }
   std::string addressText;
+  std::uint32_t interfaceIndex = 0;
   {
     std::scoped_lock lock(state_mutex_);
     addressText = listen_address_;
+    interfaceIndex = listen_interface_index_;
   }
-  address_responder_.Start(addressText);
+  address_responder_.Start(addressText, interfaceIndex);
   SetState("listening", "等待电脑发送画面；首次使用请先连接电脑", true, false);
   while (desired_) {
     if (!ContinueWithCurrentAddress()) break;
@@ -610,12 +619,18 @@ bool ReceiverSession::RunConnectedSession() {
 
 bool ReceiverSession::ContinueWithCurrentAddress() {
   std::string addressText;
+  std::uint32_t selectedInterfaceIndex = 0;
   {
     std::scoped_lock lock(state_mutex_);
     addressText = listen_address_;
+    selectedInterfaceIndex = listen_interface_index_;
   }
   in_addr address{};
-  if (IsCurrentWifiIpv4(addressText, &address)) return true;
+  std::uint32_t currentInterfaceIndex = 0;
+  if (IsCurrentWifiIpv4(addressText, &address, &currentInterfaceIndex) &&
+      currentInterfaceIndex == selectedInterfaceIndex) {
+    return true;
+  }
   address_responder_.Stop();
   desired_ = false;
   SetState("error", "Wi-Fi 地址已变化，请重新确认后开始接收", false, false);

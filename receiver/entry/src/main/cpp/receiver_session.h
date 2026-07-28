@@ -121,6 +121,7 @@ class ReceiverSession final {
   std::string state_ = "idle";
   std::string detail_ = "正在检查当前 Wi-Fi";
   std::string listen_address_;
+  std::uint32_t listen_interface_index_ = 0;
   std::string paired_address_;
   bool listening_ = false;
   bool connected_ = false;

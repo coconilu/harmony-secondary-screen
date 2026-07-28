@@ -59,7 +59,7 @@ DNS-SD 注册成功、单元测试或 TCP 端口可达均不能替代 Windows �
 | 场景 | 操作与记录 | 通过条件 |
 | --- | --- | --- |
 | 默认扫码 | 开始接收，记录 Receiver 显示地址；刷新并扫描一轮 QR | Windows 将固定 `.local` 解析为该地址，Edge 无需输入 IP 即完成配对 |
-| 鉴权前地址门禁 | 记录扩展错误分类与用户动作 | 非私网或无法确认的结果在发送 token/credential 前被拒绝 |
+| 鉴权前地址门禁 | 记录扩展错误分类与用户动作，并在隔离环境主动先发 `paired` / `ready` | 非私网、无法确认或请求前响应均在发送 token/credential 前被拒绝；不保存身份、不进入 authenticated |
 | Receiver 重启 | 停止后重新开始接收 | 停止期间旧记录不继续回答；重启后同一地址恢复且 deviceId 不变 |
 | Wi-Fi 地址变化 | 切换到另一个可信 Wi-Fi 后重新确认新地址 | 旧 A 被 TTL 0 撤销；新地址只有重新确认并开始接收后发布 |
 | 名称冲突 | 在隔离测试网引入同名不同 A | Receiver 明确显示冲突；扩展不随机连接，提示输入本机数字 IPv4 |
@@ -75,9 +75,9 @@ DNS-SD 注册成功、单元测试或 TCP 端口可达均不能替代 Windows �
 | 证据层 | 结果 |
 | --- | --- |
 | 开发基线 | `main@2e530dd9b7ba460a9db0de5956810399fa5b7c4d` |
-| 自动化 | 固定 A 合法/大小写/压缩名、畸形/截断/无关/超长输入、TTL、冲突地址、地址变化和 TTL 0 撤销测试已实现；扩展地址分类与鉴权前门禁测试已实现 |
+| 自动化 | 扩展真实 ws 测试覆盖主动 `paired` / `ready` 不能绕过地址门禁；固定 A 协议与生产 responder seam 覆盖错误接口/端口/TTL/目的组、随机三 probe、已发布者防御、同时启动仲裁、5353 共享、频率/放大预算、地址失效一次 TTL 0、并发 Stop 与析构 |
 | 权限 | 仅新增只读 `webRequest`；固定与可选 host 范围未扩大；无 `<all_urls>` 或 `webRequestBlocking` |
-| HarmonyOS 构建 | unsigned Release 构建可验证代码可编译；不代表目标设备 multicast socket 与 Edge 解析成功 |
+| HarmonyOS 构建 | unsigned Release 已编译 `recvmsg`、`IP_PKTINFO`、`IP_RECVTTL`、`IP_MULTICAST_ALL=0` 生产 adapter；不代表目标设备运行时 multicast socket 与 Edge 解析成功 |
 | 真实 Edge + Receiver | **本分支尚未安装或执行；默认 `.local`、重启、地址变化、冲突和手动回退均为未验证** |
 
 在上述真机行补齐 exact-head 证据前，Issue #19 的首两项端到端验收不得标记为 PASS。

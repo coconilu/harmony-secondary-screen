@@ -208,18 +208,35 @@ Receiver 同时维护两个互不等价的发布层：
 | 固定 mDNS A | `harmony-web-companion.local` → 当前确认的 Wi-Fi IPv4 | 供 Edge 默认 WebSocket 地址解析 |
 
 最小 mDNS A 响应器使用 UDP multicast `224.0.0.251:5353`，只加入用户确认的当前 `wlan*`
-RFC1918 或 IPv4 link-local 接口。它只接受 DNS ID 0、单 question、IN class、固定名称的 A/ANY
-查询；拒绝其他名称/类型、多 question、response-as-query、truncated、越界、循环压缩指针、
-尾随数据和超过 512 字节的输入。响应最多 64 字节、只含一个 cache-flush A 记录，TTL 为 120 秒，
-不会成为通用 DNS 或放大式响应器。
+RFC1918 或 IPv4 link-local 接口。确认地址时同时保存 interface index；生产 socket 开启
+`IP_PKTINFO` 与 `IP_RECVTTL`、关闭 `IP_MULTICAST_ALL`，并只接受以下元数据全部满足的报文：
 
-开始发布前发送固定 A probe 并观察 500 ms；若收到同名不同 A，或发布后观察到同名不同 A，
-立即进入冲突状态，不自动选择第一个响应者。正常停止、Wi-Fi 地址失效或更换地址时，对旧地址发送
-TTL 0 goodbye 后关闭 socket。公开 DNS-SD 注册、固定 A 可解析和 HWC4 身份鉴权必须分别记录；
-前两者都不授予身份信任。
+| 入站门禁 | 必须值 |
+| --- | --- |
+| interface index | 用户确认地址所属的同一个 `wlan*` index |
+| destination | `224.0.0.251` |
+| source port | `5353` |
+| IPv4 TTL | `255` |
+| source address | RFC1918 或 IPv4 link-local |
 
-本仓库的协议测试与 unsigned HarmonyOS Release 构建已覆盖上述报文边界；目标 Windows/Edge 是否
-实际解析该响应器仍必须真机验证，不能由构建或 `mdns.addLocalService` 成功推断。
+报文层只接受 DNS ID 0、单 question、IN class、固定名称的 A/ANY 查询；拒绝其他名称/类型、多
+question、response-as-query、truncated、越界、循环压缩指针、尾随数据和超过 512 字节的输入。
+响应最多 64 字节、只含一个 cache-flush A 记录，TTL 为 120 秒；单次响应不超过查询的 1.5 倍，
+普通查询响应限制为每秒最多 10 条。known-answer 的剩余 TTL 大于或等于原 TTL 一半时抑制响应。
+
+开始发布前随机等待 0–250 ms，再发送三次间隔 250 ms、携带待声明 A 的 probe。探测期间若收到已
+发布的不同 A response，则后来者进入冲突；若两个候选同时 probe，则按 A RDATA 字节序确定性仲裁，
+不会以到达先后决定。已发布所有者收到不同 A 的新 probe 时立即重发权威 A 防御并继续发布；收到
+正式同名不同 A response 才发送一次 TTL 0 goodbye 并进入冲突。正常停止、Wi-Fi 地址或 interface
+index 失效、重新选择地址时，同样只对旧地址发送一次 TTL 0 goodbye 后关闭 socket。
+
+OpenHarmony target NDK 的 sysroot 声明 `recvmsg`、`IP_PKTINFO`、`IP_RECVTTL`、
+`IP_MULTICAST_ALL`、`in_pktinfo` 与 `if_nametoindex`，且 unsigned Release target 已编译该生产
+adapter。生产状态机测试通过注入 socket/clock/interface seam 覆盖两个 responder 的已发布/后
+启动/同时启动、错误接口过滤、5353 共享、停止与析构并发、频率预算和一次 goodbye。以上仍不能
+证明目标设备运行时 multicast 或 Windows/Edge 解析成功，必须真机验证。
+
+公开 DNS-SD 注册、固定 A 可解析和 HWC4 身份鉴权必须分别记录；前两者都不授予身份信任。
 
 ## 不存在的能力
 

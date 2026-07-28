@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_library(hss_receiver SHARED
   mdns_protocol.cpp
+  mdns_posix_transport.cpp
   mdns_responder.cpp
   napi_init.cpp
   native_protocol.cpp

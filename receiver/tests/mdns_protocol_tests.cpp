@@ -68,6 +68,7 @@ void LegalQueryAndTtl() {
   const auto response = hss::receiver::mdns::BuildAResponse(query, address);
   assert(!response.empty());
   assert(response.size() <= hss::receiver::mdns::kMaximumResponseBytes);
+  assert(response.size() * 2U <= query.size() * 3U);
   hss::receiver::mdns::ParsedName name;
   assert(hss::receiver::mdns::DecodeName(response, 12, &name));
   assert(name.value == hss::receiver::mdns::kHostname);
@@ -77,6 +78,16 @@ void LegalQueryAndTtl() {
   const auto records = hss::receiver::mdns::ExtractARecords(response);
   assert(records.size() == 1U);
   assert(records.front() == address);
+}
+
+void AddressParsingAndTrustBoundary() {
+  Ipv4Address address{};
+  assert(hss::receiver::mdns::ParseIpv4Address("192.168.1.8", &address));
+  assert(hss::receiver::mdns::IsTrustedLanAddress(address));
+  assert(!hss::receiver::mdns::ParseIpv4Address("192.168.001.8", &address));
+  assert(hss::receiver::mdns::ParseIpv4Address("8.8.8.8", &address));
+  assert(!hss::receiver::mdns::IsTrustedLanAddress(address));
+  assert(!hss::receiver::mdns::ParseIpv4Address("0.0.0.0.0", &address));
 }
 
 void CaseInsensitiveAndAnyQuery() {
@@ -127,9 +138,12 @@ void KnownAnswerSuppressionRefreshesOnlyExpiringRecords() {
                              std::byte{9}};
   const auto fresh = KnownAnswerQuery(
       selected, hss::receiver::mdns::kRecordTtlSeconds);
-  const auto expiring = KnownAnswerQuery(
+  const auto halfLife = KnownAnswerQuery(
       selected, hss::receiver::mdns::kRecordTtlSeconds / 2U);
+  const auto expiring = KnownAnswerQuery(
+      selected, hss::receiver::mdns::kRecordTtlSeconds / 2U - 1U);
   assert(hss::receiver::mdns::BuildAResponse(fresh, selected).empty());
+  assert(hss::receiver::mdns::BuildAResponse(halfLife, selected).empty());
   assert(!hss::receiver::mdns::BuildAResponse(expiring, selected).empty());
 }
 
@@ -207,6 +221,7 @@ void AddressChangeAndStopRevokeTheOldRecord() {
 
 int main() {
   LegalQueryAndTtl();
+  AddressParsingAndTrustBoundary();
   CaseInsensitiveAndAnyQuery();
   CompressedNameAndConflictRecords();
   ProbeCarriesTheProposedAddressBeforePublication();
