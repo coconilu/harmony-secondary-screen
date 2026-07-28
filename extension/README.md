@@ -59,7 +59,8 @@ npm audit --audit-level=high
 ```
 
 测试包含真实本机 WebSocket 假 Receiver、逐字节比对至少一个 Annex-B Access Unit、同一
-`sourceEpoch` 的异常断线恢复与关键帧请求，以及模拟权限弹窗中断和 popup 重建的模块测试。
+`sourceEpoch` 的异常断线恢复与关键帧请求、虚拟时钟超过 184 秒后继续恢复、断线期间不缓存
+视频 payload、STOP/换源取消旧恢复，以及模拟权限弹窗中断和 popup 重建的模块测试。
 自动化不等同于 Edge + HarmonyOS 真机复验。
 
 真实 Edge、Local Network Access、裸 `.local` 与 HarmonyOS 平板仍按

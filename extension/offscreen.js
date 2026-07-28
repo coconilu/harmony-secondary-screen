@@ -12,8 +12,8 @@ import {
 import {
   DIRECT_RECOVERY_CONNECT_TIMEOUT_MS,
   DIRECT_RECOVERY_RETRY_DELAYS_MS,
-  DIRECT_RECOVERY_TIMEOUT_MS,
-  DirectReceiverConnection
+  DirectReceiverConnection,
+  ReceiverRecoveryCancelledError
 } from "./direct-client.js";
 import { shouldRequestPeriodicKeyFrame } from "./keyframe-policy.js";
 
@@ -47,6 +47,7 @@ let encodeContext = null;
 let receiverConnection = null;
 let receiverRecoveryGeneration = 0;
 let receiverRecoveryPromise = null;
+let receiverRecoveryAbortController = null;
 let sourceEpoch = 0;
 let directSequence = 0;
 let directTelemetry = createDirectTelemetry();
@@ -195,6 +196,7 @@ async function stopCapture() {
   stopping = true;
   running = false;
   receiverRecoveryGeneration += 1;
+  receiverRecoveryAbortController?.abort();
 
   if (telemetryTimer !== null) {
     clearInterval(telemetryTimer);
@@ -366,11 +368,20 @@ function collectTelemetry() {
   if (!monitor && !encoderMonitor && !receiverConnection) {
     return null;
   }
+  const directRecoveryElapsedMs =
+    directTelemetry.directReconnecting &&
+    Number.isFinite(directTelemetry.directRecoveryStartedAt)
+      ? Math.max(
+        directTelemetry.directRecoveryElapsedMs,
+        Date.now() - directTelemetry.directRecoveryStartedAt
+      )
+      : directTelemetry.directRecoveryElapsedMs;
   return {
     ...(monitor?.sample() ?? {}),
     ...(encoderMonitor?.sample(videoEncoder?.encodeQueueSize ?? 0) ?? {}),
     encoderConfig,
     ...directTelemetry,
+    directRecoveryElapsedMs,
     directConnected: receiverConnection?.connected ?? false,
     directBufferedAmount: receiverConnection?.bufferedAmount ?? 0
   };
@@ -473,21 +484,47 @@ function beginReceiverRecovery(connection) {
     return;
   }
   const generation = ++receiverRecoveryGeneration;
+  const abortController = new AbortController();
+  receiverRecoveryAbortController = abortController;
   directTelemetry.directReconnecting = true;
+  directTelemetry.directRecoveryState = "reconnecting";
+  directTelemetry.directRecoveryStartedAt = Date.now();
+  directTelemetry.directRecoveryElapsedMs = 0;
+  directTelemetry.directRecoveryCurrentAttempt = 0;
+  directTelemetry.directRecoveryTransientFailures = 0;
+  directTelemetry.directRecoveryLastOutcome = null;
   void publishTelemetry();
   receiverRecoveryPromise = connection.recover({
-    timeoutMs: DIRECT_RECOVERY_TIMEOUT_MS,
     connectTimeoutMs: DIRECT_RECOVERY_CONNECT_TIMEOUT_MS,
     retryDelaysMs: DIRECT_RECOVERY_RETRY_DELAYS_MS,
+    signal: abortController.signal,
     shouldContinue: () =>
       generation === receiverRecoveryGeneration &&
       receiverConnection === connection &&
       running &&
       !stopping,
-    onAttempt: () => {
+    onAttempt: ({ attempts, elapsedMs }) => {
+      if (
+        generation !== receiverRecoveryGeneration ||
+        receiverConnection !== connection
+      ) {
+        return;
+      }
       directTelemetry.directReconnectAttempts += 1;
+      directTelemetry.directRecoveryCurrentAttempt = attempts;
+      directTelemetry.directRecoveryElapsedMs = elapsedMs;
+    },
+    onTransientFailure: ({ elapsedMs }) => {
+      if (
+        generation !== receiverRecoveryGeneration ||
+        receiverConnection !== connection
+      ) {
+        return;
+      }
+      directTelemetry.directRecoveryTransientFailures += 1;
+      directTelemetry.directRecoveryElapsedMs = elapsedMs;
     }
-  }).then(() => {
+  }).then(({ elapsedMs }) => {
     if (
       generation !== receiverRecoveryGeneration ||
       receiverConnection !== connection ||
@@ -500,9 +537,19 @@ function beginReceiverRecovery(connection) {
     directTelemetry.directConnected = true;
     directTelemetry.directReconnecting = false;
     directTelemetry.directReconnects += 1;
+    directTelemetry.directRecoveryState = "connected";
+    directTelemetry.directRecoveryElapsedMs = elapsedMs;
+    directTelemetry.directRecoveryLastDurationMs = elapsedMs;
+    directTelemetry.directRecoveryLastOutcome = "recovered";
     forceKeyFrame = true;
     void publishTelemetry();
   }).catch((error) => {
+    if (
+      error instanceof ReceiverRecoveryCancelledError ||
+      abortController.signal.aborted
+    ) {
+      return;
+    }
     if (
       generation !== receiverRecoveryGeneration ||
       receiverConnection !== connection ||
@@ -513,6 +560,14 @@ function beginReceiverRecovery(connection) {
     }
     directTelemetry.directReconnecting = false;
     directTelemetry.directErrors += 1;
+    const elapsedMs = Math.max(
+      directTelemetry.directRecoveryElapsedMs,
+      Date.now() - directTelemetry.directRecoveryStartedAt
+    );
+    directTelemetry.directRecoveryState = "failed_permanent";
+    directTelemetry.directRecoveryElapsedMs = elapsedMs;
+    directTelemetry.directRecoveryLastDurationMs = elapsedMs;
+    directTelemetry.directRecoveryLastOutcome = "failed_permanent";
     running = false;
     void sendToServiceWorker("CAPTURE_FAILURE", {
       error: `平板连接恢复失败：${normalizeError(error)}`,
@@ -521,6 +576,7 @@ function beginReceiverRecovery(connection) {
   }).finally(() => {
     if (generation === receiverRecoveryGeneration) {
       receiverRecoveryPromise = null;
+      receiverRecoveryAbortController = null;
     }
   });
 }
@@ -568,12 +624,26 @@ function applyReceiverTelemetry(message) {
 
 async function closeReceiver() {
   receiverRecoveryGeneration += 1;
+  receiverRecoveryAbortController?.abort();
+  receiverRecoveryAbortController = null;
   const connection = receiverConnection;
   if (!connection) {
     return;
   }
   const recovery = receiverRecoveryPromise;
   receiverRecoveryPromise = null;
+  if (directTelemetry.directReconnecting) {
+    const elapsedMs = Number.isFinite(directTelemetry.directRecoveryStartedAt)
+      ? Math.max(
+        directTelemetry.directRecoveryElapsedMs,
+        Date.now() - directTelemetry.directRecoveryStartedAt
+      )
+      : directTelemetry.directRecoveryElapsedMs;
+    directTelemetry.directRecoveryState = "cancelled";
+    directTelemetry.directRecoveryElapsedMs = elapsedMs;
+    directTelemetry.directRecoveryLastDurationMs = elapsedMs;
+    directTelemetry.directRecoveryLastOutcome = "cancelled";
+  }
   directTelemetry.directReconnecting = false;
   const deadline = performance.now() + 2000;
   while (
@@ -607,6 +677,13 @@ function createDirectTelemetry() {
     directReconnecting: false,
     directReconnectAttempts: 0,
     directReconnects: 0,
+    directRecoveryState: "idle",
+    directRecoveryStartedAt: null,
+    directRecoveryElapsedMs: 0,
+    directRecoveryLastDurationMs: 0,
+    directRecoveryTransientFailures: 0,
+    directRecoveryCurrentAttempt: 0,
+    directRecoveryLastOutcome: null,
     directLastCloseCode: null,
     directLastCloseWasClean: null,
     lastPongAt: null,

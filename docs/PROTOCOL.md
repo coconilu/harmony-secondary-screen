@@ -148,11 +148,13 @@ SPS/PPS + IDR；本地 Ability、Surface 和 AVCodec 生命周期修复不新增
 字段、二进制帧格式或兼容性边界。
 
 若 HarmonyOS 息屏期间由系统中断底层 TCP，Edge 扩展不得把一次 WebSocket `close` 立即升级为
-捕获失败。扩展在 120 秒恢复窗口内保留同一条用户授权的标签页 capture、同一个 VideoEncoder、
-可信凭据和 `sourceEpoch`，只重建 WebSocket 并重新发送既有 `auth`。断线期间编码输出有界丢弃，
-不缓存视频 payload；重连成功后强制生成关键帧。Receiver 允许与最新值相等的 `sourceEpoch`
-重新认证，并按既有 `keyframe` 合同请求 SPS/PPS + IDR。超过恢复窗口或收到明确的协议/身份错误
-后才终止捕获。该行为不增加消息类型，不改变 HWC4 版本或二进制帧格式。
+捕获失败。只要用户没有停止或切换来源，且未收到明确的协议、身份、认证、epoch 或 codec
+永久错误，扩展就保留同一条用户授权的标签页 capture、同一个 VideoEncoder、可信凭据和
+`sourceEpoch`，持续以最长 2 秒退避重建 WebSocket，并重新发送既有 `auth`；每次连接尝试仍有
+独立超时，避免单次握手无限挂起。断线期间编码输出直接丢弃，不缓存视频 payload；重连成功后
+强制生成关键帧。Receiver 允许与最新值相等的 `sourceEpoch` 重新认证，并按既有 `keyframe`
+合同请求 SPS/PPS + IDR。STOP 或新来源会立即取消旧恢复任务，旧任务不得覆盖新来源状态。该行为
+不增加消息类型，不改变 HWC4 版本或二进制帧格式。
 
 Receiver 遥测：
 

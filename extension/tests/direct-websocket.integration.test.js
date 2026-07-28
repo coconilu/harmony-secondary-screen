@@ -3,7 +3,12 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { WebSocket, WebSocketServer } from "ws";
 
-import { DirectReceiverConnection, pairReceiver } from "../direct-client.js";
+import {
+  DIRECT_RECOVERY_MAX_RETRY_DELAY_MS,
+  DirectReceiverConnection,
+  pairReceiver,
+  ReceiverRecoveryCancelledError
+} from "../direct-client.js";
 import { createDirectVideoMessage } from "../direct-protocol.js";
 
 globalThis.WebSocket = WebSocket;
@@ -182,7 +187,6 @@ test("direct WebSocket recovers an abnormal drop without replacing the capture s
   const closeEvent = await closed;
   assert.equal(closeEvent.code, 1006);
   const recovery = await connection.recover({
-    timeoutMs: 2_000,
     connectTimeoutMs: 500,
     retryDelaysMs: [0, 10]
   });
@@ -240,7 +244,6 @@ test("direct WebSocket recovery stops immediately when Receiver rejects auth", a
   const startedAt = Date.now();
   await assert.rejects(
     connection.recover({
-      timeoutMs: 80,
       connectTimeoutMs: 40,
       retryDelaysMs: [0, 10],
       onAttempt() {
@@ -254,17 +257,48 @@ test("direct WebSocket recovery stops immediately when Receiver rejects auth", a
   assert.equal(connection.connected, false);
 });
 
-test("direct WebSocket recovery bounds repeated network handshake timeouts", async (context) => {
+test("direct WebSocket recovery survives more than 184 seconds without buffering video", async (context) => {
   const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
   context.after(() => server.close());
   await once(server, "listening");
   const address = server.address();
   assert.equal(typeof address, "object");
-  let attempts = 0;
+  const authEpochs = [];
+  const receivedVideo = [];
+  let resolveKeyframe;
+  const keyframeRequested = new Promise((resolve) => {
+    resolveKeyframe = resolve;
+  });
+  let resolveVideo;
+  const firstVideo = new Promise((resolve) => {
+    resolveVideo = resolve;
+  });
   server.on("connection", (socket) => {
-    socket.once("message", () => {
-      // Keep the socket silent to model a Receiver that is not yet reachable
-      // after the tablet wakes.
+    socket.once("message", (data, isBinary) => {
+      assert.equal(isBinary, false);
+      const auth = JSON.parse(data.toString("utf8"));
+      authEpochs.push(auth.sourceEpoch);
+      socket.send(JSON.stringify({
+        type: "ready",
+        protocol: 4,
+        sourceEpoch: auth.sourceEpoch
+      }));
+      setTimeout(() => {
+        socket.send(JSON.stringify({
+          type: "keyframe",
+          protocol: 4,
+          reason: "loss_flush_or_session_start",
+          requireCodecConfig: true
+        }));
+      }, 10);
+      socket.on("message", (video, videoIsBinary) => {
+        if (!videoIsBinary) {
+          return;
+        }
+        const received = Uint8Array.from(video);
+        receivedVideo.push(received);
+        resolveVideo(received);
+      });
     });
   });
 
@@ -280,35 +314,82 @@ test("direct WebSocket recovery bounds repeated network handshake timeouts", asy
     socketFactory: () => new WebSocket(`ws://127.0.0.1:${address.port}`),
     heartbeatIntervalMs: 60_000
   });
-  const startedAt = Date.now();
-  await assert.rejects(
-    connection.recover({
-      timeoutMs: 100,
-      connectTimeoutMs: 20,
-      retryDelaysMs: [0, 10],
-      onAttempt() {
-        attempts += 1;
-      }
-    }),
-    /平板连接恢复超时/
-  );
-  assert.ok(attempts >= 2);
-  assert.ok(Date.now() - startedAt < 500);
-  assert.equal(connection.connected, false);
-});
+  connection.onControl = (message) => {
+    if (message.type === "keyframe") {
+      resolveKeyframe(message);
+    }
+  };
 
-test("direct WebSocket recovery cancellation prevents an old source from retrying", async (context) => {
-  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
-  context.after(() => server.close());
-  await once(server, "listening");
-  const address = server.address();
-  assert.equal(typeof address, "object");
-  server.on("connection", (socket) => {
-    socket.once("message", () => {
-      // The pending handshake is cancelled by a stop/new-source generation.
-    });
+  let virtualNowMs = 0;
+  const attemptElapsedTimes = [];
+  const actualRetryDelays = [];
+  const disconnectedPayload = createDirectVideoMessage({
+    byteLength: 4,
+    timestamp: 50,
+    type: "delta",
+    copyTo(destination) {
+      destination.set(Uint8Array.from([0, 0, 1, 0x41]));
+    }
+  }, 13, 1);
+  let disconnectedPayloadDrops = 0;
+  const recovery = await connection.recover({
+    connectTimeoutMs: 1_500,
+    retryDelaysMs: [0, 250, 500, 1_000, 5_000],
+    now: () => virtualNowMs,
+    delayFn: async (milliseconds, signal) => {
+      assert.equal(signal?.aborted ?? false, false);
+      actualRetryDelays.push(milliseconds);
+      virtualNowMs += milliseconds;
+    },
+    onAttempt({ elapsedMs }) {
+      attemptElapsedTimes.push(elapsedMs);
+    },
+    connectAttempt: async (options) => {
+      if (virtualNowMs < 184_180) {
+        assert.throws(
+          () => connection.sendVideo(disconnectedPayload),
+          /平板连接尚未建立/
+        );
+        disconnectedPayloadDrops += 1;
+        virtualNowMs += options.timeoutMs;
+        throw new Error("模拟平板休眠期间网络不可达");
+      }
+      return connection.connect(options);
+    }
   });
 
+  assert.ok(recovery.elapsedMs >= 184_180);
+  assert.ok(attemptElapsedTimes.some((elapsedMs) => elapsedMs > 120_000));
+  assert.ok(actualRetryDelays.length > 1);
+  assert.ok(disconnectedPayloadDrops > 0);
+  assert.ok(
+    actualRetryDelays.every(
+      (milliseconds) => milliseconds <= DIRECT_RECOVERY_MAX_RETRY_DELAY_MS
+    )
+  );
+  assert.deepEqual(authEpochs, [13]);
+  assert.equal(receivedVideo.length, 0);
+  assert.equal((await keyframeRequested).requireCodecConfig, true);
+
+  const annexB = Uint8Array.from([
+    0, 0, 0, 1, 0x67, 0x42, 0, 0x1f,
+    0, 0, 0, 1, 0x65, 0x07, 0x08, 0x09
+  ]);
+  const wireMessage = createDirectVideoMessage({
+    byteLength: annexB.byteLength,
+    timestamp: 99,
+    type: "key",
+    copyTo(destination) {
+      destination.set(annexB);
+    }
+  }, 13, 10);
+  assert.equal(connection.sendVideo(wireMessage), true);
+  assert.deepEqual(await firstVideo, new Uint8Array(wireMessage));
+  assert.equal(receivedVideo.length, 1);
+  await connection.close();
+});
+
+test("direct WebSocket recovery cancellation prevents an old source from retrying", async () => {
   const connection = new DirectReceiverConnection({
     trustedDevice: {
       senderId: "019fa3cf-75c7-7000-8000-000000000001",
@@ -318,22 +399,65 @@ test("direct WebSocket recovery cancellation prevents an old source from retryin
       pairedAt: 1
     },
     sourceEpoch: 14,
-    socketFactory: () => new WebSocket(`ws://127.0.0.1:${address.port}`),
+    socketFactory: () => {
+      throw new Error("取消后不应再创建 WebSocket");
+    },
+    heartbeatIntervalMs: 60_000
+  });
+  const abortController = new AbortController();
+  let attempts = 0;
+  const recovery = connection.recover({
+    connectTimeoutMs: 1_500,
+    retryDelaysMs: [0, 10],
+    signal: abortController.signal,
+    connectAttempt: async () => {
+      throw new Error("模拟瞬态网络错误");
+    },
+    onAttempt() {
+      attempts += 1;
+      abortController.abort();
+    }
+  });
+  await assert.rejects(
+    recovery,
+    (error) => error instanceof ReceiverRecoveryCancelledError
+  );
+  assert.equal(attempts, 1);
+  assert.equal(connection.connected, false);
+});
+
+test("direct WebSocket recovery generation change cannot overwrite a new source", async () => {
+  const connection = new DirectReceiverConnection({
+    trustedDevice: {
+      senderId: "019fa3cf-75c7-7000-8000-000000000001",
+      deviceId: "00112233445566778899aabbccddeeff",
+      credential: "a".repeat(64),
+      host: "192.168.1.8",
+      pairedAt: 1
+    },
+    sourceEpoch: 15,
+    socketFactory: () => {
+      throw new Error("旧来源取消后不应创建 WebSocket");
+    },
     heartbeatIntervalMs: 60_000
   });
   let generation = 1;
   let attempts = 0;
   const recovery = connection.recover({
-    timeoutMs: 1_000,
-    connectTimeoutMs: 30,
     retryDelaysMs: [0, 10],
     shouldContinue: () => generation === 1,
+    connectAttempt: async () => {
+      throw new Error("模拟旧来源瞬态网络错误");
+    },
     onAttempt() {
       attempts += 1;
       generation = 2;
     }
   });
-  await assert.rejects(recovery, /平板连接恢复超时/);
+  await assert.rejects(
+    recovery,
+    (error) => error instanceof ReceiverRecoveryCancelledError
+  );
   assert.equal(attempts, 1);
   assert.equal(connection.connected, false);
 });

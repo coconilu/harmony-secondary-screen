@@ -9,8 +9,8 @@ import {
 } from "./direct-protocol.js";
 
 const CONNECT_TIMEOUT_MS = 5_000;
-export const DIRECT_RECOVERY_TIMEOUT_MS = 120_000;
 export const DIRECT_RECOVERY_CONNECT_TIMEOUT_MS = 1_500;
+export const DIRECT_RECOVERY_MAX_RETRY_DELAY_MS = 2_000;
 export const DIRECT_RECOVERY_RETRY_DELAYS_MS = Object.freeze([
   0,
   250,
@@ -63,7 +63,8 @@ export class DirectReceiverConnection {
     this.heartbeatTimer = null;
   }
 
-  async connect({ timeoutMs = this.connectTimeoutMs } = {}) {
+  async connect({ timeoutMs = this.connectTimeoutMs, signal } = {}) {
+    throwIfRecoveryCancelled(signal);
     if (this.socket !== null) {
       throw new Error("平板连接已存在");
     }
@@ -85,7 +86,7 @@ export class DirectReceiverConnection {
         width: DIRECT_VIDEO_WIDTH,
         height: DIRECT_VIDEO_HEIGHT,
         fps: DIRECT_VIDEO_FRAMERATE
-      }, "ready", timeoutMs);
+      }, "ready", timeoutMs, signal);
     } catch (error) {
       if (this.socket === socket) {
         this.socket = null;
@@ -98,7 +99,7 @@ export class DirectReceiverConnection {
       if (this.socket === socket) {
         this.socket = null;
       }
-      throw new Error("平板返回了过期的页面来源状态");
+      throw new ReceiverProtocolError("epoch_stale");
     }
     socket.addEventListener("message", (event) => {
       if (typeof event.data !== "string") {
@@ -133,51 +134,61 @@ export class DirectReceiverConnection {
   }
 
   async recover({
-    timeoutMs = DIRECT_RECOVERY_TIMEOUT_MS,
     connectTimeoutMs = DIRECT_RECOVERY_CONNECT_TIMEOUT_MS,
     retryDelaysMs = DIRECT_RECOVERY_RETRY_DELAYS_MS,
     shouldContinue = () => true,
-    onAttempt = () => {}
+    onAttempt = () => {},
+    onTransientFailure = () => {},
+    signal,
+    now = () => Date.now(),
+    delayFn = delay,
+    connectAttempt = (options) => this.connect(options)
   } = {}) {
-    const startedAt = Date.now();
+    const startedAt = now();
+    const delays = normalizeRetryDelays(retryDelaysMs);
     let attempts = 0;
-    let lastError = null;
-    while (shouldContinue()) {
-      const elapsedMs = Date.now() - startedAt;
-      if (elapsedMs >= timeoutMs) {
-        break;
-      }
-      const delayIndex = Math.min(attempts, retryDelaysMs.length - 1);
-      const retryDelayMs = retryDelaysMs[delayIndex] ?? 0;
+    while (shouldContinue() && !signal?.aborted) {
+      const delayIndex = Math.min(attempts, delays.length - 1);
+      const retryDelayMs = delays[delayIndex];
       if (retryDelayMs > 0) {
-        await delay(Math.min(retryDelayMs, timeoutMs - elapsedMs));
+        await delayFn(retryDelayMs, signal);
       }
-      if (!shouldContinue()) {
-        break;
-      }
+      throwIfRecoveryCancelled(signal, shouldContinue);
       attempts += 1;
-      onAttempt(attempts);
+      onAttempt({
+        attempts,
+        elapsedMs: Math.max(0, now() - startedAt),
+        retryDelayMs
+      });
       try {
-        const response = await this.connect({
-          timeoutMs: Math.min(
-            connectTimeoutMs,
-            Math.max(1, timeoutMs - (Date.now() - startedAt))
-          )
+        const response = await connectAttempt({
+          timeoutMs: connectTimeoutMs,
+          signal
         });
         return {
           response,
           attempts,
-          elapsedMs: Date.now() - startedAt
+          elapsedMs: Math.max(0, now() - startedAt)
         };
       } catch (error) {
+        if (
+          error instanceof ReceiverRecoveryCancelledError ||
+          signal?.aborted ||
+          !shouldContinue()
+        ) {
+          throw new ReceiverRecoveryCancelledError();
+        }
         if (error?.recoverable === false) {
           throw error;
         }
-        lastError = error;
+        onTransientFailure({
+          attempts,
+          elapsedMs: Math.max(0, now() - startedAt),
+          retryDelayMs
+        });
       }
     }
-    const suffix = lastError instanceof Error ? `：${lastError.message}` : "";
-    throw new Error(`平板连接恢复超时${suffix}`);
+    throw new ReceiverRecoveryCancelledError();
   }
 
   get connected() {
@@ -228,41 +239,52 @@ export class DirectReceiverConnection {
   }
 }
 
-function openAndExchange(socket, request, expectedType, timeoutMs = CONNECT_TIMEOUT_MS) {
+function openAndExchange(
+  socket,
+  request,
+  expectedType,
+  timeoutMs = CONNECT_TIMEOUT_MS,
+  signal
+) {
   return new Promise((resolve, reject) => {
     let settled = false;
-    const timeout = setTimeout(() => {
-      finish(new Error("连接平板超时"));
-      socket.close();
-    }, timeoutMs);
-
+    let timeout = null;
+    const cleanup = () => {
+      if (timeout !== null) {
+        clearTimeout(timeout);
+        timeout = null;
+      }
+      socket.removeEventListener("open", handleOpen);
+      socket.removeEventListener("message", handleMessage);
+      socket.removeEventListener("error", handleError);
+      socket.removeEventListener("close", handleClose);
+      signal?.removeEventListener("abort", handleAbort);
+    };
     const finish = (error, value) => {
       if (settled) {
         return;
       }
       settled = true;
-      clearTimeout(timeout);
+      cleanup();
       if (error) {
         reject(error);
       } else {
         resolve(value);
       }
     };
-
-    socket.binaryType = "arraybuffer";
-    socket.addEventListener("open", () => {
+    const handleOpen = () => {
       socket.send(JSON.stringify(request));
-    }, { once: true });
-    socket.addEventListener("message", (event) => {
+    };
+    const handleMessage = (event) => {
       if (typeof event.data !== "string") {
-        finish(new Error("平板在连接过程中返回了无法识别的数据"));
+        finish(new ReceiverProtocolError("invalid_response"));
         return;
       }
       let message;
       try {
         message = JSON.parse(event.data);
       } catch {
-        finish(new Error("平板返回了无法识别的响应"));
+        finish(new ReceiverProtocolError("invalid_response"));
         return;
       }
       if (message?.type === "error") {
@@ -273,17 +295,36 @@ function openAndExchange(socket, request, expectedType, timeoutMs = CONNECT_TIME
         message?.type !== expectedType ||
         message.protocol !== DIRECT_PROTOCOL
       ) {
-        finish(new Error("平板返回了无效的连接响应"));
+        finish(new ReceiverProtocolError("protocol_mismatch"));
         return;
       }
       finish(null, message);
-    });
-    socket.addEventListener("error", () => {
+    };
+    const handleError = () => {
       finish(new Error("无法连接平板，请检查电脑和平板是否在同一 Wi-Fi，以及平板地址是否正确"));
-    });
-    socket.addEventListener("close", () => {
+    };
+    const handleClose = () => {
       finish(new Error("平板在连接完成前断开"));
-    });
+    };
+    const handleAbort = () => {
+      finish(new ReceiverRecoveryCancelledError());
+      closeSocket(socket);
+    };
+
+    timeout = setTimeout(() => {
+      finish(new Error("连接平板超时"));
+      closeSocket(socket);
+    }, timeoutMs);
+    if (signal?.aborted) {
+      handleAbort();
+      return;
+    }
+    signal?.addEventListener("abort", handleAbort, { once: true });
+    socket.binaryType = "arraybuffer";
+    socket.addEventListener("open", handleOpen, { once: true });
+    socket.addEventListener("message", handleMessage);
+    socket.addEventListener("error", handleError, { once: true });
+    socket.addEventListener("close", handleClose, { once: true });
   });
 }
 
@@ -296,8 +337,50 @@ function closeSocket(socket) {
   }
 }
 
-function delay(milliseconds) {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+function delay(milliseconds, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new ReceiverRecoveryCancelledError());
+      return;
+    }
+    let timeout = null;
+    const handleAbort = () => {
+      if (timeout !== null) {
+        clearTimeout(timeout);
+      }
+      signal?.removeEventListener("abort", handleAbort);
+      reject(new ReceiverRecoveryCancelledError());
+    };
+    timeout = setTimeout(() => {
+      signal?.removeEventListener("abort", handleAbort);
+      resolve();
+    }, milliseconds);
+    signal?.addEventListener("abort", handleAbort, { once: true });
+  });
+}
+
+function normalizeRetryDelays(retryDelaysMs) {
+  const values = Array.isArray(retryDelaysMs) && retryDelaysMs.length > 0
+    ? retryDelaysMs
+    : [0];
+  return values.map((value) => {
+    const milliseconds = Number.isFinite(value) ? Math.max(0, value) : 0;
+    return Math.min(milliseconds, DIRECT_RECOVERY_MAX_RETRY_DELAY_MS);
+  });
+}
+
+function throwIfRecoveryCancelled(signal, shouldContinue = () => true) {
+  if (signal?.aborted || !shouldContinue()) {
+    throw new ReceiverRecoveryCancelledError();
+  }
+}
+
+export class ReceiverRecoveryCancelledError extends Error {
+  constructor() {
+    super("平板连接恢复已取消");
+    this.name = "ReceiverRecoveryCancelledError";
+    this.recoverable = false;
+  }
 }
 
 class ReceiverProtocolError extends Error {
@@ -318,6 +401,7 @@ function describeReceiverError(code) {
     pairing_failed: "一次性授权不匹配",
     protocol_mismatch: "电脑扩展与平板应用版本不兼容，请同时更新后重试",
     codec_unsupported: "当前平板无法播放这组视频参数",
-    epoch_stale: "平板已切换到更新的页面来源"
+    epoch_stale: "平板已切换到更新的页面来源",
+    invalid_response: "平板返回了无效的连接响应"
   }[code] ?? `平板拒绝连接（${String(code ?? "unknown").slice(0, 64)}）`;
 }
