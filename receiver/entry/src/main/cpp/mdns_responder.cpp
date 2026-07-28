@@ -156,7 +156,8 @@ bool MdnsResponder::AcceptDatagram(const MdnsDatagram& datagram) const {
          datagram.sourcePort == mdns::kMulticastPort &&
          datagram.destinationAddress == mdns::kMulticastAddress &&
          datagram.interfaceIndex == selected_interface_.index &&
-         datagram.hopLimit == mdns::kRequiredHopLimit;
+         (datagram.hopLimit == mdns::kWindowsQueryHopLimit ||
+          datagram.hopLimit == mdns::kRequiredResponseHopLimit);
 }
 
 bool MdnsResponder::HandleProbingDatagram(const MdnsDatagram& datagram) {

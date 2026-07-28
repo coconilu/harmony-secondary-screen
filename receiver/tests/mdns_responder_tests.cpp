@@ -205,7 +205,7 @@ void FakeMdnsBus::Broadcast(FakeMdnsTransport* sender,
         hss::receiver::mdns::kMulticastAddress,
         hss::receiver::mdns::kMulticastPort,
         target.index,
-        hss::receiver::mdns::kRequiredHopLimit,
+        hss::receiver::mdns::kRequiredResponseHopLimit,
     });
   }
 }
@@ -276,6 +276,19 @@ std::size_t CountPackets(const FakeMdnsTransport& transport,
       std::count(packets.begin(), packets.end(), expected));
 }
 
+bool WaitForPacketCount(const FakeMdnsTransport& transport,
+                        const std::vector<std::byte>& expected,
+                        std::size_t minimumCount,
+                        int timeoutMilliseconds = 500) {
+  const auto deadline = std::chrono::steady_clock::now() +
+                        std::chrono::milliseconds(timeoutMilliseconds);
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (CountPackets(transport, expected) >= minimumCount) return true;
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  return CountPackets(transport, expected) >= minimumCount;
+}
+
 void InvalidAddressNeverOpensTransport() {
   FakeMdnsBus bus;
   auto transport = std::make_unique<FakeMdnsTransport>(&bus);
@@ -327,7 +340,7 @@ void OldKnownAnswerDoesNotConflictWhileProbing() {
   evidence->Inject(
       KnownAnswerQuery(oldAddress, hss::receiver::mdns::kRecordTtlSeconds),
       oldAddress, 7, hss::receiver::mdns::kMulticastPort,
-      hss::receiver::mdns::kRequiredHopLimit);
+      hss::receiver::mdns::kRequiredResponseHopLimit);
   assert(WaitForState(responder, MdnsPublisherState::kPublished));
   assert(CountGoodbyes(*evidence) == 0U);
   assert(CountAnnouncements(*evidence) >= 1U);
@@ -356,7 +369,7 @@ void OldKnownAnswerReturnsCurrentAddressWhilePublished() {
   evidence->Inject(
       KnownAnswerQuery(oldAddress, hss::receiver::mdns::kRecordTtlSeconds),
       oldAddress, 7, hss::receiver::mdns::kMulticastPort,
-      hss::receiver::mdns::kRequiredHopLimit);
+      hss::receiver::mdns::kRequiredResponseHopLimit);
   const auto deadline = std::chrono::steady_clock::now() +
                         std::chrono::milliseconds(500);
   while (std::chrono::steady_clock::now() < deadline &&
@@ -366,6 +379,60 @@ void OldKnownAnswerReturnsCurrentAddressWhilePublished() {
   assert(responder.state() == MdnsPublisherState::kPublished);
   assert(CountGoodbyes(*evidence) == 0U);
   assert(CountPackets(*evidence, currentRecord) == currentRecordsBefore + 1U);
+  responder.Stop();
+}
+
+void WindowsAndStandardHopLimitsKeepAllOtherIngressGates() {
+  FakeMdnsBus bus;
+  auto transport = std::make_unique<FakeMdnsTransport>(&bus);
+  FakeMdnsTransport* evidence = transport.get();
+  MdnsResponder responder(std::move(transport));
+  const Ipv4Address selected{std::byte{192}, std::byte{168}, std::byte{1},
+                             std::byte{8}};
+  const Ipv4Address client{std::byte{192}, std::byte{168}, std::byte{1},
+                           std::byte{40}};
+  const Ipv4Address vpnClient{std::byte{10}, std::byte{20}, std::byte{30},
+                              std::byte{40}};
+  const Ipv4Address publicClient{std::byte{8}, std::byte{8}, std::byte{8},
+                                 std::byte{8}};
+  const auto query = hss::receiver::mdns::BuildAQuery();
+  const auto currentRecord = hss::receiver::mdns::BuildARecord(
+      selected, hss::receiver::mdns::kRecordTtlSeconds);
+  assert(responder.Start("192.168.1.8", 7));
+  assert(WaitForState(responder, MdnsPublisherState::kPublished));
+  const std::size_t before = CountPackets(*evidence, currentRecord);
+
+  evidence->Inject(query, vpnClient, 9,
+                   hss::receiver::mdns::kMulticastPort,
+                   hss::receiver::mdns::kWindowsQueryHopLimit);
+  evidence->Inject(query, client, 7, 9999,
+                   hss::receiver::mdns::kWindowsQueryHopLimit);
+  evidence->Inject(query, client, 7,
+                   hss::receiver::mdns::kMulticastPort,
+                   hss::receiver::mdns::kWindowsQueryHopLimit, selected);
+  evidence->Inject(query, publicClient, 7,
+                   hss::receiver::mdns::kMulticastPort,
+                   hss::receiver::mdns::kWindowsQueryHopLimit);
+  for (const int rejectedHopLimit : {2, 64, 128}) {
+    evidence->Inject(query, client, 7,
+                     hss::receiver::mdns::kMulticastPort,
+                     rejectedHopLimit);
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(80));
+  assert(responder.state() == MdnsPublisherState::kPublished);
+  assert(CountPackets(*evidence, currentRecord) == before);
+  assert(CountGoodbyes(*evidence) == 0U);
+
+  evidence->Inject(query, client, 7,
+                   hss::receiver::mdns::kMulticastPort,
+                   hss::receiver::mdns::kWindowsQueryHopLimit);
+  assert(WaitForPacketCount(*evidence, currentRecord, before + 1U));
+  evidence->Inject(query, client, 7,
+                   hss::receiver::mdns::kMulticastPort,
+                   hss::receiver::mdns::kRequiredResponseHopLimit);
+  assert(WaitForPacketCount(*evidence, currentRecord, before + 2U));
+  assert(responder.state() == MdnsPublisherState::kPublished);
+  assert(CountGoodbyes(*evidence) == 0U);
   responder.Stop();
 }
 
@@ -384,20 +451,20 @@ void WrongInterfacePortHopAndDestinationAreIgnored() {
       conflict, hss::receiver::mdns::kRecordTtlSeconds);
   evidence->Inject(record, conflict, 9,
                    hss::receiver::mdns::kMulticastPort,
-                   hss::receiver::mdns::kRequiredHopLimit);
+                   hss::receiver::mdns::kRequiredResponseHopLimit);
   evidence->Inject(record, conflict, 7, 9999,
-                   hss::receiver::mdns::kRequiredHopLimit);
+                   hss::receiver::mdns::kRequiredResponseHopLimit);
   evidence->Inject(record, conflict, 7,
                    hss::receiver::mdns::kMulticastPort, 64);
   evidence->Inject(record, conflict, 7,
                    hss::receiver::mdns::kMulticastPort,
-                   hss::receiver::mdns::kRequiredHopLimit,
+                   hss::receiver::mdns::kRequiredResponseHopLimit,
                    selected);
   std::this_thread::sleep_for(std::chrono::milliseconds(80));
   assert(responder.state() == MdnsPublisherState::kPublished);
   evidence->Inject(record, conflict, 7,
                    hss::receiver::mdns::kMulticastPort,
-                   hss::receiver::mdns::kRequiredHopLimit);
+                   hss::receiver::mdns::kRequiredResponseHopLimit);
   assert(WaitForState(responder, MdnsPublisherState::kConflict));
   assert(CountGoodbyes(*evidence) == 1U);
 }
@@ -458,7 +525,7 @@ void QueryResponsesRespectFrequencyBudget() {
        ++index) {
     evidence->Inject(query, client, 7,
                      hss::receiver::mdns::kMulticastPort,
-                     hss::receiver::mdns::kRequiredHopLimit);
+                     hss::receiver::mdns::kRequiredResponseHopLimit);
   }
   const auto deadline = std::chrono::steady_clock::now() +
                         std::chrono::milliseconds(500);
@@ -491,6 +558,7 @@ int main() {
   AddressInvalidationSendsExactlyOneGoodbye();
   OldKnownAnswerDoesNotConflictWhileProbing();
   OldKnownAnswerReturnsCurrentAddressWhilePublished();
+  WindowsAndStandardHopLimitsKeepAllOtherIngressGates();
   WrongInterfacePortHopAndDestinationAreIgnored();
   EstablishedOwnerDefeatsALaterStarter();
   SimultaneousProbesUseDeterministicTieBreak();

@@ -47,9 +47,11 @@ HarmonyOS DNS-SD 服务实例注册、最小 mDNS A 响应和裸 `.local` 主机
 Receiver 仅允许用户确认的 `wlan*` 私网或 IPv4 link-local 地址；拒绝通配、回环、VPN、蜂窝和公网。
 VPN 的“阻止局域网”可能阻止连接，产品不修改 VPN、代理、路由、防火墙或 Windows 网络分类。
 固定 A socket 还要求入站 packet-info interface index 等于用户确认的 `wlan*`，目的地址为 mDNS
-组、源端口为 5353 且 TTL 为 255；仅凭 VPN/其他接口上的私网源地址不能通过。若目标 HarmonyOS
-运行时不接受 `IP_PKTINFO`、`IP_RECVTTL` 或关闭 `IP_MULTICAST_ALL`，自动发布应失败并显示数字
-IPv4 回退，不得退化为跨接口接收。
+组、源端口为 5353、source 为 RFC1918/link-local，且查询 hop limit 只能为 1 或 255；仅凭
+VPN/其他接口上的私网源地址不能通过。TTL 1 是目标 Windows DNS 客户端真机抓包确认的查询行为，
+不是放开跨链路输入；响应 IP TTL 仍固定为 255。若目标 HarmonyOS 运行时不接受 `IP_PKTINFO`、
+`IP_RECVTTL` 或关闭 `IP_MULTICAST_ALL`，自动发布应失败并显示数字 IPv4 回退，不得退化为跨接口
+接收。
 
 ## 不能由自动化推断的结论
 
@@ -57,6 +59,7 @@ IPv4 回退，不得退化为跨接口接收。
 - DNS-SD API 成功不等于裸 `.local` 可解析；
 - mDNS 报文单元测试或 Receiver 显示“已发布”不等于目标 Windows/Edge 已解析；
 - target NDK 编译通过不等于设备内核在当前 Wi-Fi/AP 上已交付正确 packet-info 与 TTL；
+- Windows 查询 TTL 1 被自动化接受不等于修复后的 exact-head 已通过同机复验；
 - 假 Receiver 收到 Annex-B 不等于真实 Edge/平板端到端通过；
 - 配置 60 fps 不等于实际源视频或 Edge 一定持续产出 60 帧；
 - 旧 Relay 的 13 分 24 秒结果不等于 HWC4 直连链路通过；

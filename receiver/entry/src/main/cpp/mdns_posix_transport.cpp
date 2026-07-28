@@ -75,7 +75,7 @@ class PosixMdnsTransport final : public MdnsTransport {
     membership.imr_multiaddr = multicast.sin_addr;
     membership.imr_address = NativeAddress(selectedInterface.address);
     membership.imr_ifindex = static_cast<int>(selectedInterface.index);
-    int multicastTtl = mdns::kRequiredHopLimit;
+    int multicastTtl = mdns::kRequiredResponseHopLimit;
     unsigned char loopback = 1;
     if (setsockopt(descriptor, IPPROTO_IP, IP_ADD_MEMBERSHIP, &membership,
                    sizeof(membership)) != 0 ||

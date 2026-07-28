@@ -75,10 +75,10 @@ DNS-SD 注册成功、单元测试或 TCP 端口可达均不能替代 Windows �
 | 证据层 | 结果 |
 | --- | --- |
 | 开发基线 | `main@2e530dd9b7ba460a9db0de5956810399fa5b7c4d` |
-| 自动化 | 扩展真实 ws 测试覆盖主动 `paired` / `ready` 不能绕过地址门禁；固定 A 协议与生产 responder seam 覆盖错误接口/端口/TTL/目的组、随机三 probe、已发布者防御、同时启动仲裁、5353 共享、频率/放大预算、地址失效一次 TTL 0、并发 Stop 与析构 |
+| 自动化 | 扩展真实 ws 测试覆盖主动 `paired` / `ready` 不能绕过地址门禁；固定 A 协议与生产 responder seam 覆盖 Windows 查询 hop 1、完整 querier hop 255、拒绝 2/64/128、错误接口/VPN/端口/目的组、随机三 probe、已发布者防御、同时启动仲裁、5353 共享、频率/放大预算、地址失效一次 TTL 0、并发 Stop 与析构 |
 | 权限 | 仅新增只读 `webRequest`；固定与可选 host 范围未扩大；无 `<all_urls>` 或 `webRequestBlocking` |
 | HarmonyOS 构建 | unsigned Release 已编译 `recvmsg`、`IP_PKTINFO`、`IP_RECVTTL`、`IP_MULTICAST_ALL=0` 生产 adapter；不代表目标设备运行时 multicast socket 与 Edge 解析成功 |
-| 真实 Edge + Receiver | **本分支尚未安装或执行；默认 `.local`、重启、地址变化、冲突和手动回退均为未验证** |
+| 真实 Edge + Receiver | `9f5bcd272823b9db60c9a051a632b66b2963dee7` 已安装：Receiver 显示两层发布成功，但 Windows/Edge `.local` 解析失败。实机抓包确认 Windows 在 WLAN 23 向 `224.0.0.251:5353` 发出源端口 5353、A/IN、IP TTL 1 的查询；旧门禁未响应。同查询改为 TTL 255 后收到一个正确 A response。TTL 1 修复仍须安装新的 exact-head 复验，当前不得标记 PASS。 |
 
 在上述真机行补齐 exact-head 证据前，Issue #19 的首两项端到端验收不得标记为 PASS。
 

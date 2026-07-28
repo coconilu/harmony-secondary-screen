@@ -19,7 +19,8 @@ inline constexpr std::size_t kMaximumResponseBytes = 64;
 inline constexpr Ipv4Address kMulticastAddress{
     std::byte{224}, std::byte{0}, std::byte{0}, std::byte{251}};
 inline constexpr std::uint16_t kMulticastPort = 5353;
-inline constexpr int kRequiredHopLimit = 255;
+inline constexpr int kWindowsQueryHopLimit = 1;
+inline constexpr int kRequiredResponseHopLimit = 255;
 inline constexpr std::size_t kMaximumResponsesPerSecond = 10;
 
 enum class MessageKind {
