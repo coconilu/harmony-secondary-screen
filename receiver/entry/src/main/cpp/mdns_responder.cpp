@@ -185,8 +185,7 @@ bool MdnsResponder::HandleProbingDatagram(const MdnsDatagram& datagram) {
     }
     return true;
   }
-  if (kind == mdns::MessageKind::kResponse ||
-      kind == mdns::MessageKind::kQuery) {
+  if (kind == mdns::MessageKind::kResponse) {
     std::scoped_lock lock(lifecycle_mutex_);
     if (desired_) ConflictLocked(false);
     return false;
@@ -209,8 +208,7 @@ bool MdnsResponder::HandlePublishedDatagram(
       }
       return true;
     }
-    if (kind == mdns::MessageKind::kResponse ||
-        kind == mdns::MessageKind::kQuery) {
+    if (kind == mdns::MessageKind::kResponse) {
       ConflictLocked(true);
       return false;
     }

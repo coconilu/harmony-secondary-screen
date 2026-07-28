@@ -260,6 +260,22 @@ std::size_t CountAnnouncements(const FakeMdnsTransport& transport) {
       }));
 }
 
+std::vector<std::byte> KnownAnswerQuery(Ipv4Address address,
+                                        std::uint32_t ttlSeconds) {
+  auto query = hss::receiver::mdns::BuildAQuery();
+  query[7] = std::byte{1};
+  const auto record = hss::receiver::mdns::BuildARecord(address, ttlSeconds);
+  query.insert(query.end(), record.begin() + 12, record.end());
+  return query;
+}
+
+std::size_t CountPackets(const FakeMdnsTransport& transport,
+                         const std::vector<std::byte>& expected) {
+  const auto packets = transport.sentPackets();
+  return static_cast<std::size_t>(
+      std::count(packets.begin(), packets.end(), expected));
+}
+
 void InvalidAddressNeverOpensTransport() {
   FakeMdnsBus bus;
   auto transport = std::make_unique<FakeMdnsTransport>(&bus);
@@ -294,6 +310,63 @@ void AddressInvalidationSendsExactlyOneGoodbye() {
   responder.Stop();
   assert(CountGoodbyes(*evidence) == 1U);
   assert(evidence->closeCount() == 1);
+}
+
+void OldKnownAnswerDoesNotConflictWhileProbing() {
+  FakeMdnsBus bus;
+  auto transport = std::make_unique<FakeMdnsTransport>(&bus);
+  FakeMdnsTransport* evidence = transport.get();
+  evidence->setRandomDelay(250);
+  MdnsResponder responder(std::move(transport));
+  const Ipv4Address selected{std::byte{192}, std::byte{168}, std::byte{1},
+                             std::byte{8}};
+  const Ipv4Address oldAddress{std::byte{192}, std::byte{168}, std::byte{1},
+                               std::byte{7}};
+  assert(responder.Start("192.168.1.8", 7));
+  assert(responder.state() == MdnsPublisherState::kProbing);
+  evidence->Inject(
+      KnownAnswerQuery(oldAddress, hss::receiver::mdns::kRecordTtlSeconds),
+      oldAddress, 7, hss::receiver::mdns::kMulticastPort,
+      hss::receiver::mdns::kRequiredHopLimit);
+  assert(WaitForState(responder, MdnsPublisherState::kPublished));
+  assert(CountGoodbyes(*evidence) == 0U);
+  assert(CountAnnouncements(*evidence) >= 1U);
+  assert(CountPackets(
+             *evidence,
+             hss::receiver::mdns::BuildARecord(
+                 selected, hss::receiver::mdns::kRecordTtlSeconds)) >= 1U);
+  responder.Stop();
+}
+
+void OldKnownAnswerReturnsCurrentAddressWhilePublished() {
+  FakeMdnsBus bus;
+  auto transport = std::make_unique<FakeMdnsTransport>(&bus);
+  FakeMdnsTransport* evidence = transport.get();
+  MdnsResponder responder(std::move(transport));
+  const Ipv4Address selected{std::byte{192}, std::byte{168}, std::byte{1},
+                             std::byte{8}};
+  const Ipv4Address oldAddress{std::byte{192}, std::byte{168}, std::byte{1},
+                               std::byte{7}};
+  const auto currentRecord = hss::receiver::mdns::BuildARecord(
+      selected, hss::receiver::mdns::kRecordTtlSeconds);
+  assert(responder.Start("192.168.1.8", 7));
+  assert(WaitForState(responder, MdnsPublisherState::kPublished));
+  const std::size_t currentRecordsBefore =
+      CountPackets(*evidence, currentRecord);
+  evidence->Inject(
+      KnownAnswerQuery(oldAddress, hss::receiver::mdns::kRecordTtlSeconds),
+      oldAddress, 7, hss::receiver::mdns::kMulticastPort,
+      hss::receiver::mdns::kRequiredHopLimit);
+  const auto deadline = std::chrono::steady_clock::now() +
+                        std::chrono::milliseconds(500);
+  while (std::chrono::steady_clock::now() < deadline &&
+         CountPackets(*evidence, currentRecord) == currentRecordsBefore) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  assert(responder.state() == MdnsPublisherState::kPublished);
+  assert(CountGoodbyes(*evidence) == 0U);
+  assert(CountPackets(*evidence, currentRecord) == currentRecordsBefore + 1U);
+  responder.Stop();
 }
 
 void WrongInterfacePortHopAndDestinationAreIgnored() {
@@ -416,6 +489,8 @@ void DestructorStopsAResponderBlockedInReceive() {
 int main() {
   InvalidAddressNeverOpensTransport();
   AddressInvalidationSendsExactlyOneGoodbye();
+  OldKnownAnswerDoesNotConflictWhileProbing();
+  OldKnownAnswerReturnsCurrentAddressWhilePublished();
   WrongInterfacePortHopAndDestinationAreIgnored();
   EstablishedOwnerDefeatsALaterStarter();
   SimultaneousProbesUseDeterministicTieBreak();
