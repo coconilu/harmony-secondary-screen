@@ -56,10 +56,11 @@ Receiver 只绑定 `wlan*` 上由用户确认的 RFC1918 或 IPv4 link-local 地
 mDNS 响应器不浏览服务、不枚举邻居、不扫描子网，不回答其他名称或记录类型。Receiver 在用户确认
 地址时同时保存 `wlan*` 的 interface index；UDP socket 只加入该 index 的
 `224.0.0.251:5353` 组，并通过 `recvmsg` 元数据要求入站目的组、interface index、源端口 5353
-和可信私网/link-local source 全部匹配。查询 hop limit 只接受目标 Windows DNS 客户端实测的
-1 或完整 mDNS querier 的 255，拒绝其他值；响应 IP TTL 始终为 255。OpenHarmony NDK 提供
-`IP_PKTINFO`、`IP_RECVTTL` 和 `IP_MULTICAST_ALL`；生产 adapter 关闭跨接口 multicast 接收，
-任一 socket option 不可用即发布失败并保留数字 IPv4 回退。
+和可信私网/link-local source 全部匹配。完成通用门禁后先分类消息：query/probe hop limit 只
+接受目标 Windows DNS 客户端实测的 1 或完整 mDNS querier 的 255；response 只接受 255，TTL 1
+response 不得进入所有权冲突流程；其他值拒绝。出站响应 IP TTL 始终为 255。OpenHarmony NDK
+提供 `IP_PKTINFO`、`IP_RECVTTL` 和 `IP_MULTICAST_ALL`；生产 adapter 关闭跨接口 multicast
+接收，任一 socket option 不可用即发布失败并保留数字 IPv4 回退。
 
 发布采用随机 0–250 ms 延迟与三次间隔 250 ms 的 probe。同时启动者按 A 记录字节序确定性仲裁；
 已发布所有者收到后来者 probe 时发送权威 A 防御，不把名称让给后启动者。正式同名不同 A

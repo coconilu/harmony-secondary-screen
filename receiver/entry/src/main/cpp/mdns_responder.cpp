@@ -150,23 +150,36 @@ bool MdnsResponder::ObserveFor(int milliseconds) {
   return false;
 }
 
-bool MdnsResponder::AcceptDatagram(const MdnsDatagram& datagram) const {
+bool MdnsResponder::AcceptDatagramMetadata(
+    const MdnsDatagram& datagram) const {
   return datagram.bytes.size() <= mdns::kMaximumQueryBytes &&
          mdns::IsTrustedLanAddress(datagram.sourceAddress) &&
          datagram.sourcePort == mdns::kMulticastPort &&
          datagram.destinationAddress == mdns::kMulticastAddress &&
-         datagram.interfaceIndex == selected_interface_.index &&
-         (datagram.hopLimit == mdns::kWindowsQueryHopLimit ||
-          datagram.hopLimit == mdns::kRequiredResponseHopLimit);
+         datagram.interfaceIndex == selected_interface_.index;
+}
+
+bool MdnsResponder::AcceptMessageHopLimit(
+    const MdnsDatagram& datagram, mdns::MessageKind kind) const {
+  if (kind == mdns::MessageKind::kResponse) {
+    return datagram.hopLimit == mdns::kRequiredResponseHopLimit;
+  }
+  if (kind == mdns::MessageKind::kQuery ||
+      kind == mdns::MessageKind::kProbe) {
+    return datagram.hopLimit == mdns::kWindowsQueryHopLimit ||
+           datagram.hopLimit == mdns::kRequiredResponseHopLimit;
+  }
+  return false;
 }
 
 bool MdnsResponder::HandleProbingDatagram(const MdnsDatagram& datagram) {
-  if (!AcceptDatagram(datagram)) return true;
+  if (!AcceptDatagramMetadata(datagram)) return true;
+  const auto kind = mdns::ClassifyMessage(datagram.bytes);
+  if (!AcceptMessageHopLimit(datagram, kind)) return true;
   const auto addresses = mdns::ExtractARecords(datagram.bytes);
   if (!ContainsDifferentAddress(addresses, selected_interface_.address)) {
     return true;
   }
-  const auto kind = mdns::ClassifyMessage(datagram.bytes);
   if (kind == mdns::MessageKind::kProbe) {
     const bool losesTieBreak =
         std::any_of(addresses.begin(), addresses.end(),
@@ -196,8 +209,9 @@ bool MdnsResponder::HandleProbingDatagram(const MdnsDatagram& datagram) {
 
 bool MdnsResponder::HandlePublishedDatagram(
     const MdnsDatagram& datagram) {
-  if (!AcceptDatagram(datagram)) return true;
+  if (!AcceptDatagramMetadata(datagram)) return true;
   const auto kind = mdns::ClassifyMessage(datagram.bytes);
+  if (!AcceptMessageHopLimit(datagram, kind)) return true;
   const auto addresses = mdns::ExtractARecords(datagram.bytes);
   if (ContainsDifferentAddress(addresses, selected_interface_.address)) {
     std::scoped_lock lock(lifecycle_mutex_);

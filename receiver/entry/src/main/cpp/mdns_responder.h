@@ -34,7 +34,9 @@ class MdnsResponder final {
  private:
   void Run();
   bool ObserveFor(int milliseconds);
-  bool AcceptDatagram(const MdnsDatagram& datagram) const;
+  bool AcceptDatagramMetadata(const MdnsDatagram& datagram) const;
+  bool AcceptMessageHopLimit(const MdnsDatagram& datagram,
+                             mdns::MessageKind kind) const;
   bool HandleProbingDatagram(const MdnsDatagram& datagram);
   bool HandlePublishedDatagram(const MdnsDatagram& datagram);
   bool SendProbeLocked();

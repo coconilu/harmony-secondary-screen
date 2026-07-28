@@ -382,7 +382,7 @@ void OldKnownAnswerReturnsCurrentAddressWhilePublished() {
   responder.Stop();
 }
 
-void WindowsAndStandardHopLimitsKeepAllOtherIngressGates() {
+void QueryAndProbeHopLimitsKeepAllOtherIngressGates() {
   FakeMdnsBus bus;
   auto transport = std::make_unique<FakeMdnsTransport>(&bus);
   FakeMdnsTransport* evidence = transport.get();
@@ -431,6 +431,12 @@ void WindowsAndStandardHopLimitsKeepAllOtherIngressGates() {
                    hss::receiver::mdns::kMulticastPort,
                    hss::receiver::mdns::kRequiredResponseHopLimit);
   assert(WaitForPacketCount(*evidence, currentRecord, before + 2U));
+  const Ipv4Address probeAddress{std::byte{192}, std::byte{168},
+                                 std::byte{1}, std::byte{41}};
+  evidence->Inject(hss::receiver::mdns::BuildAProbe(probeAddress),
+                   probeAddress, 7, hss::receiver::mdns::kMulticastPort,
+                   hss::receiver::mdns::kWindowsQueryHopLimit);
+  assert(WaitForPacketCount(*evidence, currentRecord, before + 3U));
   assert(responder.state() == MdnsPublisherState::kPublished);
   assert(CountGoodbyes(*evidence) == 0U);
   responder.Stop();
@@ -460,8 +466,12 @@ void WrongInterfacePortHopAndDestinationAreIgnored() {
                    hss::receiver::mdns::kMulticastPort,
                    hss::receiver::mdns::kRequiredResponseHopLimit,
                    selected);
+  evidence->Inject(record, conflict, 7,
+                   hss::receiver::mdns::kMulticastPort,
+                   hss::receiver::mdns::kWindowsQueryHopLimit);
   std::this_thread::sleep_for(std::chrono::milliseconds(80));
   assert(responder.state() == MdnsPublisherState::kPublished);
+  assert(CountGoodbyes(*evidence) == 0U);
   evidence->Inject(record, conflict, 7,
                    hss::receiver::mdns::kMulticastPort,
                    hss::receiver::mdns::kRequiredResponseHopLimit);
@@ -558,7 +568,7 @@ int main() {
   AddressInvalidationSendsExactlyOneGoodbye();
   OldKnownAnswerDoesNotConflictWhileProbing();
   OldKnownAnswerReturnsCurrentAddressWhilePublished();
-  WindowsAndStandardHopLimitsKeepAllOtherIngressGates();
+  QueryAndProbeHopLimitsKeepAllOtherIngressGates();
   WrongInterfacePortHopAndDestinationAreIgnored();
   EstablishedOwnerDefeatsALaterStarter();
   SimultaneousProbesUseDeterministicTieBreak();
