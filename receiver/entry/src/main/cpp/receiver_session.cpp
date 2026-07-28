@@ -175,6 +175,7 @@ bool ReceiverSession::Start(std::string listenAddress) {
   received_bytes_ = 0;
   decoder_resync_events_ = 0;
   keyframe_requests_sent_ = 0;
+  decoder_recovery_.Reset();
   desired_ = true;
   SetState("starting", "正在准备接收电脑画面", false, false);
   worker_ = std::thread(&ReceiverSession::NetworkLoop, this);
@@ -189,7 +190,7 @@ void ReceiverSession::Stop() {
   }
   websocket_decoder_.Reset();
   telemetry_queue_.Clear();
-  keyframe_request_pending_ = false;
+  decoder_recovery_.Reset();
   SetState("idle", "尚未开始接收画面", false, false);
 }
 
@@ -313,7 +314,7 @@ void ReceiverSession::NetworkLoop() {
   }
   CloseSockets();
   telemetry_queue_.Clear();
-  keyframe_request_pending_ = false;
+  decoder_recovery_.Reset();
 }
 
 bool ReceiverSession::OpenListener() {
@@ -575,7 +576,7 @@ bool ReceiverSession::RunConnectedSession() {
         }
       }
     }
-    if (keyframe_request_pending_.exchange(false)) {
+    if (decoder_recovery_.ConsumeKeyFrameRequest()) {
       if (!SendControl(R"({"type":"keyframe","protocol":4,"reason":"loss_flush_or_session_start","requireCodecConfig":true})")) {
         OH_LOG_Print(LOG_APP, LOG_WARN, kLogDomain, kLogTag,
                      "Receiver WebSocket keyframe request send failed");
@@ -651,11 +652,11 @@ void ReceiverSession::HandleVideo(const std::byte* data, std::size_t size) {
   }
   ++received_frames_;
   received_bytes_ += header->payloadLength;
-  if (!DecoderCallbacksAllowed(decoder_state_.load()) || decoder_.load() == nullptr) {
+  if (!decoder_callback_gate_.CallbacksAllowed() || decoder_.load() == nullptr) {
     ++frames_dropped_;
     return;
   }
-  const auto recoveryState = decoder_recovery_state_.load();
+  const auto recoveryState = decoder_recovery_.state();
   const bool keyframe = (header->flags & protocol::kKeyframe) != 0;
   std::vector<std::byte> bytes(data + protocol::kHeaderSize,
                                data + protocol::kHeaderSize + header->payloadLength);
@@ -685,7 +686,7 @@ void ReceiverSession::HandleVideo(const std::byte* data, std::size_t size) {
 }
 
 void ReceiverSession::RequestKeyframe() {
-  keyframe_request_pending_ = true;
+  decoder_recovery_.RequestKeyFrame();
 }
 
 void ReceiverSession::CloseControlSocket() {
@@ -698,7 +699,7 @@ void ReceiverSession::CloseSockets() {
 }
 
 DecoderRuntimeSnapshot ReceiverSession::DecoderRuntimeLocked() const {
-  return {decoder_state_.load(), decoder_.load() != nullptr};
+  return {decoder_callback_gate_.state(), decoder_.load() != nullptr};
 }
 
 bool ReceiverSession::ApplyLifecycleDecisionLocked(
@@ -725,11 +726,11 @@ bool ReceiverSession::CreateDecoderLocked() {
     fail("Surface", AV_ERR_INVALID_VAL);
     return false;
   }
-  decoder_state_ = DecoderLifecycleState::kStarting;
+  decoder_callback_gate_.SetState(DecoderLifecycleState::kStarting);
   OH_AVCodec* decoder = OH_VideoDecoder_CreateByMime(OH_AVCODEC_MIMETYPE_VIDEO_AVC);
   if (decoder == nullptr) {
     fail("CreateByMime", AV_ERR_UNSUPPORT);
-    decoder_state_ = DecoderLifecycleState::kStopped;
+    decoder_callback_gate_.SetState(DecoderLifecycleState::kStopped);
     return false;
   }
   OH_AVCodecCallback callbacks{OnCodecError, OnCodecStreamChanged,
@@ -738,14 +739,14 @@ bool ReceiverSession::CreateDecoderLocked() {
   if (registerCallback != AV_ERR_OK) {
     fail("RegisterCallback", registerCallback);
     OH_VideoDecoder_Destroy(decoder);
-    decoder_state_ = DecoderLifecycleState::kStopped;
+    decoder_callback_gate_.SetState(DecoderLifecycleState::kStopped);
     return false;
   }
   OH_AVFormat* format = OH_AVFormat_CreateVideoFormat(OH_AVCODEC_MIMETYPE_VIDEO_AVC, 1280, 720);
   if (format == nullptr) {
     fail("CreateVideoFormat", AV_ERR_NO_MEMORY);
     OH_VideoDecoder_Destroy(decoder);
-    decoder_state_ = DecoderLifecycleState::kStopped;
+    decoder_callback_gate_.SetState(DecoderLifecycleState::kStopped);
     return false;
   }
   const OH_AVErrCode configure = OH_VideoDecoder_Configure(decoder, format);
@@ -753,7 +754,7 @@ bool ReceiverSession::CreateDecoderLocked() {
   if (configure != AV_ERR_OK) {
     fail("Configure", configure);
     OH_VideoDecoder_Destroy(decoder);
-    decoder_state_ = DecoderLifecycleState::kStopped;
+    decoder_callback_gate_.SetState(DecoderLifecycleState::kStopped);
     return false;
   }
   const OH_AVErrCode setSurface =
@@ -763,29 +764,29 @@ bool ReceiverSession::CreateDecoderLocked() {
   if (setSurface != AV_ERR_OK) {
     fail("SetSurface", setSurface);
     OH_VideoDecoder_Destroy(decoder);
-    decoder_state_ = DecoderLifecycleState::kStopped;
+    decoder_callback_gate_.SetState(DecoderLifecycleState::kStopped);
     return false;
   }
   const OH_AVErrCode prepare = OH_VideoDecoder_Prepare(decoder);
   if (prepare != AV_ERR_OK) {
     fail("Prepare", prepare);
     OH_VideoDecoder_Destroy(decoder);
-    decoder_state_ = DecoderLifecycleState::kStopped;
+    decoder_callback_gate_.SetState(DecoderLifecycleState::kStopped);
     return false;
   }
   decoder_.store(decoder);
-  decoder_state_ = DecoderLifecycleState::kRunning;
+  decoder_callback_gate_.SetState(DecoderLifecycleState::kRunning);
   const OH_AVErrCode start = OH_VideoDecoder_Start(decoder);
   if (start != AV_ERR_OK) {
     fail("Start", start);
-    decoder_state_ = DecoderLifecycleState::kStopping;
+    decoder_callback_gate_.SetState(DecoderLifecycleState::kStopping);
     ClearDecoderQueues();
     decoder_.store(nullptr);
     OH_VideoDecoder_Destroy(decoder);
-    decoder_state_ = DecoderLifecycleState::kStopped;
+    decoder_callback_gate_.SetState(DecoderLifecycleState::kStopped);
     return false;
   }
-  decoder_recovery_state_ = DecoderRecoveryState::kNeedsCodecData;
+  decoder_recovery_.RequireCodecData();
   return true;
 }
 
@@ -796,7 +797,7 @@ void ReceiverSession::ClearDecoderQueues() {
 }
 
 void ReceiverSession::DestroyDecoderLocked() {
-  decoder_state_ = DecoderLifecycleState::kStopping;
+  decoder_callback_gate_.SetState(DecoderLifecycleState::kStopping);
   ClearDecoderQueues();
   OH_AVCodec* decoder = decoder_.exchange(nullptr);
   if (decoder != nullptr) {
@@ -804,24 +805,21 @@ void ReceiverSession::DestroyDecoderLocked() {
     OH_VideoDecoder_Stop(decoder);
     OH_VideoDecoder_Destroy(decoder);
   }
-  decoder_state_ = DecoderLifecycleState::kStopped;
-  decoder_recovery_state_ = DecoderRecoveryState::kNeedsCodecData;
+  decoder_callback_gate_.SetState(DecoderLifecycleState::kStopped);
+  decoder_recovery_.RequireCodecData();
 }
 
 bool ReceiverSession::FlushDecoder() {
   bool recovered = false;
   {
     std::scoped_lock lifecycleLock(decoder_lifecycle_mutex_);
-    decoder_recovery_state_ = RecoveryStateAfterAuthenticatedSession(
-        decoder_recovery_state_.load());
-    ClearDecoderQueues();
     OH_AVCodec* decoder = decoder_.load();
     if (decoder != nullptr) {
-      decoder_state_ = DecoderLifecycleState::kFlushing;
+      decoder_callback_gate_.BeginFlush([this] { ClearDecoderQueues(); });
       const bool flushed = OH_VideoDecoder_Flush(decoder) == AV_ERR_OK;
       bool restarted = false;
       if (flushed) {
-        decoder_state_ = DecoderLifecycleState::kRunning;
+        decoder_callback_gate_.SetState(DecoderLifecycleState::kRunning);
         restarted = OH_VideoDecoder_Start(decoder) == AV_ERR_OK;
       }
       if (EvaluateFlushRecovery(flushed, restarted) == FlushRecoveryAction::kResume) {
@@ -831,8 +829,11 @@ bool ReceiverSession::FlushDecoder() {
         recovered =
             lifecycle_state_.DecoderShouldRun() && CreateDecoderLocked();
       }
+    } else {
+      decoder_callback_gate_.BeginFlush([this] { ClearDecoderQueues(); });
+      decoder_callback_gate_.SetState(DecoderLifecycleState::kStopped);
     }
-    decoder_recovery_state_ = DecoderRecoveryState::kNeedsCodecData;
+    decoder_recovery_.RequireCodecData();
   }
   ++decoder_resync_events_;
   RequestKeyframe();
@@ -842,22 +843,18 @@ bool ReceiverSession::FlushDecoder() {
 void ReceiverSession::SubmitFrame(DecodedInput frame) {
   std::scoped_lock queueLock(decoder_queue_mutex_);
   OH_AVCodec* decoder = decoder_.load();
-  if (!DecoderCallbacksAllowed(decoder_state_.load()) || decoder == nullptr ||
-      !DecoderInputAllowed(decoder_recovery_state_.load(), frame.kind)) {
+  if (!decoder_callback_gate_.CallbacksAllowed() || decoder == nullptr ||
+      !decoder_recovery_.InputAllowed(frame.kind)) {
     ++frames_dropped_;
     return;
   }
-  const auto admission = EvaluateDecodeQueueAdmission(
-      decode_queue_.size(), 3, decoder_recovery_state_.load());
+  const auto queuedFrames = decode_queue_.size();
+  const auto admission = decoder_recovery_.Admit(
+      queuedFrames, 3, [this] { decode_queue_.clear(); });
   if (!admission.accepted) {
-    if (admission.clearPending) {
-      frames_dropped_ += decode_queue_.size();
-      decode_queue_.clear();
-    }
+    frames_dropped_ += queuedFrames;
     ++frames_dropped_;
-    decoder_recovery_state_ = admission.nextState;
     ++decoder_resync_events_;
-    if (admission.requestKeyFrame) RequestKeyframe();
     return;
   }
   decode_queue_.push_back(std::move(frame));
@@ -867,8 +864,8 @@ void ReceiverSession::SubmitFrame(DecodedInput frame) {
 bool ReceiverSession::SubmitRecovery(DecodedInput codecData, DecodedInput syncFrame) {
   std::scoped_lock queueLock(decoder_queue_mutex_);
   OH_AVCodec* decoder = decoder_.load();
-  if (!DecoderCallbacksAllowed(decoder_state_.load()) || decoder == nullptr ||
-      decoder_recovery_state_.load() != DecoderRecoveryState::kNeedsCodecData ||
+  if (!decoder_callback_gate_.CallbacksAllowed() || decoder == nullptr ||
+      decoder_recovery_.state() != DecoderRecoveryState::kNeedsCodecData ||
       codecData.kind != DecoderInputKind::kCodecData ||
       syncFrame.kind != DecoderInputKind::kSyncFrame || codecData.bytes.empty() ||
       syncFrame.bytes.empty()) {
@@ -884,14 +881,13 @@ bool ReceiverSession::SubmitRecovery(DecodedInput codecData, DecodedInput syncFr
 }
 
 void ReceiverSession::PumpDecoderLocked(OH_AVCodec* decoder) {
-  while (DecoderCallbacksAllowed(decoder_state_.load()) && decoder_.load() == decoder &&
+  while (decoder_callback_gate_.CallbacksAllowed() && decoder_.load() == decoder &&
          !input_slots_.empty() && !decode_queue_.empty()) {
     InputSlot slot = input_slots_.front();
     input_slots_.pop_front();
     DecodedInput frame = std::move(decode_queue_.front());
     decode_queue_.pop_front();
-    const auto recoveryState = decoder_recovery_state_.load();
-    if (!DecoderInputAllowed(recoveryState, frame.kind)) {
+    if (!decoder_recovery_.InputAllowed(frame.kind)) {
       ++frames_dropped_;
       continue;
     }
@@ -899,7 +895,7 @@ void ReceiverSession::PumpDecoderLocked(OH_AVCodec* decoder) {
     auto* target = OH_AVBuffer_GetAddr(slot.buffer);
     if (capacity < 0 || target == nullptr || frame.bytes.size() > static_cast<std::size_t>(capacity)) {
       ++frames_dropped_;
-      decoder_recovery_state_ = DecoderRecoveryState::kNeedsCodecData;
+      decoder_recovery_.RequireCodecData();
       frames_dropped_ += decode_queue_.size();
       decode_queue_.clear();
       ++decoder_resync_events_;
@@ -918,7 +914,7 @@ void ReceiverSession::PumpDecoderLocked(OH_AVCodec* decoder) {
                                  : AVCODEC_BUFFER_FLAGS_NONE;
     const bool pushed = OH_AVBuffer_SetBufferAttr(slot.buffer, &attributes) == AV_ERR_OK &&
                         OH_VideoDecoder_PushInputBuffer(decoder, slot.index) == AV_ERR_OK;
-    decoder_recovery_state_ = AdvanceDecoderRecovery(recoveryState, frame.kind, pushed);
+    decoder_recovery_.OnInputSubmitted(frame.kind, pushed);
     if (!pushed) {
       ++frames_dropped_;
       frames_dropped_ += decode_queue_.size();
@@ -938,10 +934,10 @@ void ReceiverSession::DecoderError(int32_t errorCode) {
 
 void ReceiverSession::DecoderNeedInput(OH_AVCodec* callbackDecoder, std::uint32_t index,
                                        OH_AVBuffer* buffer) {
-  if (!DecoderCallbacksAllowed(decoder_state_.load())) return;
+  if (!decoder_callback_gate_.CallbacksAllowed()) return;
   std::scoped_lock queueLock(decoder_queue_mutex_);
   OH_AVCodec* decoder = decoder_.load();
-  if (!DecoderCallbacksAllowed(decoder_state_.load()) || decoder == nullptr ||
+  if (!decoder_callback_gate_.CallbacksAllowed() || decoder == nullptr ||
       decoder != callbackDecoder) {
     return;
   }
@@ -951,7 +947,7 @@ void ReceiverSession::DecoderNeedInput(OH_AVCodec* callbackDecoder, std::uint32_
 
 void ReceiverSession::DecoderOutput(OH_AVCodec* decoder, std::uint32_t index,
                                     OH_AVBuffer* buffer) {
-  if (!DecoderCallbacksAllowed(decoder_state_.load()) || decoder_.load() != decoder) return;
+  if (!decoder_callback_gate_.CallbacksAllowed() || decoder_.load() != decoder) return;
   OH_AVCodecBufferAttr attributes{};
   if (OH_AVBuffer_GetBufferAttr(buffer, &attributes) == AV_ERR_OK &&
       (attributes.flags & AVCODEC_BUFFER_FLAGS_EOS) == 0) {
@@ -974,7 +970,7 @@ void ReceiverSession::DecoderOutput(OH_AVCodec* decoder, std::uint32_t index,
       return;
     }
   }
-  if (DecoderCallbacksAllowed(decoder_state_.load()) && decoder_.load() == decoder) {
+  if (decoder_callback_gate_.CallbacksAllowed() && decoder_.load() == decoder) {
     OH_VideoDecoder_FreeOutputBuffer(decoder, index);
   }
 }

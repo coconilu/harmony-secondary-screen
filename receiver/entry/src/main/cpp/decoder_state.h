@@ -16,11 +16,6 @@ struct DecodeQueueAdmission final {
   DecoderRecoveryState nextState = DecoderRecoveryState::kReady;
 };
 
-constexpr DecoderRecoveryState RecoveryStateAfterAuthenticatedSession(
-    DecoderRecoveryState) {
-  return DecoderRecoveryState::kNeedsCodecData;
-}
-
 constexpr DecodeQueueAdmission EvaluateDecodeQueueAdmission(
     std::size_t queuedFrames, std::size_t capacity,
     DecoderRecoveryState currentState) {

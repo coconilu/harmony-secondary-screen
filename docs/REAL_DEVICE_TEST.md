@@ -154,7 +154,8 @@ accept、upgrade 或 auth 子阶段。
 | 花屏现场 | 用户随后报告播放经常花屏；没有把连接完整性等同于 H.264 依赖链完整性 |
 | 代码根因 | 相同 `sourceEpoch` 重连跳过 Decoder Flush；发送端未连接/背压丢 AU 后不强制下一关键帧；Receiver 解码队列溢出只弹出旧帧后继续提交 P 帧，三者都可能在缺少可靠参考帧时继续解码 |
 | 当前同步修复 | 每次可信认证进入 `NeedsCodecData`，完整 SPS + PPS + IDR 前丢弃 P 帧；发送 AU 丢弃后强制下一关键帧；队列溢出清空依赖链并请求完整同步；新增聚合 resync/keyframe request 计数 |
-| 当前自动化门禁 | Release 全量门禁通过：扩展 36/36、Receiver 协议与生命周期 2/2、`npm audit` 高危漏洞 0、静态/隐私检查通过、unsigned HAP 构建成功 |
+| 审查修正 | Decoder Flush 在清队列前先关闭 `NeedInput` 回调入口，避免旧 input slot 在 Flush 窗口复活；发送与 Receiver 测试改为覆盖生产实际使用的编排 seam，而非只验证孤立辅助函数 |
+| 当前自动化门禁 | Release 全量门禁通过：扩展 37/37、Receiver 协议与生命周期 2/2、`npm audit` 高危漏洞 0、静态/隐私检查通过、unsigned HAP 构建成功 |
 | 真机边界 | **当前同步修复尚未安装或真机复测；不得据自动化结果宣称花屏已消失，也不得启动下一轮息屏循环** |
 
 原始周期证据仅保存在仓库外，仓库不保存私网地址、配对秘密、网页内容、视频 payload 或签名材料。

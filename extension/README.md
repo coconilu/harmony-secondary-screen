@@ -62,7 +62,8 @@ npm audit --audit-level=high
 `sourceEpoch` 的异常断线恢复与关键帧请求、虚拟时钟超过 184 秒后继续恢复、断线期间不缓存
 视频 payload、认证 ready 前禁止发送、AU 丢弃后的关键帧恢复、STOP/换源取消旧恢复，以及模拟
 权限弹窗中断和 popup 重建的模块测试。Receiver 测试覆盖 same-epoch 重连、完整 SPS/PPS/IDR
-门禁、重复/缺失 codec data、解码队列溢出恢复和正常连续播放。
+门禁、Flush 窗口的 `NeedInput` 竞态、重复/缺失 codec data、解码队列溢出恢复和正常连续播放；
+发送端测试通过 offscreen 实际使用的编排 seam 验证序号、发送计数与 key 成功送达前的 delta 门禁。
 自动化不等同于 Edge + HarmonyOS 真机复验。
 
 真实 Edge、Local Network Access、裸 `.local` 与 HarmonyOS 平板仍按

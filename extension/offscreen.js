@@ -1,12 +1,10 @@
 import { FrameMonitor } from "./frame-monitor.js";
 import { EncoderMonitor } from "./encoder-monitor.js";
 import {
-  createDirectVideoMessage,
   DIRECT_VIDEO_BITRATE,
   DIRECT_VIDEO_CODEC,
   DIRECT_VIDEO_FRAMERATE,
   DIRECT_VIDEO_HEIGHT,
-  DIRECT_VIDEO_MAX_PAYLOAD_BYTES,
   DIRECT_VIDEO_WIDTH
 } from "./direct-protocol.js";
 import {
@@ -15,7 +13,7 @@ import {
   DirectReceiverConnection,
   ReceiverRecoveryCancelledError
 } from "./direct-client.js";
-import { DirectResyncPolicy } from "./direct-resync-policy.js";
+import { DirectDeliveryOrchestrator } from "./direct-delivery-orchestrator.js";
 import { shouldRequestPeriodicKeyFrame } from "./keyframe-policy.js";
 
 const TELEMETRY_INTERVAL_MS = 500;
@@ -50,9 +48,8 @@ let receiverRecoveryGeneration = 0;
 let receiverRecoveryPromise = null;
 let receiverRecoveryAbortController = null;
 let sourceEpoch = 0;
-let directSequence = 0;
 let directTelemetry = createDirectTelemetry();
-const directResyncPolicy = new DirectResyncPolicy();
+const directDelivery = new DirectDeliveryOrchestrator();
 let lastKeyFrameTimestampUs = Number.NaN;
 let running = false;
 let stopping = false;
@@ -95,9 +92,8 @@ async function startCapture(streamId, directInfo) {
 
   await stopCapture();
   stopping = false;
-  directSequence = 0;
   directTelemetry = createDirectTelemetry();
-  directResyncPolicy.reset();
+  directDelivery.reset();
   lastKeyFrameTimestampUs = Number.NaN;
   await connectReceiver(directInfo);
 
@@ -326,14 +322,14 @@ function encodeFrame(sourceFrame) {
     const timestamp =
       sourceFrame.timestamp ?? Math.round(performance.now() * 1000);
     const encodeFrame = new VideoFrame(encodeCanvas, { timestamp });
-    const keyFrame = directResyncPolicy.shouldEncodeKeyFrame(
+    const keyFrame = directDelivery.shouldEncodeKeyFrame(
       shouldRequestPeriodicKeyFrame(timestamp, lastKeyFrameTimestampUs)
     );
     try {
       videoEncoder.encode(encodeFrame, { keyFrame });
       encoderMonitor.onSubmitted();
       if (keyFrame) {
-        directResyncPolicy.onKeyFrameSubmitted();
+        directDelivery.onKeyFrameSubmitted();
         lastKeyFrameTimestampUs = timestamp;
       }
     } finally {
@@ -403,16 +399,13 @@ function normalizeEncoderConfig(config) {
 
 function handleEncodedChunk(chunk) {
   encoderMonitor?.onChunk(chunk);
-  if (!receiverConnection?.connected) {
-    dropDirectFrameForResync();
-    return;
-  }
-  if (!directResyncPolicy.canDeliverEncodedChunk(chunk.type)) {
-    dropDirectFrameForResync();
-    return;
-  }
   try {
-    sendChunkToReceiver(chunk);
+    directDelivery.deliver(
+      chunk,
+      receiverConnection,
+      sourceEpoch,
+      directTelemetry
+    );
   } catch (error) {
     directTelemetry.directErrors += 1;
     if (!stopping) {
@@ -423,26 +416,6 @@ function handleEncodedChunk(chunk) {
       });
     }
   }
-}
-
-function sendChunkToReceiver(chunk) {
-  const connection = receiverConnection;
-  if (chunk.byteLength > DIRECT_VIDEO_MAX_PAYLOAD_BYTES) {
-    throw new Error("单个 H.264 编码块超过 8 MiB");
-  }
-  if (!connection?.connected) {
-    dropDirectFrameForResync();
-    return;
-  }
-  const message = createDirectVideoMessage(chunk, sourceEpoch, directSequence);
-  if (!connection.sendVideo(message)) {
-    dropDirectFrameForResync();
-    return;
-  }
-  directSequence = (directSequence + 1) >>> 0;
-  directResyncPolicy.onEncodedChunkDelivered(chunk.type);
-  directTelemetry.directSentFrames += 1;
-  directTelemetry.directSentBytes += chunk.byteLength;
 }
 
 async function connectReceiver(directInfo) {
@@ -547,7 +520,7 @@ function beginReceiverRecovery(connection) {
     directTelemetry.directRecoveryElapsedMs = elapsedMs;
     directTelemetry.directRecoveryLastDurationMs = elapsedMs;
     directTelemetry.directRecoveryLastOutcome = "recovered";
-    requireDirectKeyFrame();
+    directDelivery.requireKeyFrame(directTelemetry);
     void publishTelemetry();
   }).catch((error) => {
     if (
@@ -593,7 +566,7 @@ function applyReceiverControl(message) {
     return;
   }
   if (message?.type === "keyframe") {
-    requireDirectKeyFrame();
+    directDelivery.requireKeyFrame(directTelemetry);
     directTelemetry.directKeyframeRequests += 1;
     return;
   }
@@ -674,17 +647,6 @@ async function closeReceiver() {
   }
   receiverConnection = null;
   directTelemetry.directConnected = false;
-}
-
-function requireDirectKeyFrame() {
-  if (directResyncPolicy.requireKeyFrame()) {
-    directTelemetry.directResyncEvents += 1;
-  }
-}
-
-function dropDirectFrameForResync() {
-  directTelemetry.directDroppedFrames += 1;
-  requireDirectKeyFrame();
 }
 
 function createDirectTelemetry() {

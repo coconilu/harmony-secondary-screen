@@ -1,6 +1,7 @@
 #pragma once
 
 #include "bounded_control_queue.h"
+#include "decoder_orchestration.h"
 #include "decoder_state.h"
 #include "native_protocol.h"
 #include "receiver_lifecycle_state.h"
@@ -135,7 +136,6 @@ class ReceiverSession final {
   std::atomic<int> control_socket_{-1};
   std::timed_mutex send_mutex_;
   BoundedControlQueue telemetry_queue_{8};
-  std::atomic<bool> keyframe_request_pending_{false};
   websocket::Decoder websocket_decoder_;
   std::atomic<std::uint64_t> received_frames_{0};
   std::atomic<std::uint64_t> received_bytes_{0};
@@ -144,10 +144,9 @@ class ReceiverSession final {
 
   std::mutex decoder_lifecycle_mutex_;
   std::mutex decoder_queue_mutex_;
-  std::atomic<DecoderLifecycleState> decoder_state_{DecoderLifecycleState::kStopped};
+  DecoderCallbackGate decoder_callback_gate_;
   std::atomic<OH_AVCodec*> decoder_{nullptr};
-  std::atomic<DecoderRecoveryState> decoder_recovery_state_{
-      DecoderRecoveryState::kNeedsCodecData};
+  DecoderRecoveryCoordinator decoder_recovery_;
   ReceiverLifecycleState lifecycle_state_;
   std::deque<InputSlot> input_slots_;
   std::deque<DecodedInput> decode_queue_;
