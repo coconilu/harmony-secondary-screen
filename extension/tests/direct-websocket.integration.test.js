@@ -116,6 +116,60 @@ test("direct WebSocket authenticates and delivers one Annex-B AU to a fake Recei
   await connection.close();
 });
 
+test("direct WebSocket does not expose a reconnect as connected before ready", async (context) => {
+  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  context.after(() => server.close());
+  await once(server, "listening");
+  const address = server.address();
+  assert.equal(typeof address, "object");
+
+  let releaseReady;
+  const readyGate = new Promise((resolve) => {
+    releaseReady = resolve;
+  });
+  let resolveAuthReceived;
+  const authReceived = new Promise((resolve) => {
+    resolveAuthReceived = resolve;
+  });
+  server.once("connection", (socket) => {
+    socket.once("message", async (data, isBinary) => {
+      assert.equal(isBinary, false);
+      const auth = JSON.parse(data.toString("utf8"));
+      resolveAuthReceived();
+      await readyGate;
+      socket.send(JSON.stringify({
+        type: "ready",
+        protocol: 4,
+        sourceEpoch: auth.sourceEpoch
+      }));
+    });
+  });
+
+  const connection = new DirectReceiverConnection({
+    trustedDevice: {
+      senderId: "019fa3cf-75c7-7000-8000-000000000001",
+      deviceId: "00112233445566778899aabbccddeeff",
+      credential: "a".repeat(64),
+      host: ["192", "168", "1", "8"].join("."),
+      pairedAt: 1
+    },
+    sourceEpoch: 8,
+    socketFactory: () => new WebSocket(`ws://127.0.0.1:${address.port}`),
+    heartbeatIntervalMs: 60_000
+  });
+  const connecting = connection.connect({ timeoutMs: 500 });
+  await authReceived;
+  assert.equal(connection.connected, false);
+  assert.throws(
+    () => connection.sendVideo(new ArrayBuffer(1)),
+    /平板连接尚未建立/
+  );
+  releaseReady();
+  await connecting;
+  assert.equal(connection.connected, true);
+  await connection.close();
+});
+
 test("direct WebSocket recovers an abnormal drop without replacing the capture source", async (context) => {
   const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
   context.after(() => server.close());

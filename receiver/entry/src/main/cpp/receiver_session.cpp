@@ -173,6 +173,8 @@ bool ReceiverSession::Start(std::string listenAddress) {
   frames_dropped_ = 0;
   received_frames_ = 0;
   received_bytes_ = 0;
+  decoder_resync_events_ = 0;
+  keyframe_requests_sent_ = 0;
   desired_ = true;
   SetState("starting", "正在准备接收电脑画面", false, false);
   worker_ = std::thread(&ReceiverSession::NetworkLoop, this);
@@ -481,7 +483,6 @@ bool ReceiverSession::AuthenticateConnection() {
       const auto epoch = protocol::JsonInteger(json, "sourceEpoch");
       bool trusted = false;
       bool stale = false;
-      bool epochChanged = false;
       {
         std::scoped_lock lock(state_mutex_);
         trusted = !trusted_sender_id_.empty() && senderId == trusted_sender_id_ &&
@@ -491,7 +492,6 @@ bool ReceiverSession::AuthenticateConnection() {
                                                  latest_source_epoch_);
         if (trusted && !stale) {
           const auto accepted = static_cast<std::uint32_t>(*epoch);
-          epochChanged = accepted != latest_source_epoch_;
           latest_source_epoch_ = accepted;
           active_source_epoch_ = accepted;
         }
@@ -514,12 +514,11 @@ bool ReceiverSession::AuthenticateConnection() {
         SendControl(R"({"type":"error","protocol":4,"code":"codec_unsupported"})");
         return false;
       }
-      if (epochChanged) FlushDecoder();
+      FlushDecoder();
       std::ostringstream reply;
       reply << "{\"type\":\"ready\",\"protocol\":4,\"sourceEpoch\":" << *epoch << "}";
       if (!SendControl(reply.str())) return false;
       SetState("connected", "电脑已连接，正在准备播放画面", true, true);
-      keyframe_request_pending_ = true;
       return true;
     }
   }
@@ -576,11 +575,13 @@ bool ReceiverSession::RunConnectedSession() {
         }
       }
     }
-    if (keyframe_request_pending_.exchange(false) &&
-        !SendControl(R"({"type":"keyframe","protocol":4,"reason":"loss_flush_or_session_start","requireCodecConfig":true})")) {
-      OH_LOG_Print(LOG_APP, LOG_WARN, kLogDomain, kLogTag,
-                   "Receiver WebSocket keyframe request send failed");
-      return false;
+    if (keyframe_request_pending_.exchange(false)) {
+      if (!SendControl(R"({"type":"keyframe","protocol":4,"reason":"loss_flush_or_session_start","requireCodecConfig":true})")) {
+        OH_LOG_Print(LOG_APP, LOG_WARN, kLogDomain, kLogTag,
+                     "Receiver WebSocket keyframe request send failed");
+        return false;
+      }
+      ++keyframe_requests_sent_;
     }
     std::string telemetry;
     if (telemetry_queue_.TryPop(&telemetry) && !SendControl(telemetry)) {
@@ -811,26 +812,30 @@ bool ReceiverSession::FlushDecoder() {
   bool recovered = false;
   {
     std::scoped_lock lifecycleLock(decoder_lifecycle_mutex_);
-    OH_AVCodec* decoder = decoder_.load();
-    if (decoder == nullptr) return false;
-    decoder_state_ = DecoderLifecycleState::kFlushing;
+    decoder_recovery_state_ = RecoveryStateAfterAuthenticatedSession(
+        decoder_recovery_state_.load());
     ClearDecoderQueues();
-    const bool flushed = OH_VideoDecoder_Flush(decoder) == AV_ERR_OK;
-    bool restarted = false;
-    if (flushed) {
-      decoder_state_ = DecoderLifecycleState::kRunning;
-      restarted = OH_VideoDecoder_Start(decoder) == AV_ERR_OK;
-    }
-    if (EvaluateFlushRecovery(flushed, restarted) == FlushRecoveryAction::kResume) {
-      recovered = true;
-    } else {
-      DestroyDecoderLocked();
-      recovered =
-          lifecycle_state_.DecoderShouldRun() && CreateDecoderLocked();
+    OH_AVCodec* decoder = decoder_.load();
+    if (decoder != nullptr) {
+      decoder_state_ = DecoderLifecycleState::kFlushing;
+      const bool flushed = OH_VideoDecoder_Flush(decoder) == AV_ERR_OK;
+      bool restarted = false;
+      if (flushed) {
+        decoder_state_ = DecoderLifecycleState::kRunning;
+        restarted = OH_VideoDecoder_Start(decoder) == AV_ERR_OK;
+      }
+      if (EvaluateFlushRecovery(flushed, restarted) == FlushRecoveryAction::kResume) {
+        recovered = true;
+      } else {
+        DestroyDecoderLocked();
+        recovered =
+            lifecycle_state_.DecoderShouldRun() && CreateDecoderLocked();
+      }
     }
     decoder_recovery_state_ = DecoderRecoveryState::kNeedsCodecData;
   }
-  if (recovered) RequestKeyframe();
+  ++decoder_resync_events_;
+  RequestKeyframe();
   return recovered;
 }
 
@@ -842,9 +847,18 @@ void ReceiverSession::SubmitFrame(DecodedInput frame) {
     ++frames_dropped_;
     return;
   }
-  while (decode_queue_.size() >= 3) {
-    decode_queue_.pop_front();
+  const auto admission = EvaluateDecodeQueueAdmission(
+      decode_queue_.size(), 3, decoder_recovery_state_.load());
+  if (!admission.accepted) {
+    if (admission.clearPending) {
+      frames_dropped_ += decode_queue_.size();
+      decode_queue_.clear();
+    }
     ++frames_dropped_;
+    decoder_recovery_state_ = admission.nextState;
+    ++decoder_resync_events_;
+    if (admission.requestKeyFrame) RequestKeyframe();
+    return;
   }
   decode_queue_.push_back(std::move(frame));
   PumpDecoderLocked(decoder);
@@ -888,7 +902,8 @@ void ReceiverSession::PumpDecoderLocked(OH_AVCodec* decoder) {
       decoder_recovery_state_ = DecoderRecoveryState::kNeedsCodecData;
       frames_dropped_ += decode_queue_.size();
       decode_queue_.clear();
-      keyframe_request_pending_ = true;
+      ++decoder_resync_events_;
+      RequestKeyframe();
       break;
     }
     std::memcpy(target, frame.bytes.data(), frame.bytes.size());
@@ -908,7 +923,8 @@ void ReceiverSession::PumpDecoderLocked(OH_AVCodec* decoder) {
       ++frames_dropped_;
       frames_dropped_ += decode_queue_.size();
       decode_queue_.clear();
-      keyframe_request_pending_ = true;
+      ++decoder_resync_events_;
+      RequestKeyframe();
       break;
     }
   }
@@ -950,7 +966,10 @@ void ReceiverSession::DecoderOutput(OH_AVCodec* decoder, std::uint32_t index,
                 << ",\"receivedFrames\":" << received_frames_.load()
                 << ",\"receivedBytes\":" << received_bytes_.load()
                 << ",\"receiverDecodedFrames\":" << decoded
-                << ",\"receiverDroppedFrames\":" << frames_dropped_.load() << "}";
+                << ",\"receiverDroppedFrames\":" << frames_dropped_.load()
+                << ",\"receiverResyncEvents\":" << decoder_resync_events_.load()
+                << ",\"receiverKeyframeRequests\":" << keyframe_requests_sent_.load()
+                << "}";
       telemetry_queue_.Push(telemetry.str());
       return;
     }

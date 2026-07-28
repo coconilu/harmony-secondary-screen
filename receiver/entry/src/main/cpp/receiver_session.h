@@ -139,6 +139,8 @@ class ReceiverSession final {
   websocket::Decoder websocket_decoder_;
   std::atomic<std::uint64_t> received_frames_{0};
   std::atomic<std::uint64_t> received_bytes_{0};
+  std::atomic<std::uint64_t> decoder_resync_events_{0};
+  std::atomic<std::uint64_t> keyframe_requests_sent_{0};
 
   std::mutex decoder_lifecycle_mutex_;
   std::mutex decoder_queue_mutex_;

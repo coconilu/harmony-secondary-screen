@@ -408,6 +408,7 @@ function createInitialState() {
     directBufferedAmount: 0,
     directErrors: 0,
     directKeyframeRequests: 0,
+    directResyncEvents: 0,
     directReconnecting: false,
     directReconnectAttempts: 0,
     directReconnects: 0,
@@ -425,6 +426,8 @@ function createInitialState() {
     receiverReceivedBytes: 0,
     receiverDecodedFrames: 0,
     receiverDroppedFrames: 0,
+    receiverResyncEvents: 0,
+    receiverKeyframeRequests: 0,
     startedAt: null,
     stoppedAt: null,
     updatedAt: Date.now(),
@@ -464,6 +467,7 @@ function telemetryToState(telemetry) {
     directBufferedAmount: telemetry.directBufferedAmount,
     directErrors: telemetry.directErrors,
     directKeyframeRequests: telemetry.directKeyframeRequests,
+    directResyncEvents: telemetry.directResyncEvents,
     directReconnecting: telemetry.directReconnecting,
     directReconnectAttempts: telemetry.directReconnectAttempts,
     directReconnects: telemetry.directReconnects,
@@ -480,7 +484,9 @@ function telemetryToState(telemetry) {
     receiverReceivedFrames: telemetry.receiverReceivedFrames,
     receiverReceivedBytes: telemetry.receiverReceivedBytes,
     receiverDecodedFrames: telemetry.receiverDecodedFrames,
-    receiverDroppedFrames: telemetry.receiverDroppedFrames
+    receiverDroppedFrames: telemetry.receiverDroppedFrames,
+    receiverResyncEvents: telemetry.receiverResyncEvents,
+    receiverKeyframeRequests: telemetry.receiverKeyframeRequests
   };
 }
 
@@ -528,8 +534,11 @@ function createTelemetrySnapshot(state) {
     receiverReceivedFrames: state.receiverReceivedFrames,
     directDroppedFrames: state.directDroppedFrames,
     directErrors: state.directErrors,
+    directResyncEvents: state.directResyncEvents,
     directReconnectAttempts: state.directReconnectAttempts,
-    directReconnects: state.directReconnects
+    directReconnects: state.directReconnects,
+    receiverResyncEvents: state.receiverResyncEvents,
+    receiverKeyframeRequests: state.receiverKeyframeRequests
   };
 }
 

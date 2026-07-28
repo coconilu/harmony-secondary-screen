@@ -58,6 +58,7 @@ export class DirectReceiverConnection {
     this.heartbeatIntervalMs = heartbeatIntervalMs;
     this.connectTimeoutMs = connectTimeoutMs;
     this.socket = null;
+    this.authenticated = false;
     this.onControl = () => {};
     this.onClose = () => {};
     this.heartbeatTimer = null;
@@ -72,6 +73,7 @@ export class DirectReceiverConnection {
       createDirectWebSocketUrl(this.trustedDevice.host)
     );
     this.socket = socket;
+    this.authenticated = false;
     let response;
     try {
       response = await openAndExchange(socket, {
@@ -91,6 +93,7 @@ export class DirectReceiverConnection {
       if (this.socket === socket) {
         this.socket = null;
       }
+      this.authenticated = false;
       closeSocket(socket);
       throw error;
     }
@@ -99,6 +102,7 @@ export class DirectReceiverConnection {
       if (this.socket === socket) {
         this.socket = null;
       }
+      this.authenticated = false;
       throw new ReceiverProtocolError("epoch_stale");
     }
     socket.addEventListener("message", (event) => {
@@ -118,6 +122,7 @@ export class DirectReceiverConnection {
       this.stopHeartbeat();
       if (this.socket === socket) {
         this.socket = null;
+        this.authenticated = false;
       }
       this.onClose(event);
     });
@@ -130,6 +135,7 @@ export class DirectReceiverConnection {
         }));
       }
     }, this.heartbeatIntervalMs);
+    this.authenticated = true;
     return response;
   }
 
@@ -192,7 +198,7 @@ export class DirectReceiverConnection {
   }
 
   get connected() {
-    return this.socket?.readyState === WebSocket.OPEN;
+    return this.authenticated && this.socket?.readyState === WebSocket.OPEN;
   }
 
   get bufferedAmount() {
@@ -216,6 +222,7 @@ export class DirectReceiverConnection {
   async close() {
     const socket = this.socket;
     this.stopHeartbeat();
+    this.authenticated = false;
     if (!socket) {
       return;
     }

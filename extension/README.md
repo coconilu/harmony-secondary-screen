@@ -43,7 +43,7 @@ Edge 首次请求手动私网 IP 权限时可能关闭 popup。扩展会先把�
 ## 编码与隐私
 
 - H.264 Annex-B `1280×720 @ 60 fps`，目标 8 Mbps；不复制源帧，实际帧率以监控页为准；
-- 关键帧最长约 2 秒，并响应 Receiver 请求；
+- 关键帧最长约 2 秒，并响应 Receiver 请求；断线或 WebSocket 背压丢 AU 后，下一帧强制为关键帧；
 - `audio: false`，声音留在 PC；
 - QR token/短码仅在当前浏览器内存会话的 `chrome.storage.session` 暂存 60 秒；成功、主动刷新或
   过期时清除或替换，不写入 `storage.local`、日志或测试导出；
@@ -60,7 +60,9 @@ npm audit --audit-level=high
 
 测试包含真实本机 WebSocket 假 Receiver、逐字节比对至少一个 Annex-B Access Unit、同一
 `sourceEpoch` 的异常断线恢复与关键帧请求、虚拟时钟超过 184 秒后继续恢复、断线期间不缓存
-视频 payload、STOP/换源取消旧恢复，以及模拟权限弹窗中断和 popup 重建的模块测试。
+视频 payload、认证 ready 前禁止发送、AU 丢弃后的关键帧恢复、STOP/换源取消旧恢复，以及模拟
+权限弹窗中断和 popup 重建的模块测试。Receiver 测试覆盖 same-epoch 重连、完整 SPS/PPS/IDR
+门禁、重复/缺失 codec data、解码队列溢出恢复和正常连续播放。
 自动化不等同于 Edge + HarmonyOS 真机复验。
 
 真实 Edge、Local Network Access、裸 `.local` 与 HarmonyOS 平板仍按

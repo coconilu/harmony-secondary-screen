@@ -58,6 +58,10 @@ try {
     @{ Path = 'extension\direct-client.js'; Pattern = 'DIRECT_RECOVERY_MAX_RETRY_DELAY_MS' },
     @{ Path = 'extension\direct-client.js'; Pattern = 'ReceiverRecoveryCancelledError' },
     @{ Path = 'extension\direct-client.js'; Pattern = 'async recover' },
+    @{ Path = 'extension\direct-client.js'; Pattern = 'this.authenticated = true' },
+    @{ Path = 'extension\direct-resync-policy.js'; Pattern = 'requireKeyFrame' },
+    @{ Path = 'extension\direct-resync-policy.js'; Pattern = 'canDeliverEncodedChunk' },
+    @{ Path = 'extension\offscreen.js'; Pattern = 'dropDirectFrameForResync' },
     @{ Path = 'extension\tests\direct-websocket.integration.test.js'; Pattern = 'recovers an abnormal drop without replacing the capture source' },
     @{ Path = 'extension\direct-protocol.js'; Pattern = 'PAIRING_TTL_MS = 60_000' },
     @{ Path = 'extension\direct-protocol.js'; Pattern = 'sourceEpoch' },
@@ -73,6 +77,8 @@ try {
     @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'authorization_replayed' },
     @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'identity_mismatch' },
     @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'IsAcceptedSourceEpoch' },
+    @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'RecoveryStateAfterAuthenticatedSession' },
+    @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'EvaluateDecodeQueueAdmission' },
     @{ Path = 'receiver\entry\src\main\ets\pages\Index.ets'; Pattern = 'scanBarcode.startScanForResult' },
     @{ Path = 'receiver\entry\src\main\ets\pages\Index.ets'; Pattern = 'mdns.addLocalService' },
     @{ Path = 'receiver\entry\src\main\ets\pages\Index.ets'; Pattern = 'preferences.getPreferences' },
@@ -86,6 +92,8 @@ try {
     @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'lifecycle_state_.SurfaceDestroyed' },
     @{ Path = 'receiver\tests\receiver_lifecycle_tests.cpp'; Pattern = 'TestNewSurfaceCreatedBeforeOldDestroyed' },
     @{ Path = 'receiver\tests\receiver_lifecycle_tests.cpp'; Pattern = 'TestForegroundBackgroundSurfaceInterleaving' },
+    @{ Path = 'receiver\tests\receiver_lifecycle_tests.cpp'; Pattern = 'TestSameEpochAuthenticationRequiresCompleteRecovery' },
+    @{ Path = 'receiver\tests\receiver_lifecycle_tests.cpp'; Pattern = 'TestDecodeQueueOverflowInvalidatesDependencies' },
     @{ Path = 'docs\PROTOCOL.md'; Pattern = 'HWC4' },
     @{ Path = 'docs\PROTOCOL.md'; Pattern = 'sourceEpoch' }
   )) {

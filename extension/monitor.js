@@ -86,7 +86,7 @@ async function exportResult() {
   const result = await chrome.storage.session.get(STATE_KEY);
   const state = result[STATE_KEY] ?? createFallbackState();
   const safeResult = {
-    schemaVersion: 5,
+    schemaVersion: 6,
     exportedAt: new Date().toISOString(),
     mode: state.mode,
     currentStage: state.currentStage,
@@ -114,6 +114,7 @@ async function exportResult() {
     directBufferedAmount: state.directBufferedAmount,
     directErrors: state.directErrors,
     directKeyframeRequests: state.directKeyframeRequests,
+    directResyncEvents: state.directResyncEvents,
     directReconnecting: state.directReconnecting,
     directReconnectAttempts: state.directReconnectAttempts,
     directReconnects: state.directReconnects,
@@ -131,6 +132,8 @@ async function exportResult() {
     receiverReceivedBytes: state.receiverReceivedBytes,
     receiverDecodedFrames: state.receiverDecodedFrames,
     receiverDroppedFrames: state.receiverDroppedFrames,
+    receiverResyncEvents: state.receiverResyncEvents,
+    receiverKeyframeRequests: state.receiverKeyframeRequests,
     startedAt: state.startedAt,
     stoppedAt: state.stoppedAt,
     stopReason: state.stopReason,
@@ -325,6 +328,7 @@ function createFallbackState() {
     directBufferedAmount: 0,
     directErrors: 0,
     directKeyframeRequests: 0,
+    directResyncEvents: 0,
     directReconnecting: false,
     directReconnectAttempts: 0,
     directReconnects: 0,
@@ -342,6 +346,8 @@ function createFallbackState() {
     receiverReceivedBytes: 0,
     receiverDecodedFrames: 0,
     receiverDroppedFrames: 0,
+    receiverResyncEvents: 0,
+    receiverKeyframeRequests: 0,
     error: null,
     events: [],
     stageRuns: []

@@ -1,11 +1,18 @@
+#include "../entry/src/main/cpp/avc_decoder_input.h"
+#include "../entry/src/main/cpp/decoder_state.h"
 #include "../entry/src/main/cpp/receiver_lifecycle_state.h"
 
+#include <cstddef>
 #include <cstdlib>
 #include <iostream>
+#include <vector>
 
 namespace {
 
 using hss::receiver::DecoderLifecycleState;
+using hss::receiver::DecoderInputAllowed;
+using hss::receiver::DecoderInputKind;
+using hss::receiver::DecoderRecoveryState;
 using hss::receiver::DecoderRuntimeSnapshot;
 using hss::receiver::ReceiverLifecycleDecision;
 using hss::receiver::ReceiverLifecycleState;
@@ -197,6 +204,85 @@ void TestForegroundBackgroundSurfaceInterleaving() {
          "Surface created after foreground must start decoding");
 }
 
+void TestSameEpochAuthenticationRequiresCompleteRecovery() {
+  const auto afterAuth =
+      hss::receiver::RecoveryStateAfterAuthenticatedSession(
+          DecoderRecoveryState::kReady);
+  Expect(afterAuth == DecoderRecoveryState::kNeedsCodecData,
+         "same-epoch authentication must invalidate the old decode chain");
+  Expect(!DecoderInputAllowed(afterAuth, DecoderInputKind::kFrame),
+         "ordinary P frames must be rejected immediately after reconnect");
+
+  const auto afterCodec = hss::receiver::AdvanceDecoderRecovery(
+      afterAuth, DecoderInputKind::kCodecData, true);
+  Expect(afterCodec == DecoderRecoveryState::kNeedsSyncFrame,
+         "complete codec data must advance recovery to the sync-frame gate");
+  Expect(!DecoderInputAllowed(afterCodec, DecoderInputKind::kFrame),
+         "P frames must remain rejected before an IDR is submitted");
+  const auto afterSync = hss::receiver::AdvanceDecoderRecovery(
+      afterCodec, DecoderInputKind::kSyncFrame, true);
+  Expect(afterSync == DecoderRecoveryState::kReady,
+         "a submitted IDR after codec data must complete recovery");
+}
+
+void TestAvcRecoveryRequiresSpsPpsAndIdrInOneAccessUnit() {
+  const std::vector<std::byte> complete{
+      std::byte{0}, std::byte{0}, std::byte{0}, std::byte{1},
+      std::byte{0x67}, std::byte{0x42}, std::byte{0x00}, std::byte{0x1f},
+      std::byte{0}, std::byte{0}, std::byte{1}, std::byte{0x68},
+      std::byte{0xce}, std::byte{0x06}, std::byte{0xe2},
+      std::byte{0}, std::byte{0}, std::byte{0}, std::byte{1},
+      std::byte{0x65}, std::byte{0x88}, std::byte{0x84}};
+  const auto recovery = hss::receiver::SplitAvcRecoveryInput(complete);
+  Expect(recovery.complete() && !recovery.codecData.empty() &&
+             !recovery.syncFrame.empty(),
+         "SPS + PPS + IDR must form one complete recovery input");
+
+  auto repeatedCodecData = complete;
+  repeatedCodecData.insert(
+      repeatedCodecData.begin() + 8, complete.begin(), complete.begin() + 8);
+  Expect(hss::receiver::SplitAvcRecoveryInput(repeatedCodecData).complete(),
+         "repeated SPS data must not prevent a complete SPS/PPS/IDR recovery");
+
+  const std::vector<std::byte> codecOnly(
+      complete.begin(), complete.begin() + 15);
+  const std::vector<std::byte> idrOnly(
+      complete.begin() + 15, complete.end());
+  Expect(!hss::receiver::SplitAvcRecoveryInput(codecOnly).complete(),
+         "SPS/PPS without IDR must remain in recovery");
+  Expect(!hss::receiver::SplitAvcRecoveryInput(idrOnly).complete(),
+         "a later fragmented IDR without SPS/PPS must remain in recovery");
+}
+
+void TestDecodeQueueOverflowInvalidatesDependencies() {
+  const auto decision = hss::receiver::EvaluateDecodeQueueAdmission(
+      3, 3, DecoderRecoveryState::kReady);
+  Expect(!decision.accepted && decision.clearPending &&
+             decision.requestKeyFrame &&
+             decision.nextState == DecoderRecoveryState::kNeedsCodecData,
+         "decode queue overflow must clear dependencies and require codec sync");
+  Expect(!DecoderInputAllowed(decision.nextState, DecoderInputKind::kFrame),
+         "P frames after overflow must not be submitted");
+
+  const auto afterCodec = hss::receiver::AdvanceDecoderRecovery(
+      decision.nextState, DecoderInputKind::kCodecData, true);
+  const auto afterSync = hss::receiver::AdvanceDecoderRecovery(
+      afterCodec, DecoderInputKind::kSyncFrame, true);
+  Expect(afterSync == DecoderRecoveryState::kReady,
+         "complete codec data and IDR must recover after overflow");
+}
+
+void TestNormalDecodeQueueAdmissionDoesNotRegressPlayback() {
+  const auto decision = hss::receiver::EvaluateDecodeQueueAdmission(
+      2, 3, DecoderRecoveryState::kReady);
+  Expect(decision.accepted && !decision.clearPending &&
+             !decision.requestKeyFrame &&
+             decision.nextState == DecoderRecoveryState::kReady,
+         "normal queue admission must preserve ready playback");
+  Expect(DecoderInputAllowed(decision.nextState, DecoderInputKind::kFrame),
+         "normal continuous P frames must remain allowed");
+}
+
 }  // namespace
 
 int main() {
@@ -205,6 +291,10 @@ int main() {
   TestDuplicateCallbacksAreIdempotent();
   TestMixedComponentAndSurfaceIdentity();
   TestForegroundBackgroundSurfaceInterleaving();
+  TestSameEpochAuthenticationRequiresCompleteRecovery();
+  TestAvcRecoveryRequiresSpsPpsAndIdrInOneAccessUnit();
+  TestDecodeQueueOverflowInvalidatesDependencies();
+  TestNormalDecodeQueueAdmissionDoesNotRegressPlayback();
   std::cout << "Receiver lifecycle state transition tests passed.\n";
   return 0;
 }

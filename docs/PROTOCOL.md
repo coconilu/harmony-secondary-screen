@@ -114,14 +114,15 @@ Receiver 只接受已保存身份、固定编码参数以及不小于历史最�
 | 5 | flags | u8 | bit0 keyframe；其他位必须为 0 |
 | 6 | headerSize | u16 | 固定 `32` |
 | 8 | sourceEpoch | u32 | 当前唯一来源的 epoch |
-| 12 | sequence | u32 | 编码块序号，允许回绕 |
+| 12 | sequence | u32 | 当前 capture 中成功交给 WebSocket 的 AU 序号，从 0 开始并允许 u32 回绕 |
 | 16 | payloadLength | u32 | `1..8 MiB` |
 | 20 | reserved | u32 | 必须为 0 |
 | 24 | timestampUs | u64 | WebCodecs 时间戳，微秒 |
 | 32 | payload | bytes | 一个 H.264 Annex-B Access Unit |
 
 所有整数使用网络字节序。Receiver 校验 binary message 总长完全一致，只接受当前
-`sourceEpoch`；旧来源迟到帧丢弃并计入 dropped。恢复或 epoch 变化时请求包含 SPS/PPS + IDR 的关键帧。
+`sourceEpoch`；旧来源迟到帧丢弃并计入 dropped。`sequence` 不为本地未连接/背压丢弃的 AU
+分配序号，当前版本也不使用它检测网络缺口。恢复或 epoch 变化时请求包含 SPS/PPS + IDR 的关键帧。
 
 ## 控制、心跳与遥测
 
@@ -152,9 +153,12 @@ SPS/PPS + IDR；本地 Ability、Surface 和 AVCodec 生命周期修复不新增
 永久错误，扩展就保留同一条用户授权的标签页 capture、同一个 VideoEncoder、可信凭据和
 `sourceEpoch`，持续以最长 2 秒退避重建 WebSocket，并重新发送既有 `auth`；每次连接尝试仍有
 独立超时，避免单次握手无限挂起。断线期间编码输出直接丢弃，不缓存视频 payload；重连成功后
-强制生成关键帧。Receiver 允许与最新值相等的 `sourceEpoch` 重新认证，并按既有 `keyframe`
-合同请求 SPS/PPS + IDR。STOP 或新来源会立即取消旧恢复任务，旧任务不得覆盖新来源状态。该行为
-不增加消息类型，不改变 HWC4 版本或二进制帧格式。
+强制生成关键帧。任一 AU 因未连接或 WebSocket 背压被丢弃时，发送端也把下一次可编码帧强制为
+关键帧。Receiver 允许与最新值相等的 `sourceEpoch` 重新认证；每次可信认证（包括相同 epoch
+重连）都 Flush 或重建解码器并进入 `NeedsCodecData`，在收到同一个 AU 内完整的 SPS + PPS + IDR
+前丢弃普通 P 帧。解码输入队列溢出、输入 buffer 不足或提交失败时同样清空待解码依赖链、进入
+`NeedsCodecData` 并按既有 `keyframe` 合同请求 SPS/PPS + IDR。STOP 或新来源会立即取消旧恢复
+任务，旧任务不得覆盖新来源状态。该行为不增加消息类型，不改变 HWC4 版本或二进制帧格式。
 
 Receiver 遥测：
 
@@ -167,9 +171,15 @@ Receiver 遥测：
   "receivedFrames": 3600,
   "receivedBytes": 60000000,
   "receiverDecodedFrames": 3598,
-  "receiverDroppedFrames": 2
+  "receiverDroppedFrames": 2,
+  "receiverResyncEvents": 3,
+  "receiverKeyframeRequests": 3
 }
 ```
+
+`receiverResyncEvents` 统计可信重连、队列溢出或解码输入失败触发的解码同步事件；
+`receiverKeyframeRequests` 统计成功发出的 SPS/PPS + IDR 请求。扩展另记录本地 AU 丢弃触发的
+`directResyncEvents`。这些字段只包含聚合计数。
 
 正常停止使用 `{"type":"close","protocol":4}`。遥测、日志和导出不得包含秘密、网页 URL/标题、
 Cookie、正文或视频 payload。
