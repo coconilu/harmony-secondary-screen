@@ -86,7 +86,7 @@ async function exportResult() {
   const result = await chrome.storage.session.get(STATE_KEY);
   const state = result[STATE_KEY] ?? createFallbackState();
   const safeResult = {
-    schemaVersion: 3,
+    schemaVersion: 6,
     exportedAt: new Date().toISOString(),
     mode: state.mode,
     currentStage: state.currentStage,
@@ -114,11 +114,26 @@ async function exportResult() {
     directBufferedAmount: state.directBufferedAmount,
     directErrors: state.directErrors,
     directKeyframeRequests: state.directKeyframeRequests,
+    directResyncEvents: state.directResyncEvents,
+    directReconnecting: state.directReconnecting,
+    directReconnectAttempts: state.directReconnectAttempts,
+    directReconnects: state.directReconnects,
+    directRecoveryState: state.directRecoveryState,
+    directRecoveryStartedAt: state.directRecoveryStartedAt,
+    directRecoveryElapsedMs: state.directRecoveryElapsedMs,
+    directRecoveryLastDurationMs: state.directRecoveryLastDurationMs,
+    directRecoveryTransientFailures: state.directRecoveryTransientFailures,
+    directRecoveryCurrentAttempt: state.directRecoveryCurrentAttempt,
+    directRecoveryLastOutcome: state.directRecoveryLastOutcome,
+    directLastCloseCode: state.directLastCloseCode,
+    directLastCloseWasClean: state.directLastCloseWasClean,
     lastPongAt: state.lastPongAt,
     receiverReceivedFrames: state.receiverReceivedFrames,
     receiverReceivedBytes: state.receiverReceivedBytes,
     receiverDecodedFrames: state.receiverDecodedFrames,
     receiverDroppedFrames: state.receiverDroppedFrames,
+    receiverResyncEvents: state.receiverResyncEvents,
+    receiverKeyframeRequests: state.receiverKeyframeRequests,
     startedAt: state.startedAt,
     stoppedAt: state.stoppedAt,
     stopReason: state.stopReason,
@@ -227,6 +242,9 @@ function getDirectStatusText(state) {
   if (state.directConnected) {
     return "已连接";
   }
+  if (state.directReconnecting) {
+    return "正在恢复";
+  }
   if (state.mode === "stopped" && Number(state.directSentFrames || 0) > 0) {
     return "已停止";
   }
@@ -310,11 +328,26 @@ function createFallbackState() {
     directBufferedAmount: 0,
     directErrors: 0,
     directKeyframeRequests: 0,
+    directResyncEvents: 0,
+    directReconnecting: false,
+    directReconnectAttempts: 0,
+    directReconnects: 0,
+    directRecoveryState: "idle",
+    directRecoveryStartedAt: null,
+    directRecoveryElapsedMs: 0,
+    directRecoveryLastDurationMs: 0,
+    directRecoveryTransientFailures: 0,
+    directRecoveryCurrentAttempt: 0,
+    directRecoveryLastOutcome: null,
+    directLastCloseCode: null,
+    directLastCloseWasClean: null,
     lastPongAt: null,
     receiverReceivedFrames: 0,
     receiverReceivedBytes: 0,
     receiverDecodedFrames: 0,
     receiverDroppedFrames: 0,
+    receiverResyncEvents: 0,
+    receiverKeyframeRequests: 0,
     error: null,
     events: [],
     stageRuns: []

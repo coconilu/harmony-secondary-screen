@@ -3,7 +3,12 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { WebSocket, WebSocketServer } from "ws";
 
-import { DirectReceiverConnection, pairReceiver } from "../direct-client.js";
+import {
+  DIRECT_RECOVERY_MAX_RETRY_DELAY_MS,
+  DirectReceiverConnection,
+  pairReceiver,
+  ReceiverRecoveryCancelledError
+} from "../direct-client.js";
 import { createDirectVideoMessage } from "../direct-protocol.js";
 
 globalThis.WebSocket = WebSocket;
@@ -109,4 +114,404 @@ test("direct WebSocket authenticates and delivers one Annex-B AU to a fake Recei
   assert.equal(connection.sendVideo(wireMessage), true);
   assert.deepEqual(await received, new Uint8Array(wireMessage));
   await connection.close();
+});
+
+test("direct WebSocket does not expose a reconnect as connected before ready", async (context) => {
+  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  context.after(() => server.close());
+  await once(server, "listening");
+  const address = server.address();
+  assert.equal(typeof address, "object");
+
+  let releaseReady;
+  const readyGate = new Promise((resolve) => {
+    releaseReady = resolve;
+  });
+  let resolveAuthReceived;
+  const authReceived = new Promise((resolve) => {
+    resolveAuthReceived = resolve;
+  });
+  server.once("connection", (socket) => {
+    socket.once("message", async (data, isBinary) => {
+      assert.equal(isBinary, false);
+      const auth = JSON.parse(data.toString("utf8"));
+      resolveAuthReceived();
+      await readyGate;
+      socket.send(JSON.stringify({
+        type: "ready",
+        protocol: 4,
+        sourceEpoch: auth.sourceEpoch
+      }));
+    });
+  });
+
+  const connection = new DirectReceiverConnection({
+    trustedDevice: {
+      senderId: "019fa3cf-75c7-7000-8000-000000000001",
+      deviceId: "00112233445566778899aabbccddeeff",
+      credential: "a".repeat(64),
+      host: ["192", "168", "1", "8"].join("."),
+      pairedAt: 1
+    },
+    sourceEpoch: 8,
+    socketFactory: () => new WebSocket(`ws://127.0.0.1:${address.port}`),
+    heartbeatIntervalMs: 60_000
+  });
+  const connecting = connection.connect({ timeoutMs: 500 });
+  await authReceived;
+  assert.equal(connection.connected, false);
+  assert.throws(
+    () => connection.sendVideo(new ArrayBuffer(1)),
+    /平板连接尚未建立/
+  );
+  releaseReady();
+  await connecting;
+  assert.equal(connection.connected, true);
+  await connection.close();
+});
+
+test("direct WebSocket recovers an abnormal drop without replacing the capture source", async (context) => {
+  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  context.after(() => server.close());
+  await once(server, "listening");
+  const address = server.address();
+  assert.equal(typeof address, "object");
+
+  const authEpochs = [];
+  let connectionCount = 0;
+  let resolveRecoveredVideo;
+  const recoveredVideo = new Promise((resolve) => {
+    resolveRecoveredVideo = resolve;
+  });
+  server.on("connection", (socket) => {
+    connectionCount += 1;
+    const currentConnection = connectionCount;
+    socket.once("message", (data, isBinary) => {
+      assert.equal(isBinary, false);
+      const auth = JSON.parse(data.toString("utf8"));
+      authEpochs.push(auth.sourceEpoch);
+      socket.send(JSON.stringify({
+        type: "ready",
+        protocol: 4,
+        sourceEpoch: auth.sourceEpoch
+      }));
+      if (currentConnection === 1) {
+        setTimeout(() => socket.terminate(), 20);
+        return;
+      }
+      setTimeout(() => {
+        socket.send(JSON.stringify({
+          type: "keyframe",
+          protocol: 4,
+          reason: "loss_flush_or_session_start",
+          requireCodecConfig: true
+        }));
+      }, 20);
+      socket.once("message", (video, videoIsBinary) => {
+        assert.equal(videoIsBinary, true);
+        resolveRecoveredVideo(Uint8Array.from(video));
+      });
+    });
+  });
+
+  const connection = new DirectReceiverConnection({
+    trustedDevice: {
+      senderId: "019fa3cf-75c7-7000-8000-000000000001",
+      deviceId: "00112233445566778899aabbccddeeff",
+      credential: "a".repeat(64),
+      host: "192.168.1.8",
+      pairedAt: 1
+    },
+    sourceEpoch: 11,
+    socketFactory: () => new WebSocket(`ws://127.0.0.1:${address.port}`),
+    heartbeatIntervalMs: 60_000
+  });
+  const closed = new Promise((resolve) => {
+    connection.onClose = resolve;
+  });
+  const keyframeRequested = new Promise((resolve) => {
+    connection.onControl = (message) => {
+      if (message.type === "keyframe") {
+        resolve(message);
+      }
+    };
+  });
+
+  await connection.connect();
+  const closeEvent = await closed;
+  assert.equal(closeEvent.code, 1006);
+  const recovery = await connection.recover({
+    connectTimeoutMs: 500,
+    retryDelaysMs: [0, 10]
+  });
+  assert.equal(recovery.attempts, 1);
+  assert.equal(connectionCount, 2);
+  assert.deepEqual(authEpochs, [11, 11]);
+  assert.equal((await keyframeRequested).requireCodecConfig, true);
+
+  const annexB = Uint8Array.from([
+    0, 0, 0, 1, 0x67, 0x42, 0, 0x1f,
+    0, 0, 0, 1, 0x65, 0x04, 0x05, 0x06
+  ]);
+  const wireMessage = createDirectVideoMessage({
+    byteLength: annexB.byteLength,
+    timestamp: 88,
+    type: "key",
+    copyTo(destination) {
+      destination.set(annexB);
+    }
+  }, 11, 9);
+  assert.equal(connection.sendVideo(wireMessage), true);
+  assert.deepEqual(await recoveredVideo, new Uint8Array(wireMessage));
+  await connection.close();
+});
+
+test("direct WebSocket recovery stops immediately when Receiver rejects auth", async (context) => {
+  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  context.after(() => server.close());
+  await once(server, "listening");
+  const address = server.address();
+  assert.equal(typeof address, "object");
+  let attempts = 0;
+  server.on("connection", (socket) => {
+    socket.once("message", () => {
+      socket.send(JSON.stringify({
+        type: "error",
+        protocol: 4,
+        code: "identity_mismatch"
+      }));
+    });
+  });
+
+  const connection = new DirectReceiverConnection({
+    trustedDevice: {
+      senderId: "019fa3cf-75c7-7000-8000-000000000001",
+      deviceId: "00112233445566778899aabbccddeeff",
+      credential: "a".repeat(64),
+      host: "192.168.1.8",
+      pairedAt: 1
+    },
+    sourceEpoch: 12,
+    socketFactory: () => new WebSocket(`ws://127.0.0.1:${address.port}`),
+    heartbeatIntervalMs: 60_000
+  });
+  const startedAt = Date.now();
+  await assert.rejects(
+    connection.recover({
+      connectTimeoutMs: 40,
+      retryDelaysMs: [0, 10],
+      onAttempt() {
+        attempts += 1;
+      }
+    }),
+    /平板身份不匹配/
+  );
+  assert.equal(attempts, 1);
+  assert.ok(Date.now() - startedAt < 500);
+  assert.equal(connection.connected, false);
+});
+
+test("direct WebSocket recovery survives more than 184 seconds without buffering video", async (context) => {
+  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  context.after(() => server.close());
+  await once(server, "listening");
+  const address = server.address();
+  assert.equal(typeof address, "object");
+  const authEpochs = [];
+  const receivedVideo = [];
+  let resolveKeyframe;
+  const keyframeRequested = new Promise((resolve) => {
+    resolveKeyframe = resolve;
+  });
+  let resolveVideo;
+  const firstVideo = new Promise((resolve) => {
+    resolveVideo = resolve;
+  });
+  server.on("connection", (socket) => {
+    socket.once("message", (data, isBinary) => {
+      assert.equal(isBinary, false);
+      const auth = JSON.parse(data.toString("utf8"));
+      authEpochs.push(auth.sourceEpoch);
+      socket.send(JSON.stringify({
+        type: "ready",
+        protocol: 4,
+        sourceEpoch: auth.sourceEpoch
+      }));
+      setTimeout(() => {
+        socket.send(JSON.stringify({
+          type: "keyframe",
+          protocol: 4,
+          reason: "loss_flush_or_session_start",
+          requireCodecConfig: true
+        }));
+      }, 10);
+      socket.on("message", (video, videoIsBinary) => {
+        if (!videoIsBinary) {
+          return;
+        }
+        const received = Uint8Array.from(video);
+        receivedVideo.push(received);
+        resolveVideo(received);
+      });
+    });
+  });
+
+  const connection = new DirectReceiverConnection({
+    trustedDevice: {
+      senderId: "019fa3cf-75c7-7000-8000-000000000001",
+      deviceId: "00112233445566778899aabbccddeeff",
+      credential: "a".repeat(64),
+      host: "192.168.1.8",
+      pairedAt: 1
+    },
+    sourceEpoch: 13,
+    socketFactory: () => new WebSocket(`ws://127.0.0.1:${address.port}`),
+    heartbeatIntervalMs: 60_000
+  });
+  connection.onControl = (message) => {
+    if (message.type === "keyframe") {
+      resolveKeyframe(message);
+    }
+  };
+
+  let virtualNowMs = 0;
+  const attemptElapsedTimes = [];
+  const actualRetryDelays = [];
+  const disconnectedPayload = createDirectVideoMessage({
+    byteLength: 4,
+    timestamp: 50,
+    type: "delta",
+    copyTo(destination) {
+      destination.set(Uint8Array.from([0, 0, 1, 0x41]));
+    }
+  }, 13, 1);
+  let disconnectedPayloadDrops = 0;
+  const recovery = await connection.recover({
+    connectTimeoutMs: 1_500,
+    retryDelaysMs: [0, 250, 500, 1_000, 5_000],
+    now: () => virtualNowMs,
+    delayFn: async (milliseconds, signal) => {
+      assert.equal(signal?.aborted ?? false, false);
+      actualRetryDelays.push(milliseconds);
+      virtualNowMs += milliseconds;
+    },
+    onAttempt({ elapsedMs }) {
+      attemptElapsedTimes.push(elapsedMs);
+    },
+    connectAttempt: async (options) => {
+      if (virtualNowMs < 184_180) {
+        assert.throws(
+          () => connection.sendVideo(disconnectedPayload),
+          /平板连接尚未建立/
+        );
+        disconnectedPayloadDrops += 1;
+        virtualNowMs += options.timeoutMs;
+        throw new Error("模拟平板休眠期间网络不可达");
+      }
+      return connection.connect(options);
+    }
+  });
+
+  assert.ok(recovery.elapsedMs >= 184_180);
+  assert.ok(attemptElapsedTimes.some((elapsedMs) => elapsedMs > 120_000));
+  assert.ok(actualRetryDelays.length > 1);
+  assert.ok(disconnectedPayloadDrops > 0);
+  assert.ok(
+    actualRetryDelays.every(
+      (milliseconds) => milliseconds <= DIRECT_RECOVERY_MAX_RETRY_DELAY_MS
+    )
+  );
+  assert.deepEqual(authEpochs, [13]);
+  assert.equal(receivedVideo.length, 0);
+  assert.equal((await keyframeRequested).requireCodecConfig, true);
+
+  const annexB = Uint8Array.from([
+    0, 0, 0, 1, 0x67, 0x42, 0, 0x1f,
+    0, 0, 0, 1, 0x65, 0x07, 0x08, 0x09
+  ]);
+  const wireMessage = createDirectVideoMessage({
+    byteLength: annexB.byteLength,
+    timestamp: 99,
+    type: "key",
+    copyTo(destination) {
+      destination.set(annexB);
+    }
+  }, 13, 10);
+  assert.equal(connection.sendVideo(wireMessage), true);
+  assert.deepEqual(await firstVideo, new Uint8Array(wireMessage));
+  assert.equal(receivedVideo.length, 1);
+  await connection.close();
+});
+
+test("direct WebSocket recovery cancellation prevents an old source from retrying", async () => {
+  const connection = new DirectReceiverConnection({
+    trustedDevice: {
+      senderId: "019fa3cf-75c7-7000-8000-000000000001",
+      deviceId: "00112233445566778899aabbccddeeff",
+      credential: "a".repeat(64),
+      host: "192.168.1.8",
+      pairedAt: 1
+    },
+    sourceEpoch: 14,
+    socketFactory: () => {
+      throw new Error("取消后不应再创建 WebSocket");
+    },
+    heartbeatIntervalMs: 60_000
+  });
+  const abortController = new AbortController();
+  let attempts = 0;
+  const recovery = connection.recover({
+    connectTimeoutMs: 1_500,
+    retryDelaysMs: [0, 10],
+    signal: abortController.signal,
+    connectAttempt: async () => {
+      throw new Error("模拟瞬态网络错误");
+    },
+    onAttempt() {
+      attempts += 1;
+      abortController.abort();
+    }
+  });
+  await assert.rejects(
+    recovery,
+    (error) => error instanceof ReceiverRecoveryCancelledError
+  );
+  assert.equal(attempts, 1);
+  assert.equal(connection.connected, false);
+});
+
+test("direct WebSocket recovery generation change cannot overwrite a new source", async () => {
+  const connection = new DirectReceiverConnection({
+    trustedDevice: {
+      senderId: "019fa3cf-75c7-7000-8000-000000000001",
+      deviceId: "00112233445566778899aabbccddeeff",
+      credential: "a".repeat(64),
+      host: "192.168.1.8",
+      pairedAt: 1
+    },
+    sourceEpoch: 15,
+    socketFactory: () => {
+      throw new Error("旧来源取消后不应创建 WebSocket");
+    },
+    heartbeatIntervalMs: 60_000
+  });
+  let generation = 1;
+  let attempts = 0;
+  const recovery = connection.recover({
+    retryDelaysMs: [0, 10],
+    shouldContinue: () => generation === 1,
+    connectAttempt: async () => {
+      throw new Error("模拟旧来源瞬态网络错误");
+    },
+    onAttempt() {
+      attempts += 1;
+      generation = 2;
+    }
+  });
+  await assert.rejects(
+    recovery,
+    (error) => error instanceof ReceiverRecoveryCancelledError
+  );
+  assert.equal(attempts, 1);
+  assert.equal(connection.connected, false);
 });

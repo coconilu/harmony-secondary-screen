@@ -1,15 +1,19 @@
 import { FrameMonitor } from "./frame-monitor.js";
 import { EncoderMonitor } from "./encoder-monitor.js";
 import {
-  createDirectVideoMessage,
   DIRECT_VIDEO_BITRATE,
   DIRECT_VIDEO_CODEC,
   DIRECT_VIDEO_FRAMERATE,
   DIRECT_VIDEO_HEIGHT,
-  DIRECT_VIDEO_MAX_PAYLOAD_BYTES,
   DIRECT_VIDEO_WIDTH
 } from "./direct-protocol.js";
-import { DirectReceiverConnection } from "./direct-client.js";
+import {
+  DIRECT_RECOVERY_CONNECT_TIMEOUT_MS,
+  DIRECT_RECOVERY_RETRY_DELAYS_MS,
+  DirectReceiverConnection,
+  ReceiverRecoveryCancelledError
+} from "./direct-client.js";
+import { DirectDeliveryOrchestrator } from "./direct-delivery-orchestrator.js";
 import { shouldRequestPeriodicKeyFrame } from "./keyframe-policy.js";
 
 const TELEMETRY_INTERVAL_MS = 500;
@@ -40,10 +44,12 @@ let encoderConfig = null;
 let encodeCanvas = null;
 let encodeContext = null;
 let receiverConnection = null;
+let receiverRecoveryGeneration = 0;
+let receiverRecoveryPromise = null;
+let receiverRecoveryAbortController = null;
 let sourceEpoch = 0;
-let directSequence = 0;
 let directTelemetry = createDirectTelemetry();
-let forceKeyFrame = true;
+const directDelivery = new DirectDeliveryOrchestrator();
 let lastKeyFrameTimestampUs = Number.NaN;
 let running = false;
 let stopping = false;
@@ -86,9 +92,8 @@ async function startCapture(streamId, directInfo) {
 
   await stopCapture();
   stopping = false;
-  directSequence = 0;
   directTelemetry = createDirectTelemetry();
-  forceKeyFrame = true;
+  directDelivery.reset();
   lastKeyFrameTimestampUs = Number.NaN;
   await connectReceiver(directInfo);
 
@@ -187,6 +192,8 @@ async function stopCapture() {
 
   stopping = true;
   running = false;
+  receiverRecoveryGeneration += 1;
+  receiverRecoveryAbortController?.abort();
 
   if (telemetryTimer !== null) {
     clearInterval(telemetryTimer);
@@ -315,14 +322,14 @@ function encodeFrame(sourceFrame) {
     const timestamp =
       sourceFrame.timestamp ?? Math.round(performance.now() * 1000);
     const encodeFrame = new VideoFrame(encodeCanvas, { timestamp });
-    const keyFrame =
-      forceKeyFrame ||
-      shouldRequestPeriodicKeyFrame(timestamp, lastKeyFrameTimestampUs);
+    const keyFrame = directDelivery.shouldEncodeKeyFrame(
+      shouldRequestPeriodicKeyFrame(timestamp, lastKeyFrameTimestampUs)
+    );
     try {
       videoEncoder.encode(encodeFrame, { keyFrame });
       encoderMonitor.onSubmitted();
       if (keyFrame) {
-        forceKeyFrame = false;
+        directDelivery.onKeyFrameSubmitted();
         lastKeyFrameTimestampUs = timestamp;
       }
     } finally {
@@ -358,11 +365,20 @@ function collectTelemetry() {
   if (!monitor && !encoderMonitor && !receiverConnection) {
     return null;
   }
+  const directRecoveryElapsedMs =
+    directTelemetry.directReconnecting &&
+    Number.isFinite(directTelemetry.directRecoveryStartedAt)
+      ? Math.max(
+        directTelemetry.directRecoveryElapsedMs,
+        Date.now() - directTelemetry.directRecoveryStartedAt
+      )
+      : directTelemetry.directRecoveryElapsedMs;
   return {
     ...(monitor?.sample() ?? {}),
     ...(encoderMonitor?.sample(videoEncoder?.encodeQueueSize ?? 0) ?? {}),
     encoderConfig,
     ...directTelemetry,
+    directRecoveryElapsedMs,
     directConnected: receiverConnection?.connected ?? false,
     directBufferedAmount: receiverConnection?.bufferedAmount ?? 0
   };
@@ -384,7 +400,12 @@ function normalizeEncoderConfig(config) {
 function handleEncodedChunk(chunk) {
   encoderMonitor?.onChunk(chunk);
   try {
-    sendChunkToReceiver(chunk);
+    directDelivery.deliver(
+      chunk,
+      receiverConnection,
+      sourceEpoch,
+      directTelemetry
+    );
   } catch (error) {
     directTelemetry.directErrors += 1;
     if (!stopping) {
@@ -395,24 +416,6 @@ function handleEncodedChunk(chunk) {
       });
     }
   }
-}
-
-function sendChunkToReceiver(chunk) {
-  const connection = receiverConnection;
-  if (!connection?.connected) {
-    throw new Error("平板连接尚未建立");
-  }
-  if (chunk.byteLength > DIRECT_VIDEO_MAX_PAYLOAD_BYTES) {
-    throw new Error("单个 H.264 编码块超过 8 MiB");
-  }
-  const message = createDirectVideoMessage(chunk, sourceEpoch, directSequence);
-  if (!connection.sendVideo(message)) {
-    directTelemetry.directDroppedFrames += 1;
-    return;
-  }
-  directSequence = (directSequence + 1) >>> 0;
-  directTelemetry.directSentFrames += 1;
-  directTelemetry.directSentBytes += chunk.byteLength;
 }
 
 async function connectReceiver(directInfo) {
@@ -429,20 +432,132 @@ async function connectReceiver(directInfo) {
     sourceEpoch
   });
   connection.onControl = applyReceiverControl;
-  connection.onClose = () => {
+  connection.onClose = (event) => {
+    if (receiverConnection !== connection) {
+      return;
+    }
     directTelemetry.directConnected = false;
+    directTelemetry.directLastCloseCode =
+      Number.isInteger(event?.code) ? event.code : null;
+    directTelemetry.directLastCloseWasClean =
+      typeof event?.wasClean === "boolean" ? event.wasClean : null;
     if (!stopping && running) {
       directTelemetry.directErrors += 1;
-      running = false;
-      void sendToServiceWorker("CAPTURE_FAILURE", {
-        error: "平板连接意外断开",
-        telemetry: collectTelemetry()
-      });
+      beginReceiverRecovery(connection);
     }
   };
-  await connection.connect();
   receiverConnection = connection;
+  try {
+    await connection.connect();
+  } catch (error) {
+    if (receiverConnection === connection) {
+      receiverConnection = null;
+    }
+    throw error;
+  }
   directTelemetry.directConnected = true;
+}
+
+function beginReceiverRecovery(connection) {
+  if (receiverRecoveryPromise !== null || stopping || !running) {
+    return;
+  }
+  const generation = ++receiverRecoveryGeneration;
+  const abortController = new AbortController();
+  receiverRecoveryAbortController = abortController;
+  directTelemetry.directReconnecting = true;
+  directTelemetry.directRecoveryState = "reconnecting";
+  directTelemetry.directRecoveryStartedAt = Date.now();
+  directTelemetry.directRecoveryElapsedMs = 0;
+  directTelemetry.directRecoveryCurrentAttempt = 0;
+  directTelemetry.directRecoveryTransientFailures = 0;
+  directTelemetry.directRecoveryLastOutcome = null;
+  void publishTelemetry();
+  receiverRecoveryPromise = connection.recover({
+    connectTimeoutMs: DIRECT_RECOVERY_CONNECT_TIMEOUT_MS,
+    retryDelaysMs: DIRECT_RECOVERY_RETRY_DELAYS_MS,
+    signal: abortController.signal,
+    shouldContinue: () =>
+      generation === receiverRecoveryGeneration &&
+      receiverConnection === connection &&
+      running &&
+      !stopping,
+    onAttempt: ({ attempts, elapsedMs }) => {
+      if (
+        generation !== receiverRecoveryGeneration ||
+        receiverConnection !== connection
+      ) {
+        return;
+      }
+      directTelemetry.directReconnectAttempts += 1;
+      directTelemetry.directRecoveryCurrentAttempt = attempts;
+      directTelemetry.directRecoveryElapsedMs = elapsedMs;
+    },
+    onTransientFailure: ({ elapsedMs }) => {
+      if (
+        generation !== receiverRecoveryGeneration ||
+        receiverConnection !== connection
+      ) {
+        return;
+      }
+      directTelemetry.directRecoveryTransientFailures += 1;
+      directTelemetry.directRecoveryElapsedMs = elapsedMs;
+    }
+  }).then(({ elapsedMs }) => {
+    if (
+      generation !== receiverRecoveryGeneration ||
+      receiverConnection !== connection ||
+      stopping ||
+      !running
+    ) {
+      void connection.close();
+      return;
+    }
+    directTelemetry.directConnected = true;
+    directTelemetry.directReconnecting = false;
+    directTelemetry.directReconnects += 1;
+    directTelemetry.directRecoveryState = "connected";
+    directTelemetry.directRecoveryElapsedMs = elapsedMs;
+    directTelemetry.directRecoveryLastDurationMs = elapsedMs;
+    directTelemetry.directRecoveryLastOutcome = "recovered";
+    directDelivery.requireKeyFrame(directTelemetry);
+    void publishTelemetry();
+  }).catch((error) => {
+    if (
+      error instanceof ReceiverRecoveryCancelledError ||
+      abortController.signal.aborted
+    ) {
+      return;
+    }
+    if (
+      generation !== receiverRecoveryGeneration ||
+      receiverConnection !== connection ||
+      stopping ||
+      !running
+    ) {
+      return;
+    }
+    directTelemetry.directReconnecting = false;
+    directTelemetry.directErrors += 1;
+    const elapsedMs = Math.max(
+      directTelemetry.directRecoveryElapsedMs,
+      Date.now() - directTelemetry.directRecoveryStartedAt
+    );
+    directTelemetry.directRecoveryState = "failed_permanent";
+    directTelemetry.directRecoveryElapsedMs = elapsedMs;
+    directTelemetry.directRecoveryLastDurationMs = elapsedMs;
+    directTelemetry.directRecoveryLastOutcome = "failed_permanent";
+    running = false;
+    void sendToServiceWorker("CAPTURE_FAILURE", {
+      error: `平板连接恢复失败：${normalizeError(error)}`,
+      telemetry: collectTelemetry()
+    });
+  }).finally(() => {
+    if (generation === receiverRecoveryGeneration) {
+      receiverRecoveryPromise = null;
+      receiverRecoveryAbortController = null;
+    }
+  });
 }
 
 function applyReceiverControl(message) {
@@ -451,7 +566,7 @@ function applyReceiverControl(message) {
     return;
   }
   if (message?.type === "keyframe") {
-    forceKeyFrame = true;
+    directDelivery.requireKeyFrame(directTelemetry);
     directTelemetry.directKeyframeRequests += 1;
     return;
   }
@@ -472,12 +587,17 @@ function applyReceiverControl(message) {
 }
 
 function applyReceiverTelemetry(message) {
-  for (const [source, target] of [
+  for (const [source, target, optional = false] of [
     ["receivedFrames", "receiverReceivedFrames"],
     ["receivedBytes", "receiverReceivedBytes"],
     ["receiverDecodedFrames", "receiverDecodedFrames"],
-    ["receiverDroppedFrames", "receiverDroppedFrames"]
+    ["receiverDroppedFrames", "receiverDroppedFrames"],
+    ["receiverResyncEvents", "receiverResyncEvents", true],
+    ["receiverKeyframeRequests", "receiverKeyframeRequests", true]
   ]) {
+    if (optional && message[source] === undefined) {
+      continue;
+    }
     if (Number.isSafeInteger(message[source]) && message[source] >= 0) {
       directTelemetry[target] = message[source];
     } else {
@@ -487,10 +607,28 @@ function applyReceiverTelemetry(message) {
 }
 
 async function closeReceiver() {
+  receiverRecoveryGeneration += 1;
+  receiverRecoveryAbortController?.abort();
+  receiverRecoveryAbortController = null;
   const connection = receiverConnection;
   if (!connection) {
     return;
   }
+  const recovery = receiverRecoveryPromise;
+  receiverRecoveryPromise = null;
+  if (directTelemetry.directReconnecting) {
+    const elapsedMs = Number.isFinite(directTelemetry.directRecoveryStartedAt)
+      ? Math.max(
+        directTelemetry.directRecoveryElapsedMs,
+        Date.now() - directTelemetry.directRecoveryStartedAt
+      )
+      : directTelemetry.directRecoveryElapsedMs;
+    directTelemetry.directRecoveryState = "cancelled";
+    directTelemetry.directRecoveryElapsedMs = elapsedMs;
+    directTelemetry.directRecoveryLastDurationMs = elapsedMs;
+    directTelemetry.directRecoveryLastOutcome = "cancelled";
+  }
+  directTelemetry.directReconnecting = false;
   const deadline = performance.now() + 2000;
   while (
     connection.connected &&
@@ -500,6 +638,13 @@ async function closeReceiver() {
     await delay(20);
   }
   await connection.close();
+  if (recovery !== null) {
+    try {
+      await recovery;
+    } catch {
+      // Recovery cancellation is expected during an explicit stop.
+    }
+  }
   receiverConnection = null;
   directTelemetry.directConnected = false;
 }
@@ -513,11 +658,26 @@ function createDirectTelemetry() {
     directBufferedAmount: 0,
     directErrors: 0,
     directKeyframeRequests: 0,
+    directResyncEvents: 0,
+    directReconnecting: false,
+    directReconnectAttempts: 0,
+    directReconnects: 0,
+    directRecoveryState: "idle",
+    directRecoveryStartedAt: null,
+    directRecoveryElapsedMs: 0,
+    directRecoveryLastDurationMs: 0,
+    directRecoveryTransientFailures: 0,
+    directRecoveryCurrentAttempt: 0,
+    directRecoveryLastOutcome: null,
+    directLastCloseCode: null,
+    directLastCloseWasClean: null,
     lastPongAt: null,
     receiverReceivedFrames: 0,
     receiverReceivedBytes: 0,
     receiverDecodedFrames: 0,
-    receiverDroppedFrames: 0
+    receiverDroppedFrames: 0,
+    receiverResyncEvents: 0,
+    receiverKeyframeRequests: 0
   };
 }
 

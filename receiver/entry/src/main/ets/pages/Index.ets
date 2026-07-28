@@ -4,6 +4,7 @@ import { mdns } from '@kit.NetworkKit';
 import { scanBarcode, scanCore } from '@kit.ScanKit';
 import { window } from '@kit.ArkUI';
 import hssReceiver, { PairingRecord, ReceiverStatus } from 'libhss_receiver.so';
+import { PLAYBACK_ACTIVE_EVENT } from '../shared/ReceiverEvents';
 
 const PREFS_NAME: string = 'trusted_edge';
 const DEVICE_ID_KEY: string = 'deviceId';
@@ -40,9 +41,7 @@ struct Index {
   private savedDeviceId: string = '';
   private registeredService: mdns.LocalServiceInfo | undefined = undefined;
   private receiverWindow: window.Window | undefined = undefined;
-  private keepScreenOn: boolean = false;
-  private keepScreenOnTarget: boolean = false;
-  private keepScreenOnUpdatePending: boolean = false;
+  private playbackActive: boolean = false;
 
   private abilityContext(): common.UIAbilityContext {
     const context: common.Context | undefined = this.getUIContext().getHostContext();
@@ -77,7 +76,7 @@ struct Index {
     }
     this.hideFullscreenControls();
     void this.restoreSystemBars();
-    this.updateKeepScreenOn(false);
+    this.updatePlaybackActive(false);
     this.stopReceiver();
   }
 
@@ -124,7 +123,7 @@ struct Index {
     this.framesDecoded = status.framesDecoded;
     this.framesDropped = status.framesDropped;
     this.receivedFrames = status.receivedFrames;
-    this.updateKeepScreenOn(status.connected);
+    this.updatePlaybackActive(status.connected);
     const pairing: PairingRecord = hssReceiver.getPairing();
     if ((pairing.version > this.savedPairingVersion ||
       (pairing.deviceId.length > 0 && pairing.deviceId !== this.savedDeviceId)) &&
@@ -133,31 +132,12 @@ struct Index {
     }
   }
 
-  private updateKeepScreenOn(keepScreenOn: boolean): void {
-    this.keepScreenOnTarget = keepScreenOn;
-    if (!this.keepScreenOnUpdatePending && this.keepScreenOn !== this.keepScreenOnTarget) {
-      void this.applyKeepScreenOn();
+  private updatePlaybackActive(active: boolean): void {
+    if (this.playbackActive === active) {
+      return;
     }
-  }
-
-  private async applyKeepScreenOn(): Promise<void> {
-    this.keepScreenOnUpdatePending = true;
-    try {
-      if (this.receiverWindow === undefined) {
-        this.receiverWindow = await window.getLastWindow(this.abilityContext());
-      }
-      while (this.keepScreenOn !== this.keepScreenOnTarget) {
-        const target: boolean = this.keepScreenOnTarget;
-        await this.receiverWindow.setWindowKeepScreenOn(target);
-        this.keepScreenOn = target;
-      }
-    } catch (error) {
-      // Window may be temporarily unavailable during lifecycle transitions.
-      // The status refresh retries while the desired state still differs.
-      this.receiverWindow = undefined;
-    } finally {
-      this.keepScreenOnUpdatePending = false;
-    }
+    this.playbackActive = active;
+    this.abilityContext().eventHub.emit(PLAYBACK_ACTIVE_EVENT, active);
   }
 
   private themeSelectionIndex(): number {
@@ -297,6 +277,7 @@ struct Index {
   }
 
   private stopReceiver(): void {
+    this.updatePlaybackActive(false);
     hssReceiver.stopReceiver();
     void this.unregisterMdnsService();
   }

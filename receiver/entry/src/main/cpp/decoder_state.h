@@ -1,11 +1,29 @@
 #pragma once
 
+#include <cstddef>
+
 namespace hss::receiver {
 
 enum class DecoderLifecycleState { kStopped, kStarting, kRunning, kFlushing, kStopping };
 enum class FlushRecoveryAction { kResume, kRebuild };
 enum class DecoderInputKind { kCodecData, kSyncFrame, kFrame };
 enum class DecoderRecoveryState { kNeedsCodecData, kNeedsSyncFrame, kReady };
+
+struct DecodeQueueAdmission final {
+  bool accepted = true;
+  bool clearPending = false;
+  bool requestKeyFrame = false;
+  DecoderRecoveryState nextState = DecoderRecoveryState::kReady;
+};
+
+constexpr DecodeQueueAdmission EvaluateDecodeQueueAdmission(
+    std::size_t queuedFrames, std::size_t capacity,
+    DecoderRecoveryState currentState) {
+  if (queuedFrames < capacity) {
+    return {true, false, false, currentState};
+  }
+  return {false, true, true, DecoderRecoveryState::kNeedsCodecData};
+}
 
 constexpr bool DecoderCallbacksAllowed(DecoderLifecycleState state) {
   return state == DecoderLifecycleState::kRunning;

@@ -1,8 +1,10 @@
 #pragma once
 
 #include "bounded_control_queue.h"
+#include "decoder_orchestration.h"
 #include "decoder_state.h"
 #include "native_protocol.h"
+#include "receiver_lifecycle_state.h"
 #include "websocket_protocol.h"
 
 #include <ace/xcomponent/native_interface_xcomponent.h>
@@ -60,7 +62,7 @@ class ReceiverSession final {
 
   void OnSurfaceCreated(OH_NativeXComponent* component, void* window);
   void OnSurfaceChanged(OH_NativeXComponent* component, void* window);
-  void OnSurfaceDestroyed();
+  void OnSurfaceDestroyed(OH_NativeXComponent* component, void* window);
   void OnAppForeground();
   void OnAppBackground();
 
@@ -90,11 +92,11 @@ class ReceiverSession final {
   void CloseSockets();
   void SetState(std::string state, std::string detail, bool listening, bool connected);
 
-  bool StartDecoder();
+  DecoderRuntimeSnapshot DecoderRuntimeLocked() const;
+  bool ApplyLifecycleDecisionLocked(ReceiverLifecycleDecision decision);
   bool CreateDecoderLocked();
   void DestroyDecoderLocked();
   void ClearDecoderQueues();
-  void StopDecoder();
   bool FlushDecoder();
   void SubmitFrame(DecodedInput frame);
   bool SubmitRecovery(DecodedInput codecData, DecodedInput syncFrame);
@@ -134,19 +136,18 @@ class ReceiverSession final {
   std::atomic<int> control_socket_{-1};
   std::timed_mutex send_mutex_;
   BoundedControlQueue telemetry_queue_{8};
-  std::atomic<bool> keyframe_request_pending_{false};
   websocket::Decoder websocket_decoder_;
   std::atomic<std::uint64_t> received_frames_{0};
   std::atomic<std::uint64_t> received_bytes_{0};
+  std::atomic<std::uint64_t> decoder_resync_events_{0};
+  std::atomic<std::uint64_t> keyframe_requests_sent_{0};
 
   std::mutex decoder_lifecycle_mutex_;
   std::mutex decoder_queue_mutex_;
-  std::atomic<DecoderLifecycleState> decoder_state_{DecoderLifecycleState::kStopped};
+  DecoderCallbackGate decoder_callback_gate_;
   std::atomic<OH_AVCodec*> decoder_{nullptr};
-  std::atomic<DecoderRecoveryState> decoder_recovery_state_{
-      DecoderRecoveryState::kNeedsCodecData};
-  std::atomic<bool> app_foreground_{true};
-  void* native_window_ = nullptr;
+  DecoderRecoveryCoordinator decoder_recovery_;
+  ReceiverLifecycleState lifecycle_state_;
   std::deque<InputSlot> input_slots_;
   std::deque<DecodedInput> decode_queue_;
   std::atomic<std::uint64_t> frames_decoded_{0};

@@ -19,8 +19,15 @@ if(WIN32)
   target_link_libraries(hss_receiver_protocol_tests PRIVATE ws2_32)
 endif()
 
+add_executable(hss_receiver_lifecycle_tests receiver_lifecycle_tests.cpp)
+target_include_directories(hss_receiver_lifecycle_tests PRIVATE ../entry/src/main/cpp)
+
 enable_testing()
 add_test(
   NAME hss_receiver_protocol_tests
   COMMAND hss_receiver_protocol_tests "${HSS_EXTENSION_WIRE_FIXTURE}"
+)
+add_test(
+  NAME hss_receiver_lifecycle_tests
+  COMMAND hss_receiver_lifecycle_tests
 )
