@@ -13,7 +13,7 @@
 1. 平板打开 HarmonyOS Receiver，确认当前私网 Wi-Fi IPv4并开始接收。
 2. 点击扩展，显示 60 秒一次性二维码。
 3. 平板点击“扫码配对”，扫描二维码。
-4. 扩展点击“已扫码，连接平板”。
+4. 扩展点击“已扫码，连接平板”；默认解析固定 `.local`，确认实际落到允许的私网地址后才发送授权。
 5. 配对成功后，进入普通 HTTP/HTTPS 标签页，点击“发送当前标签页”。
 
 摄像头不可用时，在平板输入扩展显示的六位短码；`.local` 失败时，在扩展输入 Receiver 显示的
@@ -32,13 +32,17 @@ Edge 首次请求手动私网 IP 权限时可能关闭 popup。扩展会先把�
 | `tabCapture` | 捕获当前标签页视频 |
 | `offscreen` | 持有视频轨和编码器 |
 | `storage` | 持久保存可信设备与 source epoch |
+| `webRequest` | 只读观察 Receiver WebSocket 握手的目标地址类别，鉴权前拒绝非私网结果 |
 | 固定 `.local` origin | 尝试单一 Receiver 地址 |
 | optional HTTP origin | 用户手动输入私网 IP 后，只请求该精确 origin |
 
 手动 IP 配对或保存失败时会回滚本次新增的 origin；更新地址或忘记设备时会枚举并撤销所有未使用的
 手动私网 origin，撤销失败会明确报错。
 
-不申请 `nativeMessaging`、`<all_urls>`、Cookie、history、页面正文或站点脚本注入。
+`webRequest` 不使用 blocking 能力，不修改请求，不读取页面流量；观察结果只保留
+`private_ipv4` / `non_private` / `unresolved` 类别，原始 IP 不写入存储或日志。
+不申请 `nativeMessaging`、`<all_urls>`、`webRequestBlocking`、Cookie、history、页面正文或
+站点脚本注入。
 
 ## 编码与隐私
 
@@ -61,7 +65,9 @@ npm audit --audit-level=high
 测试包含真实本机 WebSocket 假 Receiver、逐字节比对至少一个 Annex-B Access Unit、同一
 `sourceEpoch` 的异常断线恢复与关键帧请求、虚拟时钟超过 184 秒后继续恢复、断线期间不缓存
 视频 payload、认证 ready 前禁止发送、AU 丢弃后的关键帧恢复、STOP/换源取消旧恢复，以及模拟
-权限弹窗中断和 popup 重建的模块测试。Receiver 测试覆盖 same-epoch 重连、完整 SPS/PPS/IDR
+权限弹窗中断和 popup 重建的模块测试；地址诊断测试分别覆盖解析失败、非私网、连接超时和
+WebSocket 不可达，并验证固定 `.local` 未观察到私网地址前不会发送 token/credential。
+Receiver 测试覆盖 same-epoch 重连、完整 SPS/PPS/IDR
 门禁、Flush 窗口的 `NeedInput` 竞态、重复/缺失 codec data、解码队列溢出恢复和正常连续播放；
 发送端测试通过 offscreen 实际使用的编排 seam 验证序号、发送计数与 key 成功送达前的 delta 门禁。
 自动化不等同于 Edge + HarmonyOS 真机复验。

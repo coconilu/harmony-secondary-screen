@@ -18,7 +18,8 @@ ws://harmony-web-companion.local:44000/direct
 
 `.local` 失败时，用户可把 host 改为 Receiver 显示的私网 IPv4。Receiver 只在用户确认的具体
 `wlan*` 私网/link-local IPv4 上监听 TCP 44000；拒绝 `0.0.0.0`、回环、VPN、蜂窝、公网地址和
-公网来源。扩展不扫描网络。
+公网来源。扩展不扫描网络。固定 `.local` 自动路径在发送 `pair` 或 `auth` 前，只读观察
+WebSocket 握手的实际目标地址类别；只有 RFC1918 或 IPv4 link-local 才允许发送凭据。
 
 所有控制消息是 UTF-8 JSON text message；H.264 是 binary message。客户端 frame 必须 mask，
 Receiver 支持合法 continuation frame，单消息上限为 8 MiB + 32 字节头。
@@ -197,14 +198,30 @@ Cookie、正文或视频 payload。
 | `codec_unsupported` | 编码参数不支持 |
 | `epoch_stale` | sourceEpoch 早于已接受来源 |
 
-## DNS-SD 说明
+## 自动地址发布
 
-Receiver 通过 HarmonyOS 公共 `mdns.addLocalService` 注册 `_hwc._tcp` /
-`harmony-web-companion` 服务实例。该 API 不承诺注册裸主机名；因此
-`harmony-web-companion.local` 在 Windows/Edge 的实际可解析性必须真机记录，不能由编译或服务
-注册结果推断。
+Receiver 同时维护两个互不等价的发布层：
+
+| 层 | 名称 / 记录 | 用途 |
+| --- | --- | --- |
+| DNS-SD | `_hwc._tcp` / `harmony-web-companion` | 公共 API 服务实例；当前扩展不浏览服务列表 |
+| 固定 mDNS A | `harmony-web-companion.local` → 当前确认的 Wi-Fi IPv4 | 供 Edge 默认 WebSocket 地址解析 |
+
+最小 mDNS A 响应器使用 UDP multicast `224.0.0.251:5353`，只加入用户确认的当前 `wlan*`
+RFC1918 或 IPv4 link-local 接口。它只接受 DNS ID 0、单 question、IN class、固定名称的 A/ANY
+查询；拒绝其他名称/类型、多 question、response-as-query、truncated、越界、循环压缩指针、
+尾随数据和超过 512 字节的输入。响应最多 64 字节、只含一个 cache-flush A 记录，TTL 为 120 秒，
+不会成为通用 DNS 或放大式响应器。
+
+开始发布前发送固定 A probe 并观察 500 ms；若收到同名不同 A，或发布后观察到同名不同 A，
+立即进入冲突状态，不自动选择第一个响应者。正常停止、Wi-Fi 地址失效或更换地址时，对旧地址发送
+TTL 0 goodbye 后关闭 socket。公开 DNS-SD 注册、固定 A 可解析和 HWC4 身份鉴权必须分别记录；
+前两者都不授予身份信任。
+
+本仓库的协议测试与 unsigned HarmonyOS Release 构建已覆盖上述报文边界；目标 Windows/Edge 是否
+实际解析该响应器仍必须真机验证，不能由构建或 `mdns.addLocalService` 成功推断。
 
 ## 不存在的能力
 
-HWC4 不传输 audio、pointer、keyboard、scroll、URL、Cookie、正文、桌面枚举，也没有 UDP、公网、
-云中继、设备浏览或多路标签页媒体流。
+HWC4 不传输 audio、pointer、keyboard、scroll、URL、Cookie、正文、桌面枚举，也没有 UDP 媒体、
+公网、云中继、设备浏览或多路标签页媒体流；唯一 UDP 输入面是上述固定名称的受限 mDNS A 响应器。

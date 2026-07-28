@@ -19,11 +19,11 @@ try {
   $manifest = Get-Content -Raw -Encoding UTF8 extension\manifest.json | ConvertFrom-Json
   if ($manifest.manifest_version -ne 3) { throw 'Edge extension must use Manifest V3.' }
   $permissions = @($manifest.permissions)
-  foreach ($required in @('activeTab', 'offscreen', 'storage', 'tabCapture')) {
+  foreach ($required in @('activeTab', 'offscreen', 'storage', 'tabCapture', 'webRequest')) {
     if ($permissions -notcontains $required) { throw "Extension is missing permission: $required" }
   }
   foreach ($forbidden in @('nativeMessaging', '<all_urls>', 'cookies', 'history', 'scripting',
-                            'webRequest', 'webRequestBlocking')) {
+                            'webRequestBlocking')) {
     if ($permissions -contains $forbidden) { throw "Extension requests forbidden permission: $forbidden" }
   }
   if (@($manifest.host_permissions).Count -ne 1 -or
@@ -75,6 +75,9 @@ try {
     @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'IsCurrentWifiIpv4' },
     @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'tcpAddress.sin_addr = address' },
     @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'std::strncmp(item->ifa_name, "wlan", 4)' },
+    @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'address_responder_.Stop()' },
+    @{ Path = 'receiver\entry\src\main\cpp\mdns_responder.cpp'; Pattern = 'BuildARecord(published_address_, 0)' },
+    @{ Path = 'receiver\tests\mdns_protocol_tests.cpp'; Pattern = 'AddressChangeAndStopRevokeTheOldRecord' },
     @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'authorization_replayed' },
     @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'identity_mismatch' },
     @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'IsAcceptedSourceEpoch' },

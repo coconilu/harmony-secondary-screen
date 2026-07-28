@@ -46,6 +46,36 @@ test("QR authorization pairs with a fake Receiver and returns stable credentials
   assert.equal(trusted.credential, "a".repeat(64));
 });
 
+test("expired QR is reported as authorization expiry, not a network failure", async (context) => {
+  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  context.after(() => server.close());
+  await once(server, "listening");
+  const address = server.address();
+  assert.equal(typeof address, "object");
+  server.once("connection", (socket) => {
+    socket.once("message", () => {
+      socket.send(JSON.stringify({
+        type: "error",
+        protocol: 4,
+        code: "authorization_expired"
+      }));
+    });
+  });
+
+  await assert.rejects(
+    pairReceiver({
+      host: "192.168.1.8",
+      authorization: {
+        sessionId: "1".repeat(32),
+        token: "2".repeat(64)
+      },
+      senderId: "019fa3cf-75c7-7000-8000-000000000001",
+      socketFactory: () => new WebSocket(`ws://127.0.0.1:${address.port}`)
+    }),
+    /二维码或短码已经过期，请重新生成/
+  );
+});
+
 test("direct WebSocket authenticates and delivers one Annex-B AU to a fake Receiver", async (context) => {
   const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
   context.after(() => server.close());

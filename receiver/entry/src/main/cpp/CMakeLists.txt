@@ -5,6 +5,8 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_library(hss_receiver SHARED
+  mdns_protocol.cpp
+  mdns_responder.cpp
   napi_init.cpp
   native_protocol.cpp
   receiver_session.cpp

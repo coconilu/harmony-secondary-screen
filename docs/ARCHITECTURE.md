@@ -10,7 +10,7 @@
 | 组件 | 职责 |
 | --- | --- |
 | Edge 扩展 | 用户手势、一次性二维码、可信设备存储、当前标签页捕获、WebCodecs 编码、直连发送 |
-| HarmonyOS Receiver | Wi-Fi 确认、扫码/短码授权、DNS-SD 注册、可信电脑存储、WebSocket、AVCodec、XComponent |
+| HarmonyOS Receiver | Wi-Fi 确认、固定 mDNS A 发布、DNS-SD 注册、扫码/短码授权、可信电脑存储、WebSocket、AVCodec、XComponent |
 
 Windows Relay/Native Host 不再属于正常路径，也不由 `scripts/test.ps1` 构建。
 
@@ -45,9 +45,18 @@ XComponent Surface
 Receiver 只绑定 `wlan*` 上由用户确认的 RFC1918 或 IPv4 link-local 地址，拒绝通配、回环、VPN、
 蜂窝和公网地址；入站对端也必须来自私网/link-local。
 
-HarmonyOS `mdns.addLocalService` 注册的是 DNS-SD 服务实例，不足以证明 Windows 一定能解析裸
-`harmony-web-companion.local`。扩展先尝试该固定地址，失败时允许用户输入 Receiver 显示的私网
-IPv4；不进行 mDNS 浏览或子网扫描。
+地址发现、服务注册和身份鉴权是三条独立边界：
+
+| 层 | 当前实现 | 不代表 |
+| --- | --- | --- |
+| 固定主机名地址 | Receiver 在已确认 `wlan*` 接口上只响应 `harmony-web-companion.local` 的 mDNS A 查询 | 设备身份或长期信任 |
+| DNS-SD 服务实例 | HarmonyOS `mdns.addLocalService` 注册 `_hwc._tcp` | 裸 `.local` 一定可解析 |
+| 身份鉴权 | 一次性 QR 后保存 `deviceId`、senderId、credential | IP 或主机名永久不变 |
+
+mDNS 响应器不浏览服务、不枚举邻居、不扫描子网，不回答其他名称或记录类型。它在开始接收时探测
+同名 A 记录；发现不同地址即停止自动发布并提示数字 IPv4 回退。停止接收、Wi-Fi 地址失效或重新
+选择地址时，旧地址发送 TTL 0 goodbye 并关闭对应接口的 UDP socket。该 socket 只加入已确认
+接口的 `224.0.0.251:5353` 组；TCP 控制与媒体仍只绑定具体私网地址。
 
 ## 竞态边界
 
@@ -62,13 +71,17 @@ IPv4；不进行 mDNS 浏览或子网扫描。
 | `tabCapture` | 获取用户选择标签页的媒体流 |
 | `offscreen` | 扩展弹窗关闭后持有媒体流和编码器 |
 | `storage` | 保存设备身份、凭据、连接地址和 source epoch |
+| `webRequest` | 只读观察 Receiver WebSocket 握手实际地址类别；不拦截、不修改、不保存原始 IP |
 | 固定 `.local` host permission | 只访问一个预定 Receiver 地址 |
 | 可选 `http://*/*` 声明 | Chrome match pattern 无法枚举所有 RFC1918；仅在用户输入并确认具体 IP 时请求该精确 origin |
 
 扩展只保留当前可信设备实际使用的手动私网 origin；配对/保存失败回滚新授权，更新地址和忘记设备时
 枚举并撤销其余手动 origin，且不得把 `permissions.remove()` 的失败当成成功。
 
-不申请 `<all_urls>`、`nativeMessaging`、Cookie、history、正文读取或脚本注入。
+扩展只有在观察到固定 `.local` 实际落到 RFC1918 或 IPv4 link-local 后才发送 QR token 或长期
+credential；非私网或无法确认时在鉴权前断开。它不解析浏览器错误字符串，也不保存观察到的原始
+IP。不申请 `<all_urls>`、`webRequestBlocking`、`nativeMessaging`、Cookie、history、正文读取或
+脚本注入。
 
 ## 非目标
 

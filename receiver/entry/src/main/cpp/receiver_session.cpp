@@ -184,6 +184,7 @@ bool ReceiverSession::Start(std::string listenAddress) {
 
 void ReceiverSession::Stop() {
   desired_ = false;
+  address_responder_.Stop();
   CloseSockets();
   if (worker_.joinable() && worker_.get_id() != std::this_thread::get_id()) {
     worker_.join();
@@ -258,8 +259,12 @@ void ReceiverSession::ForgetDevice() {
 
 StatusSnapshot ReceiverSession::Status() const {
   std::scoped_lock lock(state_mutex_);
+  const auto publisherState = address_responder_.state();
   return {state_, detail_, listen_address_, paired_address_, device_id_, listening_,
-          connected_, !trusted_sender_id_.empty(), frames_decoded_.load(),
+          connected_, !trusted_sender_id_.empty(),
+          publisherState == MdnsPublisherState::kPublished,
+          publisherState == MdnsPublisherState::kConflict,
+          publisherState == MdnsPublisherState::kError, frames_decoded_.load(),
           frames_dropped_.load(), received_frames_.load()};
 }
 
@@ -303,8 +308,15 @@ void ReceiverSession::NetworkLoop() {
     CloseSockets();
     return;
   }
+  std::string addressText;
+  {
+    std::scoped_lock lock(state_mutex_);
+    addressText = listen_address_;
+  }
+  address_responder_.Start(addressText);
   SetState("listening", "等待电脑发送画面；首次使用请先连接电脑", true, false);
   while (desired_) {
+    if (!ContinueWithCurrentAddress()) break;
     AcceptWebSocket();
     CloseControlSocket();
     websocket_decoder_.Reset();
@@ -312,6 +324,7 @@ void ReceiverSession::NetworkLoop() {
       SetState("listening", "等待电脑发送画面；首次使用请先连接电脑", true, false);
     }
   }
+  address_responder_.Stop();
   CloseSockets();
   telemetry_queue_.Clear();
   decoder_recovery_.Reset();
@@ -531,6 +544,7 @@ bool ReceiverSession::RunConnectedSession() {
   if (socket < 0) return false;
   std::array<std::byte, 64U * 1024U> buffer{};
   while (desired_) {
+    if (!ContinueWithCurrentAddress()) return false;
     fd_set readSet;
     FD_ZERO(&readSet);
     FD_SET(socket, &readSet);
@@ -591,6 +605,20 @@ bool ReceiverSession::RunConnectedSession() {
       return false;
     }
   }
+  return false;
+}
+
+bool ReceiverSession::ContinueWithCurrentAddress() {
+  std::string addressText;
+  {
+    std::scoped_lock lock(state_mutex_);
+    addressText = listen_address_;
+  }
+  in_addr address{};
+  if (IsCurrentWifiIpv4(addressText, &address)) return true;
+  address_responder_.Stop();
+  desired_ = false;
+  SetState("error", "Wi-Fi 地址已变化，请重新确认后开始接收", false, false);
   return false;
 }
 

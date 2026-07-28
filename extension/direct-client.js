@@ -7,6 +7,11 @@ import {
   DIRECT_VIDEO_WIDTH,
   validateTrustedDevice
 } from "./direct-protocol.js";
+import {
+  beginDirectTransportObservation,
+  DirectTransportError,
+  finishDirectTransportObservation
+} from "./direct-network-diagnostics.js";
 
 const CONNECT_TIMEOUT_MS = 5_000;
 export const DIRECT_RECOVERY_CONNECT_TIMEOUT_MS = 1_500;
@@ -23,25 +28,35 @@ export async function pairReceiver({
   host,
   authorization,
   senderId,
-  socketFactory = (url) => new WebSocket(url)
+  socketFactory = (url) => new WebSocket(url),
+  beginTransportObservation = beginDirectTransportObservation,
+  finishTransportObservation = finishDirectTransportObservation
 }) {
-  const socket = socketFactory(createDirectWebSocketUrl(host));
-  const response = await openAndExchange(socket, {
-    type: "pair",
-    protocol: DIRECT_PROTOCOL,
-    sessionId: authorization.sessionId,
-    token: authorization.token,
-    senderId
-  }, "paired");
-  const trusted = validateTrustedDevice({
-    senderId,
-    deviceId: response.deviceId,
-    credential: response.credential,
-    host,
-    pairedAt: Date.now()
-  });
-  socket.close(1000, "pairing_complete");
-  return trusted;
+  const url = createDirectWebSocketUrl(host);
+  const observation = await beginTransportObservation(url);
+  const socket = socketFactory(url);
+  try {
+    const response = await openAndExchange(socket, {
+      type: "pair",
+      protocol: DIRECT_PROTOCOL,
+      sessionId: authorization.sessionId,
+      token: authorization.token,
+      senderId
+    }, "paired", CONNECT_TIMEOUT_MS, undefined, {
+      host,
+      observation,
+      finish: finishTransportObservation
+    });
+    return validateTrustedDevice({
+      senderId,
+      deviceId: response.deviceId,
+      credential: response.credential,
+      host,
+      pairedAt: Date.now()
+    });
+  } finally {
+    closeSocket(socket);
+  }
 }
 
 export class DirectReceiverConnection {
@@ -50,13 +65,17 @@ export class DirectReceiverConnection {
     sourceEpoch,
     socketFactory = (url) => new WebSocket(url),
     heartbeatIntervalMs = 5_000,
-    connectTimeoutMs = CONNECT_TIMEOUT_MS
+    connectTimeoutMs = CONNECT_TIMEOUT_MS,
+    beginTransportObservation = beginDirectTransportObservation,
+    finishTransportObservation = finishDirectTransportObservation
   }) {
     this.trustedDevice = validateTrustedDevice(trustedDevice);
     this.sourceEpoch = sourceEpoch;
     this.socketFactory = socketFactory;
     this.heartbeatIntervalMs = heartbeatIntervalMs;
     this.connectTimeoutMs = connectTimeoutMs;
+    this.beginTransportObservation = beginTransportObservation;
+    this.finishTransportObservation = finishTransportObservation;
     this.socket = null;
     this.authenticated = false;
     this.onControl = () => {};
@@ -69,9 +88,9 @@ export class DirectReceiverConnection {
     if (this.socket !== null) {
       throw new Error("平板连接已存在");
     }
-    const socket = this.socketFactory(
-      createDirectWebSocketUrl(this.trustedDevice.host)
-    );
+    const url = createDirectWebSocketUrl(this.trustedDevice.host);
+    const observation = await this.beginTransportObservation(url);
+    const socket = this.socketFactory(url);
     this.socket = socket;
     this.authenticated = false;
     let response;
@@ -88,7 +107,11 @@ export class DirectReceiverConnection {
         width: DIRECT_VIDEO_WIDTH,
         height: DIRECT_VIDEO_HEIGHT,
         fps: DIRECT_VIDEO_FRAMERATE
-      }, "ready", timeoutMs, signal);
+      }, "ready", timeoutMs, signal, {
+        host: this.trustedDevice.host,
+        observation,
+        finish: this.finishTransportObservation
+      });
     } catch (error) {
       if (this.socket === socket) {
         this.socket = null;
@@ -251,11 +274,14 @@ function openAndExchange(
   request,
   expectedType,
   timeoutMs = CONNECT_TIMEOUT_MS,
-  signal
+  signal,
+  transport
 ) {
   return new Promise((resolve, reject) => {
     let settled = false;
     let timeout = null;
+    let opened = false;
+    let transportVerdict = null;
     const cleanup = () => {
       if (timeout !== null) {
         clearTimeout(timeout);
@@ -279,8 +305,30 @@ function openAndExchange(
         resolve(value);
       }
     };
-    const handleOpen = () => {
-      socket.send(JSON.stringify(request));
+    const assessTransport = async (socketOutcome) => {
+      if (transportVerdict === null) {
+        transportVerdict = Promise.resolve(transport?.finish(
+          transport.observation,
+          transport.host,
+          socketOutcome
+        ));
+      }
+      return transportVerdict;
+    };
+    const handleOpen = async () => {
+      try {
+        const verdict = await assessTransport("open");
+        if (verdict && !verdict.allowAuthentication) {
+          finish(new DirectTransportError(verdict));
+          closeSocket(socket);
+          return;
+        }
+        opened = true;
+        socket.send(JSON.stringify(request));
+      } catch (error) {
+        finish(error);
+        closeSocket(socket);
+      }
     };
     const handleMessage = (event) => {
       if (typeof event.data !== "string") {
@@ -307,11 +355,22 @@ function openAndExchange(
       }
       finish(null, message);
     };
-    const handleError = () => {
-      finish(new Error("无法连接平板，请检查电脑和平板是否在同一 Wi-Fi，以及平板地址是否正确"));
+    const handleError = async () => {
+      try {
+        const verdict = await assessTransport("error");
+        finish(verdict
+          ? new DirectTransportError(verdict)
+          : new Error("Receiver WebSocket 不可达"));
+      } catch (error) {
+        finish(error);
+      }
     };
-    const handleClose = () => {
-      finish(new Error("平板在连接完成前断开"));
+    const handleClose = async () => {
+      if (opened) {
+        finish(new Error("Receiver WebSocket 已建立，但在鉴权完成前断开"));
+        return;
+      }
+      await handleError();
     };
     const handleAbort = () => {
       finish(new ReceiverRecoveryCancelledError());
@@ -319,8 +378,21 @@ function openAndExchange(
     };
 
     timeout = setTimeout(() => {
-      finish(new Error("连接平板超时"));
-      closeSocket(socket);
+      void (async () => {
+        if (opened) {
+          finish(new ReceiverProtocolError("handshake_timeout"));
+        } else {
+          try {
+            const verdict = await assessTransport("timeout");
+            finish(verdict
+              ? new DirectTransportError(verdict)
+              : new Error("连接 Receiver 超时"));
+          } catch (error) {
+            finish(error);
+          }
+        }
+        closeSocket(socket);
+      })();
     }, timeoutMs);
     if (signal?.aborted) {
       handleAbort();
@@ -409,6 +481,7 @@ function describeReceiverError(code) {
     protocol_mismatch: "电脑扩展与平板应用版本不兼容，请同时更新后重试",
     codec_unsupported: "当前平板无法播放这组视频参数",
     epoch_stale: "平板已切换到更新的页面来源",
-    invalid_response: "平板返回了无效的连接响应"
+    invalid_response: "平板返回了无效的连接响应",
+    handshake_timeout: "WebSocket 已建立，但 Receiver 鉴权响应超时"
   }[code] ?? `平板拒绝连接（${String(code ?? "unknown").slice(0, 64)}）`;
 }

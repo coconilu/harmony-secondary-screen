@@ -120,6 +120,9 @@ napi_value GetStatus(napi_env env, napi_callback_info) {
   SetBoolean(env, result, "listening", status.listening);
   SetBoolean(env, result, "connected", status.connected);
   SetBoolean(env, result, "paired", status.paired);
+  SetBoolean(env, result, "automaticAddressPublished", status.automaticAddressPublished);
+  SetBoolean(env, result, "automaticAddressConflict", status.automaticAddressConflict);
+  SetBoolean(env, result, "automaticAddressFailed", status.automaticAddressFailed);
   SetInteger(env, result, "framesDecoded", status.framesDecoded);
   SetInteger(env, result, "framesDropped", status.framesDropped);
   SetInteger(env, result, "receivedFrames", status.receivedFrames);

@@ -40,6 +40,9 @@ struct Index {
   private savedPairingVersion: number = 0;
   private savedDeviceId: string = '';
   private registeredService: mdns.LocalServiceInfo | undefined = undefined;
+  private dnsSdRegistered: boolean = false;
+  private receivingRequested: boolean = false;
+  private discoveryGeneration: number = 0;
   private receiverWindow: window.Window | undefined = undefined;
   private playbackActive: boolean = false;
 
@@ -114,6 +117,7 @@ struct Index {
 
   private refreshStatus(): void {
     const status: ReceiverStatus = hssReceiver.getStatus();
+    const wasListening: boolean = this.isListening;
     this.statusText = status.detail;
     this.isListening = status.listening;
     this.isConnected = status.connected;
@@ -124,6 +128,13 @@ struct Index {
     this.framesDropped = status.framesDropped;
     this.receivedFrames = status.receivedFrames;
     this.updatePlaybackActive(status.connected);
+    if ((wasListening || status.state === 'error') &&
+      !status.listening && this.receivingRequested) {
+      this.receivingRequested = false;
+      this.discoveryGeneration += 1;
+      void this.unregisterMdnsService();
+    }
+    this.refreshDiscoveryText(status);
     const pairing: PairingRecord = hssReceiver.getPairing();
     if ((pairing.version > this.savedPairingVersion ||
       (pairing.deviceId.length > 0 && pairing.deviceId !== this.savedDeviceId)) &&
@@ -273,16 +284,20 @@ struct Index {
       this.statusText = '这个地址不是平板当前使用的 Wi-Fi 地址';
       return;
     }
+    this.receivingRequested = true;
     await this.registerMdnsService();
   }
 
   private stopReceiver(): void {
+    this.receivingRequested = false;
+    this.discoveryGeneration += 1;
     this.updatePlaybackActive(false);
     hssReceiver.stopReceiver();
     void this.unregisterMdnsService();
   }
 
   private async registerMdnsService(): Promise<void> {
+    const generation: number = ++this.discoveryGeneration;
     const service: mdns.LocalServiceInfo = {
       serviceType: '_hwc._tcp',
       serviceName: 'harmony-web-companion',
@@ -294,16 +309,30 @@ struct Index {
       }
     };
     try {
-      this.registeredService = await mdns.addLocalService(this.abilityContext(), service);
-      this.discoveryText = '电脑通常可以自动找到这台平板';
+      const registered: mdns.LocalServiceInfo =
+        await mdns.addLocalService(this.abilityContext(), service);
+      if (generation !== this.discoveryGeneration || !this.receivingRequested) {
+        try {
+          await mdns.removeLocalService(this.abilityContext(), registered);
+        } catch (error) {
+          // The receiver stopped while registration was in flight.
+        }
+        return;
+      }
+      this.registeredService = registered;
+      this.dnsSdRegistered = true;
     } catch (error) {
-      this.registeredService = undefined;
-      this.discoveryText = `若电脑找不到平板，请在电脑端输入 ${this.listenAddress}`;
+      if (generation === this.discoveryGeneration) {
+        this.registeredService = undefined;
+        this.dnsSdRegistered = false;
+      }
     }
   }
 
   private async unregisterMdnsService(): Promise<void> {
+    this.dnsSdRegistered = false;
     if (this.registeredService === undefined) {
+      this.discoveryText = '尚未准备自动连接';
       return;
     }
     const service: mdns.LocalServiceInfo = this.registeredService;
@@ -312,6 +341,30 @@ struct Index {
       await mdns.removeLocalService(this.abilityContext(), service);
     } catch (error) {
       // Receiver socket has already stopped; stale DNS-SD cleanup is best effort.
+    }
+    this.discoveryText = '尚未准备自动连接';
+  }
+
+  private refreshDiscoveryText(status: ReceiverStatus): void {
+    if (status.automaticAddressConflict) {
+      this.discoveryText =
+        `局域网内存在同名设备；请在电脑端输入本机地址 ${this.listenAddress}`;
+      return;
+    }
+    if (status.automaticAddressPublished) {
+      this.discoveryText = this.dnsSdRegistered
+        ? '固定 .local 地址与设备服务均已发布'
+        : '固定 .local 地址已发布；设备服务列表暂不可用';
+      return;
+    }
+    if (status.automaticAddressFailed && status.listening) {
+      this.discoveryText =
+        `自动地址发布失败；请在电脑端输入本机地址 ${this.listenAddress}`;
+      return;
+    }
+    if (status.listening || this.receivingRequested) {
+      this.discoveryText = '正在检查固定 .local 地址是否可发布';
+      return;
     }
     this.discoveryText = '尚未准备自动连接';
   }

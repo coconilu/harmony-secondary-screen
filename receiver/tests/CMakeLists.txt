@@ -22,6 +22,12 @@ endif()
 add_executable(hss_receiver_lifecycle_tests receiver_lifecycle_tests.cpp)
 target_include_directories(hss_receiver_lifecycle_tests PRIVATE ../entry/src/main/cpp)
 
+add_executable(hss_receiver_mdns_protocol_tests
+  mdns_protocol_tests.cpp
+  ../entry/src/main/cpp/mdns_protocol.cpp
+)
+target_include_directories(hss_receiver_mdns_protocol_tests PRIVATE ../entry/src/main/cpp)
+
 enable_testing()
 add_test(
   NAME hss_receiver_protocol_tests
@@ -30,4 +36,8 @@ add_test(
 add_test(
   NAME hss_receiver_lifecycle_tests
   COMMAND hss_receiver_lifecycle_tests
+)
+add_test(
+  NAME hss_receiver_mdns_protocol_tests
+  COMMAND hss_receiver_mdns_protocol_tests
 )

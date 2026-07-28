@@ -8,7 +8,8 @@
     "activeTab",
     "offscreen",
     "storage",
-    "tabCapture"
+    "tabCapture",
+    "webRequest"
   ],
   "host_permissions": [
     "http://harmony-web-companion.local/*"
