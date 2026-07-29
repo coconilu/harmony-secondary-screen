@@ -13,9 +13,6 @@ import {
   DirectReceiverConnection,
   ReceiverRecoveryCancelledError
 } from "./direct-client.js";
-import {
-  isDirectObservationDiagnosticCode
-} from "./direct-network-diagnostics.js";
 import { DirectDeliveryOrchestrator } from "./direct-delivery-orchestrator.js";
 import { shouldRequestPeriodicKeyFrame } from "./keyframe-policy.js";
 
@@ -54,7 +51,6 @@ let sourceEpoch = 0;
 let directTelemetry = createDirectTelemetry();
 const directDelivery = new DirectDeliveryOrchestrator();
 let lastKeyFrameTimestampUs = Number.NaN;
-let captureSessionId = null;
 let running = false;
 let stopping = false;
 
@@ -64,16 +60,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message.type === "START_CAPTURE") {
-    startCapture(
-      message.streamId,
-      message.directInfo,
-      message.captureSessionId
-    )
+    startCapture(message.streamId, message.directInfo)
       .then((telemetry) => sendResponse({ ok: true, telemetry }))
-      .catch((error) => sendResponse({
-        ok: false,
-        ...createCaptureFailurePayload(error)
-      }));
+      .catch((error) => sendResponse({ ok: false, error: normalizeError(error) }));
     return true;
   }
 
@@ -96,16 +85,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   return false;
 });
 
-async function startCapture(streamId, directInfo, requestedCaptureSessionId) {
+async function startCapture(streamId, directInfo) {
   if (!streamId) {
     throw new Error("缺少标签页媒体流标识");
   }
-  const nextCaptureSessionId = validateCaptureSessionId(
-    requestedCaptureSessionId
-  );
 
   await stopCapture();
-  captureSessionId = nextCaptureSessionId;
   stopping = false;
   directTelemetry = createDirectTelemetry();
   directDelivery.reset();
@@ -175,7 +160,7 @@ async function consumeFrames() {
   } catch (error) {
     if (!stopping) {
       await sendToServiceWorker("CAPTURE_FAILURE", {
-        ...createCaptureFailurePayload(error),
+        error: normalizeError(error),
         telemetry: collectTelemetry()
       });
     }
@@ -202,7 +187,6 @@ function publishTelemetry() {
 
 async function stopCapture() {
   if (!running && !mediaStream && !frameReader && !receiverConnection) {
-    captureSessionId = null;
     return monitor?.sample() ?? null;
   }
 
@@ -243,7 +227,6 @@ async function stopCapture() {
   await closeReceiver();
   const telemetry = collectTelemetry();
   stopping = false;
-  captureSessionId = null;
   return telemetry;
 }
 
@@ -277,7 +260,7 @@ async function createVideoEncoder() {
       if (!stopping) {
         running = false;
         void sendToServiceWorker("CAPTURE_FAILURE", {
-          ...createCaptureFailurePayload(error, "H.264 编码失败："),
+          error: `H.264 编码失败：${normalizeError(error)}`,
           telemetry: collectTelemetry()
         });
       }
@@ -428,7 +411,7 @@ function handleEncodedChunk(chunk) {
     if (!stopping) {
       running = false;
       void sendToServiceWorker("CAPTURE_FAILURE", {
-        ...createCaptureFailurePayload(error, "发送到平板失败："),
+        error: `发送到平板失败：${normalizeError(error)}`,
         telemetry: collectTelemetry()
       });
     }
@@ -566,7 +549,7 @@ function beginReceiverRecovery(connection) {
     directTelemetry.directRecoveryLastOutcome = "failed_permanent";
     running = false;
     void sendToServiceWorker("CAPTURE_FAILURE", {
-      ...createCaptureFailurePayload(error, "平板连接恢复失败："),
+      error: `平板连接恢复失败：${normalizeError(error)}`,
       telemetry: collectTelemetry()
     });
   }).finally(() => {
@@ -596,9 +579,7 @@ function applyReceiverControl(message) {
     if (!stopping) {
       running = false;
       void sendToServiceWorker("CAPTURE_FAILURE", {
-        ...createCaptureFailurePayload(
-          `平板拒绝接收画面（${String(message.code ?? "unknown").slice(0, 64)}）`
-        ),
+        error: `平板拒绝接收画面（${String(message.code ?? "unknown").slice(0, 64)}）`,
         telemetry: collectTelemetry()
       });
     }
@@ -709,37 +690,11 @@ async function sendToServiceWorker(type, payload = {}) {
     await chrome.runtime.sendMessage({
       target: "service-worker",
       type,
-      ...payload,
-      captureSessionId
+      ...payload
     });
   } catch {
     // The service worker can be restarting. The next telemetry tick retries.
   }
-}
-
-function validateCaptureSessionId(value) {
-  if (
-    typeof value !== "string" ||
-    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value)
-  ) {
-    throw new Error("捕获会话身份无效");
-  }
-  return value;
-}
-
-function createCaptureFailurePayload(error, prefix = "") {
-  const persistentMessage = typeof error?.persistentMessage === "string"
-    ? error.persistentMessage
-    : normalizeError(error);
-  const diagnosticCode = isDirectObservationDiagnosticCode(
-    error?.diagnosticCode
-  )
-    ? error.diagnosticCode
-    : null;
-  return {
-    error: `${prefix}${persistentMessage}`,
-    diagnosticCode
-  };
 }
 
 function normalizeError(error) {

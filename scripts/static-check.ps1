@@ -56,6 +56,21 @@ try {
   }
   if ($LASTEXITCODE -ne 1) { throw "Diagnostic persistence scan failed: $LASTEXITCODE" }
 
+  $diagnosticScopeViolation = & rg -n 'AD1|diagnosticCode' `
+    extension\offscreen.js extension\service-worker.js extension\monitor.js `
+    extension\pairing-store.js extension\pending-pairing-store.js 2>$null
+  if ($LASTEXITCODE -eq 0) {
+    throw "AD1 diagnostics must remain inside direct diagnostics and the current setup popup:`n$diagnosticScopeViolation"
+  }
+  if ($LASTEXITCODE -ne 1) { throw "Diagnostic scope scan failed: $LASTEXITCODE" }
+
+  $setupDiagnosticSink = & rg -n 'console\.|chrome\.storage|storage\.(local|session|sync)' `
+    extension\setup.js 2>$null
+  if ($LASTEXITCODE -eq 0) {
+    throw "Setup diagnostics must remain DOM-only and must not use console or storage directly:`n$setupDiagnosticSink"
+  }
+  if ($LASTEXITCODE -ne 1) { throw "Setup diagnostic sink scan failed: $LASTEXITCODE" }
+
   foreach ($check in @(
     @{ Path = 'extension\offscreen.js'; Pattern = 'audio: false' },
     @{ Path = 'extension\offscreen.js'; Pattern = 'new DirectReceiverConnection' },
@@ -89,21 +104,16 @@ try {
     @{ Path = 'extension\direct-network-diagnostics.js'; Pattern = 'onCompleted.addListener' },
     @{ Path = 'extension\direct-network-diagnostics.js'; Pattern = 'if (!globalThis.chrome?.runtime?.sendMessage)' },
     @{ Path = 'extension\service-worker.js'; Pattern = 'handleDirectObservationMessage' },
-    @{ Path = 'extension\service-worker.js'; Pattern = 'TAKE_TRANSIENT_CAPTURE_FAILURE' },
-    @{ Path = 'extension\service-worker.js'; Pattern = 'isTrustedOffscreenSender' },
-    @{ Path = 'extension\service-worker.js'; Pattern = 'sanitizePersistentFailure' },
-    @{ Path = 'extension\service-worker.js'; Pattern = 'prepareOffscreenSession' },
-    @{ Path = 'extension\service-worker.js'; Pattern = 'message?.captureSessionId !== session.captureSessionId' },
-    @{ Path = 'extension\offscreen.js'; Pattern = 'createCaptureFailurePayload' },
-    @{ Path = 'extension\offscreen.js'; Pattern = 'captureSessionId' },
-    @{ Path = 'extension\monitor.js'; Pattern = 'loadTransientFailure' },
+    @{ Path = 'extension\setup.js'; Pattern = 'attemptedHost === DEFAULT_RECEIVER_HOST' },
+    @{ Path = 'extension\setup.js'; Pattern = 'error instanceof DirectTransportError' },
+    @{ Path = 'extension\setup.js'; Pattern = 'isDirectObservationDiagnosticCode(error.diagnosticCode)' },
     @{ Path = 'extension\tests\service-worker-observation.test.js'; Pattern = 'without optional origin or documentId' },
     @{ Path = 'extension\tests\direct-websocket.integration.test.js'; Pattern = 'missing runtime observation sends neither pairing nor auth credentials' },
     @{ Path = 'extension\tests\direct-websocket.integration.test.js'; Pattern = 'sends no token or credential without a private IP' },
     @{ Path = 'extension\tests\direct-network-diagnostics.test.js'; Pattern = 'diagnostic codes are stable enums and never echo supplied values' },
     @{ Path = 'extension\tests\direct-network-diagnostics.test.js'; Pattern = 'diagnoses every initial request-shape and explicit-context rejection' },
-    @{ Path = 'extension\tests\service-worker-transient-failure.test.js'; Pattern = 'binds capture messages to the active offscreen document lifecycle' },
-    @{ Path = 'extension\tests\setup-smoke.test.js'; Pattern = 'pairing shows AD1 only in the current popup and never stores it' },
+    @{ Path = 'extension\tests\setup-smoke.test.js'; Pattern = 'automatic pairing shows AD1 only in the current setup popup' },
+    @{ Path = 'extension\tests\setup-smoke.test.js'; Pattern = 'ordinary, forged, manual and successful pairing paths show no AD1' },
     @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'IsCurrentWifiIpv4' },
     @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'tcpAddress.sin_addr = address' },
     @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'std::strncmp(item->ifa_name, "wlan", 4)' },

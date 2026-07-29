@@ -129,9 +129,6 @@ test("missing runtime observation fails closed for automatic host", async () => 
       {
         code: "automatic_address_unverified",
         message:
-          "无法验证自动地址的私网归属，已拒绝发送凭据；请改用平板显示的数字 IPv4" +
-          "（诊断码：AD1|B=0|Q=not_seen|R=0|T=none|I=0|C=0|S=open）",
-        persistentMessage:
           "无法验证自动地址的私网归属，已拒绝发送凭据；请改用平板显示的数字 IPv4",
         diagnosticCode:
           "AD1|B=0|Q=not_seen|R=0|T=none|I=0|C=0|S=open",
@@ -172,8 +169,20 @@ test("diagnostic codes are stable enums and never echo supplied values", () => {
     observedAddressClass: "unresolved",
     diagnosticCode: `AD1|B=1|Q=${secret}`
   });
-  assert.match(verdict.message, /诊断码：AD1\|B=0\|Q=not_seen/);
+  assert.equal(verdict.message.includes("AD1"), false);
+  assert.match(verdict.diagnosticCode, /^AD1\|B=0\|Q=not_seen/);
   assert.equal(verdict.message.includes(secret), false);
+  assert.equal(verdict.diagnosticCode.includes(secret), false);
+
+  const manual = describeDirectTransportFailure({
+    host: "192.168.1.8",
+    socketOutcome: "error",
+    observedAddressClass: "unresolved",
+    diagnosticCode:
+      "AD1|B=1|Q=bound|R=1|T=error|I=1|C=0|S=error"
+  });
+  assert.equal("diagnosticCode" in manual, false);
+  assert.equal(manual.message.includes("AD1"), false);
 
   const connected = describeDirectTransportFailure({
     host: "harmony-web-companion.local",

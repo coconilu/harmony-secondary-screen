@@ -2,6 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { createPairingAuthorization } from "../direct-protocol.js";
+import {
+  describeDirectTransportFailure,
+  DirectRequestObserver,
+  DirectTransportError
+} from "../direct-network-diagnostics.js";
 
 const TRUSTED = {
   senderId: "019fa3cf-75c7-7000-8000-000000000001",
@@ -10,6 +15,35 @@ const TRUSTED = {
   host: "192.168.1.8",
   pairedAt: 123
 };
+
+function createAutomaticPairingFailure() {
+  const url = "ws://harmony-web-companion.local:44000/direct";
+  const initiator =
+    "chrome-extension://abcdefghijklmnopabcdefghijklmnop";
+  const context = {
+    documentId: "setup-document",
+    initiator,
+    page: "setup.html"
+  };
+  const details = {
+    requestId: "pairing-request",
+    url,
+    type: "websocket",
+    tabId: -1,
+    frameId: 0,
+    parentFrameId: -1,
+    documentId: context.documentId,
+    initiator
+  };
+  const observer = new DirectRequestObserver();
+  const attemptId = observer.begin(url, context);
+  observer.observeBefore(details);
+  observer.observeTerminal(details);
+  return new DirectTransportError(describeDirectTransportFailure({
+    host: "harmony-web-companion.local",
+    ...observer.finish(attemptId, "open", context)
+  }));
+}
 
 class FakeElement {
   constructor({ hidden = false, value = "" } = {}) {
@@ -227,22 +261,110 @@ test("forget keeps permissions.remove false visible while returning to pairing",
   );
 });
 
-test("pairing shows AD1 only in the current popup and never stores it", async (context) => {
-  const environment = createPopupEnvironment();
-  const setup = await loadSetupModule(context, environment);
-  const message =
-    "无法验证自动地址（诊断码：" +
-    "AD1|B=1|Q=shape_parent|R=1|T=completed|I=1|C=0|S=open）";
+test("automatic pairing shows AD1 only in the current setup popup", async (context) => {
+  const firstPopup = createPopupEnvironment();
+  const setup = await loadSetupModule(context, firstPopup);
+  const failure = createAutomaticPairingFailure();
   await setup.completePairing({
     async pair() {
-      throw new Error(message);
+      throw failure;
+    }
+  });
+  assert.equal(
+    firstPopup.elements.get("#error-message").textContent,
+    `${failure.message}（诊断码：${failure.diagnosticCode}）`
+  );
+  assert.equal(firstPopup.elements.get("#error-message").hidden, false);
+  assert.equal(
+    JSON.stringify([...firstPopup.sessionValues.entries()]).includes("AD1"),
+    false
+  );
+  assert.equal(
+    JSON.stringify([...firstPopup.values.entries()]).includes("AD1"),
+    false
+  );
+
+  const rebuiltPopup = createPopupEnvironment({
+    sharedState: firstPopup.state
+  });
+  await loadSetupModule(context, rebuiltPopup);
+  assert.equal(rebuiltPopup.elements.get("#error-message").hidden, true);
+  assert.equal(
+    rebuiltPopup.elements.get("#error-message").textContent.includes("AD1"),
+    false
+  );
+  assert.equal(
+    JSON.stringify([...rebuiltPopup.sessionValues.entries()]).includes("AD1"),
+    false
+  );
+  assert.equal(
+    JSON.stringify([...rebuiltPopup.values.entries()]).includes("AD1"),
+    false
+  );
+});
+
+test("ordinary, forged, manual and successful pairing paths show no AD1", async (context) => {
+  const environment = createPopupEnvironment();
+  const setup = await loadSetupModule(context, environment);
+  const diagnostic = createAutomaticPairingFailure().diagnosticCode;
+  for (const message of [
+    `普通错误 ${diagnostic}`,
+    `重复 ${diagnostic}${diagnostic}`,
+    `嵌套（诊断码：（诊断码：${diagnostic}））`
+  ]) {
+    await setup.completePairing({
+      async pair() {
+        throw new Error(message);
+      }
+    });
+    assert.equal(
+      environment.elements.get("#error-message").textContent.includes("AD1"),
+      false
+    );
+  }
+
+  environment.elements.get("#receiver-address").value = "192.168.1.8";
+  await setup.completePairing({
+    async pair() {
+      throw createAutomaticPairingFailure();
+    }
+  });
+  assert.equal(
+    environment.elements.get("#error-message").textContent.includes("AD1"),
+    false
+  );
+
+  const manualFailure = new DirectTransportError(
+    describeDirectTransportFailure({
+      host: "192.168.1.8",
+      socketOutcome: "error"
+    })
+  );
+  await setup.completePairing({
+    async pair() {
+      throw manualFailure;
     }
   });
   assert.equal(
     environment.elements.get("#error-message").textContent,
-    message
+    manualFailure.message
   );
-  assert.equal(environment.elements.get("#error-message").hidden, false);
+  assert.equal(
+    environment.elements.get("#error-message").textContent.includes("AD1"),
+    false
+  );
+
+  environment.elements.get("#receiver-address").value =
+    "harmony-web-companion.local";
+  await setup.completePairing({
+    async pair() {
+      return {
+        ...TRUSTED,
+        host: "harmony-web-companion.local"
+      };
+    }
+  });
+  assert.equal(environment.elements.get("#error-message").hidden, true);
   assert.equal(
     JSON.stringify([...environment.sessionValues.entries()]).includes("AD1"),
     false

@@ -1,6 +1,10 @@
 import qrcode from "./vendor/qrcode.mjs";
 import { pairReceiver } from "./direct-client.js";
 import {
+  DirectTransportError,
+  isDirectObservationDiagnosticCode
+} from "./direct-network-diagnostics.js";
+import {
   createPairingAuthorization,
   DEFAULT_RECEIVER_HOST,
   normalizeReceiverHost
@@ -123,12 +127,14 @@ export async function completePairing({ pair = pairReceiver } = {}) {
   errorMessage.hidden = true;
   pairButton.disabled = true;
   pairButton.textContent = "正在连接平板…";
+  let attemptedHost = null;
   try {
     if (!authorization || authorization.expiresAt <= Date.now()) {
       await refreshAuthorization();
       throw new Error("二维码已过期，请用平板扫描新二维码");
     }
     const host = normalizeReceiverHost(address.value);
+    attemptedHost = host;
     address.value = host;
     await updatePendingHost(host);
     const senderId = await getOrCreateSenderId();
@@ -145,7 +151,7 @@ export async function completePairing({ pair = pairReceiver } = {}) {
     await clearPendingState();
     await cleanupUnusedManualHostPermissions([trusted.host]);
   } catch (error) {
-    showError(error);
+    showPairingError(error, attemptedHost);
   } finally {
     pairButton.disabled = false;
     pairButton.textContent = "完成连接";
@@ -270,5 +276,22 @@ function renderQrCode(payload) {
 function showError(error) {
   errorMessage.textContent =
     error instanceof Error ? error.message : String(error);
+  errorMessage.hidden = false;
+}
+
+function showPairingError(error, attemptedHost) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes("AD1")) {
+    errorMessage.textContent = "连接平板失败";
+  } else if (
+    attemptedHost === DEFAULT_RECEIVER_HOST &&
+    error instanceof DirectTransportError &&
+    isDirectObservationDiagnosticCode(error.diagnosticCode)
+  ) {
+    errorMessage.textContent =
+      `${message}（诊断码：${error.diagnosticCode}）`;
+  } else {
+    errorMessage.textContent = message;
+  }
   errorMessage.hidden = false;
 }

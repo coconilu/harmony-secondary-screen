@@ -128,16 +128,15 @@ export function describeDirectTransportFailure({
 }
 
 function createFailureVerdict(code, persistentMessage, recoverable, diagnosticCode = null) {
-  return {
+  const verdict = {
     code,
-    message: diagnosticCode === null
-      ? persistentMessage
-      : `${persistentMessage}（诊断码：${diagnosticCode}）`,
-    persistentMessage,
-    diagnosticCode,
+    message: persistentMessage,
     allowAuthentication: false,
     recoverable
   };
+  return diagnosticCode === null
+    ? verdict
+    : { ...verdict, diagnosticCode };
 }
 
 export function createDirectObservationContext(sender, runtimeApi) {
@@ -511,7 +510,6 @@ export class DirectTransportError extends Error {
     this.name = "DirectTransportError";
     this.code = verdict.code;
     this.recoverable = verdict.recoverable;
-    this.persistentMessage = verdict.persistentMessage ?? verdict.message;
     this.diagnosticCode = isDirectObservationDiagnosticCode(
       verdict.diagnosticCode
     )
