@@ -80,7 +80,7 @@ response 才进入冲突状态。停止接收、Wi-Fi 地址或 interface index 
 | `tabCapture` | 获取用户选择标签页的媒体流 |
 | `offscreen` | 扩展弹窗关闭后持有媒体流和编码器 |
 | `storage` | 保存设备身份、凭据、连接地址和 source epoch |
-| `webRequest` | 按允许的扩展页面、可用的 documentId / initiator 与 requestId 只读观察 Receiver WebSocket 握手终态的实际地址类别；不拦截、不修改、不保存原始 IP |
+| `webRequest` | 按允许的扩展页面、浏览器可见性、扩展文档请求形状与 requestId 只读观察 Receiver WebSocket 握手终态的实际地址类别；不拦截、不修改、不保存原始 IP |
 | 固定 `.local` host permission | 只访问一个预定 Receiver 地址 |
 | 可选 `http://*/*` 声明 | Chrome match pattern 无法枚举所有 RFC1918；仅在用户输入并确认具体 IP 时请求该精确 origin |
 
@@ -88,9 +88,12 @@ response 才进入冲突状态。停止接收、Wi-Fi 地址或 interface index 
 枚举并撤销其余手动 origin，且不得把 `permissions.remove()` 的失败当成成功。
 
 扩展用 `runtime.getURL()` 只接受 `setup.html` / `offscreen.html`，发送者或 `webRequest`
-提供的可选 `id`、`origin`、`documentId`、`initiator` 一旦存在就必须匹配。Edge 缺少
-`documentId` 时，只有匹配扩展 origin 的 `initiator` 和唯一待处理 attempt 才能绑定请求；
-`initiator` 与可匹配 `documentId` 都缺失时失败关闭。BEGIN 返回的随机 attempt id 只留在调用文档
+提供的可选 `id`、`origin`、`documentId`、`initiator` 一旦可验证就必须匹配。Chrome/Edge 只向
+扩展暴露同时具备目标和 initiator host permission 的请求；在此可见性边界内，WebSocket 事件还必须
+精确满足扩展文档形状（`tabId=-1`、`frameId=0`、`parentFrameId=-1`、`type=websocket`）和目标 URL。
+当 `initiator` / `documentId` 同时缺失或 initiator 为 opaque `null` 时，只有唯一待处理 attempt
+才能绑定浏览器会话内唯一的 requestId；普通网页标签或网页 worker 不符合该形状，其他扩展请求不会
+向本扩展暴露。BEGIN 返回的随机 attempt id 只留在调用文档
 内存中，不记录、不持久化；缺少 `documentId` 的 FINISH 还必须持有该 id、来自同一允许页面且没有
 歧义。只有收到同一 requestId 的完成/失败终态、
 合并所有非空 IP 后确认固定 `.local` 落到 RFC1918 或 IPv4 link-local，才发送 QR token 或长期

@@ -33,6 +33,10 @@ function requestDetails(url, requestId, context = CONTEXT_A, extra = {}) {
   return {
     url,
     requestId,
+    type: "websocket",
+    tabId: -1,
+    frameId: 0,
+    parentFrameId: -1,
     documentId: context.documentId,
     initiator: context.initiator,
     ...extra
@@ -420,17 +424,17 @@ test("Edge-style missing documentId uses a matching initiator", async () => {
   const observer = new DirectRequestObserver();
   const url = "ws://harmony-web-companion.local:44000/direct";
   const attemptId = observer.begin(url, CONTEXT_NO_DOCUMENT);
-  observer.observeBefore({
+  observer.observeBefore(requestDetails(
     url,
-    requestId: "request-missing-context",
-    initiator: CONTEXT_NO_DOCUMENT.initiator
-  });
-  observer.observeTerminal({
+    "request-missing-context",
+    CONTEXT_NO_DOCUMENT
+  ));
+  observer.observeTerminal(requestDetails(
     url,
-    requestId: "request-missing-context",
-    initiator: CONTEXT_NO_DOCUMENT.initiator,
-    ip: "192.168.1.8"
-  });
+    "request-missing-context",
+    CONTEXT_NO_DOCUMENT,
+    { ip: "192.168.1.8" }
+  ));
   assert.deepEqual(
     await observer.finishWhenReady(
       attemptId,
@@ -445,19 +449,144 @@ test("Edge-style missing documentId uses a matching initiator", async () => {
   );
 });
 
-test("missing both webRequest initiator and matching document fails closed", async () => {
+test("Edge extension-document shape binds when optional context is absent", async () => {
   const observer = new DirectRequestObserver();
   const url = "ws://harmony-web-companion.local:44000/direct";
   const attemptId = observer.begin(url, CONTEXT_NO_DOCUMENT);
-  observer.observeBefore({
+  observer.observeBefore(requestDetails(
     url,
-    requestId: "request-without-usable-context"
-  });
-  observer.observeTerminal({
+    "request-without-optional-context",
+    CONTEXT_NO_DOCUMENT,
+    {
+      documentId: undefined,
+      initiator: undefined
+    }
+  ));
+  observer.observeTerminal(requestDetails(
     url,
-    requestId: "request-without-usable-context",
-    ip: "192.168.1.8"
-  });
+    "request-without-optional-context",
+    CONTEXT_NO_DOCUMENT,
+    {
+      documentId: undefined,
+      initiator: undefined,
+      ip: "192.168.1.8"
+    }
+  ));
+  assert.deepEqual(
+    await observer.finishWhenReady(
+      attemptId,
+      "open",
+      0,
+      CONTEXT_NO_DOCUMENT
+    ),
+    {
+      observedAddressClass: "private_ipv4",
+      socketOutcome: "open"
+    }
+  );
+});
+
+test("opaque initiator uses the bounded extension-document fallback", async () => {
+  const observer = new DirectRequestObserver();
+  const url = "ws://harmony-web-companion.local:44000/direct";
+  const attemptId = observer.begin(url, CONTEXT_NO_DOCUMENT);
+  observer.observeBefore(requestDetails(
+    url,
+    "request-opaque-initiator",
+    CONTEXT_NO_DOCUMENT,
+    {
+      documentId: undefined,
+      initiator: "null"
+    }
+  ));
+  observer.observeTerminal(requestDetails(
+    url,
+    "request-opaque-initiator",
+    CONTEXT_NO_DOCUMENT,
+    {
+      documentId: undefined,
+      initiator: "null",
+      ip: "192.168.1.8"
+    }
+  ));
+  assert.deepEqual(
+    await observer.finishWhenReady(
+      attemptId,
+      "open",
+      0,
+      CONTEXT_NO_DOCUMENT
+    ),
+    {
+      observedAddressClass: "private_ipv4",
+      socketOutcome: "open"
+    }
+  );
+});
+
+test("an external tab cannot claim the no-context fallback", async () => {
+  const observer = new DirectRequestObserver();
+  const url = "ws://harmony-web-companion.local:44000/direct";
+  const attemptId = observer.begin(url, CONTEXT_NO_DOCUMENT);
+  observer.observeBefore(requestDetails(
+    url,
+    "request-external-tab",
+    CONTEXT_NO_DOCUMENT,
+    {
+      documentId: undefined,
+      initiator: undefined,
+      tabId: 42
+    }
+  ));
+  observer.observeTerminal(requestDetails(
+    url,
+    "request-external-tab",
+    CONTEXT_NO_DOCUMENT,
+    {
+      documentId: undefined,
+      initiator: undefined,
+      tabId: 42,
+      ip: "192.168.1.8"
+    }
+  ));
+  assert.deepEqual(
+    await observer.finishWhenReady(
+      attemptId,
+      "open",
+      0,
+      CONTEXT_NO_DOCUMENT
+    ),
+    {
+      observedAddressClass: "unresolved",
+      socketOutcome: "open"
+    }
+  );
+});
+
+test("an external worker cannot claim the no-context fallback", async () => {
+  const observer = new DirectRequestObserver();
+  const url = "ws://harmony-web-companion.local:44000/direct";
+  const attemptId = observer.begin(url, CONTEXT_NO_DOCUMENT);
+  observer.observeBefore(requestDetails(
+    url,
+    "request-external-worker",
+    CONTEXT_NO_DOCUMENT,
+    {
+      documentId: undefined,
+      initiator: undefined,
+      frameId: -1
+    }
+  ));
+  observer.observeTerminal(requestDetails(
+    url,
+    "request-external-worker",
+    CONTEXT_NO_DOCUMENT,
+    {
+      documentId: undefined,
+      initiator: undefined,
+      frameId: -1,
+      ip: "192.168.1.8"
+    }
+  ));
   assert.deepEqual(
     await observer.finishWhenReady(
       attemptId,
@@ -476,17 +605,25 @@ test("another extension initiator cannot claim an Edge-style attempt", async () 
   const observer = new DirectRequestObserver();
   const url = "ws://harmony-web-companion.local:44000/direct";
   const attemptId = observer.begin(url, CONTEXT_NO_DOCUMENT);
-  observer.observeBefore({
+  observer.observeBefore(requestDetails(
     url,
-    requestId: "request-other-extension",
-    initiator: "chrome-extension://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-  });
-  observer.observeTerminal({
+    "request-other-extension",
+    CONTEXT_NO_DOCUMENT,
+    {
+      documentId: undefined,
+      initiator: "chrome-extension://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  ));
+  observer.observeTerminal(requestDetails(
     url,
-    requestId: "request-other-extension",
-    initiator: "chrome-extension://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-    ip: "192.168.1.8"
-  });
+    "request-other-extension",
+    CONTEXT_NO_DOCUMENT,
+    {
+      documentId: undefined,
+      initiator: "chrome-extension://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      ip: "192.168.1.8"
+    }
+  ));
   assert.deepEqual(
     await observer.finishWhenReady(
       attemptId,
@@ -567,6 +704,43 @@ test("a terminal event without any address remains unresolved", async () => {
     {
       observedAddressClass: "unresolved",
       socketOutcome: "error"
+    }
+  );
+});
+
+test("a different requestId cannot provide the private terminal result", async () => {
+  const observer = new DirectRequestObserver();
+  const url = "ws://harmony-web-companion.local:44000/direct";
+  const attemptId = observer.begin(url, CONTEXT_NO_DOCUMENT);
+  observer.observeBefore(requestDetails(
+    url,
+    "request-bound",
+    CONTEXT_NO_DOCUMENT,
+    {
+      documentId: undefined,
+      initiator: undefined
+    }
+  ));
+  observer.observeTerminal(requestDetails(
+    url,
+    "request-not-bound",
+    CONTEXT_NO_DOCUMENT,
+    {
+      documentId: undefined,
+      initiator: undefined,
+      ip: "192.168.1.8"
+    }
+  ));
+  assert.deepEqual(
+    await observer.finishWhenReady(
+      attemptId,
+      "open",
+      0,
+      CONTEXT_NO_DOCUMENT
+    ),
+    {
+      observedAddressClass: "unresolved",
+      socketOutcome: "open"
     }
   );
 });

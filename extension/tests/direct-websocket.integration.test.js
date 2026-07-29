@@ -9,6 +9,10 @@ import {
   pairReceiver,
   ReceiverRecoveryCancelledError
 } from "../direct-client.js";
+import {
+  describeDirectTransportFailure,
+  DirectRequestObserver
+} from "../direct-network-diagnostics.js";
 import { createDirectVideoMessage } from "../direct-protocol.js";
 
 globalThis.WebSocket = WebSocket;
@@ -20,6 +24,54 @@ const TEST_TRANSPORT_OBSERVATION = Object.freeze({
     recoverable: true
   })
 });
+
+const EDGE_OBSERVATION_CONTEXT = Object.freeze({
+  documentId: null,
+  initiator: "chrome-extension://abcdefghijklmnopabcdefghijklmnop",
+  page: "setup.html"
+});
+
+function createEdgeFallbackTransport(observedIp) {
+  const observer = new DirectRequestObserver();
+  const pending = [];
+  let requestSequence = 0;
+  return {
+    beginTransportObservation: async (url) => {
+      const attemptId = observer.begin(url, EDGE_OBSERVATION_CONTEXT);
+      pending.push({ attemptId, url });
+      return attemptId;
+    },
+    finishTransportObservation: async (attemptId, host, socketOutcome) =>
+      describeDirectTransportFailure({
+        host,
+        ...observer.finish(
+          attemptId,
+          socketOutcome,
+          EDGE_OBSERVATION_CONTEXT
+        )
+      }),
+    wrapSocketFactory(actualUrl) {
+      return () => {
+        const attempt = pending.shift();
+        assert.ok(attempt);
+        requestSequence += 1;
+        const details = {
+          requestId: `edge-fallback-${requestSequence}`,
+          url: attempt.url,
+          type: "websocket",
+          tabId: -1,
+          frameId: 0,
+          parentFrameId: -1
+        };
+        observer.observeBefore(details);
+        observer.observeTerminal(observedIp === undefined
+          ? details
+          : { ...details, ip: observedIp });
+        return new WebSocket(actualUrl);
+      };
+    }
+  };
+}
 
 test("QR authorization pairs with a fake Receiver and returns stable credentials", async (context) => {
   const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
@@ -84,6 +136,97 @@ test("expired QR is reported as authorization expiry, not a network failure", as
     }),
     /二维码或短码已经过期，请重新生成/
   );
+});
+
+test("Edge no-context fallback sends pairing only after a private IP verdict", async (context) => {
+  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  context.after(() => server.close());
+  await once(server, "listening");
+  const address = server.address();
+  assert.equal(typeof address, "object");
+  let receivedRequests = 0;
+  server.once("connection", (socket) => {
+    socket.once("message", (data) => {
+      receivedRequests += 1;
+      const pair = JSON.parse(data.toString("utf8"));
+      assert.equal(pair.token, "2".repeat(64));
+      socket.send(JSON.stringify({
+        type: "paired",
+        protocol: 4,
+        deviceId: "00112233445566778899aabbccddeeff",
+        credential: "a".repeat(64)
+      }));
+    });
+  });
+  const transport = createEdgeFallbackTransport("192.168.1.8");
+  const trusted = await pairReceiver({
+    ...transport,
+    host: "harmony-web-companion.local",
+    authorization: {
+      sessionId: "1".repeat(32),
+      token: "2".repeat(64)
+    },
+    senderId: "019fa3cf-75c7-7000-8000-000000000001",
+    socketFactory: transport.wrapSocketFactory(
+      `ws://127.0.0.1:${address.port}`
+    )
+  });
+  assert.equal(receivedRequests, 1);
+  assert.equal(trusted.credential, "a".repeat(64));
+});
+
+test("Edge fallback sends no token or credential without a private IP", async (context) => {
+  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  context.after(() => server.close());
+  await once(server, "listening");
+  const address = server.address();
+  assert.equal(typeof address, "object");
+  let receivedRequests = 0;
+  server.on("connection", (socket) => {
+    socket.on("message", () => {
+      receivedRequests += 1;
+    });
+  });
+  const actualUrl = `ws://127.0.0.1:${address.port}`;
+
+  for (const observedIp of [undefined, "203.0.113.8"]) {
+    const pairingTransport = createEdgeFallbackTransport(observedIp);
+    await assert.rejects(
+      pairReceiver({
+        ...pairingTransport,
+        host: "harmony-web-companion.local",
+        authorization: {
+          sessionId: "1".repeat(32),
+          token: "2".repeat(64)
+        },
+        senderId: "019fa3cf-75c7-7000-8000-000000000001",
+        socketFactory: pairingTransport.wrapSocketFactory(actualUrl)
+      }),
+      /已拒绝/
+    );
+
+    const authTransport = createEdgeFallbackTransport(observedIp);
+    const connection = new DirectReceiverConnection({
+      ...authTransport,
+      trustedDevice: {
+        senderId: "019fa3cf-75c7-7000-8000-000000000001",
+        deviceId: "00112233445566778899aabbccddeeff",
+        credential: "a".repeat(64),
+        host: "harmony-web-companion.local",
+        pairedAt: 1
+      },
+      sourceEpoch: 9,
+      socketFactory: authTransport.wrapSocketFactory(actualUrl),
+      heartbeatIntervalMs: 60_000
+    });
+    await assert.rejects(
+      connection.connect(),
+      /已拒绝/
+    );
+    assert.equal(connection.connected, false);
+  }
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(receivedRequests, 0);
 });
 
 test("missing runtime observation sends neither pairing nor auth credentials", async (context) => {

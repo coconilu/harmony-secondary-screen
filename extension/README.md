@@ -41,8 +41,11 @@ Edge 首次请求手动私网 IP 权限时可能关闭 popup。扩展会先把�
 
 `webRequest` 不使用 blocking 能力，不修改请求，不读取页面流量。扩展通过
 `runtime.getURL()` 规范化并只接受 `setup.html` 或 `offscreen.html`；发送者和请求的可选
-`id`、`origin`、`documentId`、`initiator` 存在时必须匹配。Edge 缺少 `documentId` 时，
-只有匹配扩展 origin 的 `initiator` 与唯一待处理 attempt 才能绑定请求；两者都不可用时拒绝。
+`id`、`origin`、`documentId`、`initiator` 可验证时必须匹配。Chrome/Edge 只暴露扩展同时拥有
+目标和 initiator host permission 的请求；当 `initiator` / `documentId` 同时缺失或 initiator
+为 opaque `null` 时，还必须满足 `tabId=-1`、`frameId=0`、`parentFrameId=-1`、
+`type=websocket` 的扩展文档请求形状、目标 URL 精确匹配且只有一个待处理 attempt。普通网页标签、
+网页 worker 和其他扩展不能使用该回退。
 随机 attempt id 只返回给发起文档且不记录、不持久化；无 `documentId` 的 FINISH 仍须持有该 id、
 来自同一允许页面且没有歧义。随后按同一 `requestId` 关联响应开始、完成与失败事件。只有观察到
 `onCompleted` / `onErrorOccurred`

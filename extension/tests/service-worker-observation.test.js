@@ -28,6 +28,18 @@ function edgeSender(page = "setup.html") {
   };
 }
 
+function edgeRequest(requestId, extra = {}) {
+  return {
+    requestId,
+    url: DIRECT_URL,
+    type: "websocket",
+    tabId: -1,
+    frameId: 0,
+    parentFrameId: -1,
+    ...extra
+  };
+}
+
 test("service worker accepts an Edge sender without optional origin or documentId", async () => {
   const observer = new DirectRequestObserver();
   const begin = dispatch(observer, {
@@ -38,17 +50,10 @@ test("service worker accepts an Edge sender without optional origin or documentI
   assert.equal(begin.keepChannelOpen, false);
   assert.equal(begin.response.ok, true);
 
-  observer.observeBefore({
-    requestId: "edge-request",
-    url: DIRECT_URL,
-    initiator: EXTENSION_ORIGIN
-  });
-  observer.observeTerminal({
-    requestId: "edge-request",
-    url: DIRECT_URL,
-    initiator: EXTENSION_ORIGIN,
+  observer.observeBefore(edgeRequest("edge-request"));
+  observer.observeTerminal(edgeRequest("edge-request", {
     ip: "192.168.1.8"
-  });
+  }));
 
   const finish = dispatch(observer, {
     type: "FINISH_DIRECT_OBSERVATION",
@@ -102,17 +107,10 @@ test("service worker keeps no-document attempts fail-closed when ambiguous", asy
     type: "BEGIN_DIRECT_OBSERVATION",
     url: DIRECT_URL
   }, edgeSender());
-  observer.observeBefore({
-    requestId: "ambiguous-request",
-    url: DIRECT_URL,
-    initiator: EXTENSION_ORIGIN
-  });
-  observer.observeTerminal({
-    requestId: "ambiguous-request",
-    url: DIRECT_URL,
-    initiator: EXTENSION_ORIGIN,
+  observer.observeBefore(edgeRequest("ambiguous-request"));
+  observer.observeTerminal(edgeRequest("ambiguous-request", {
     ip: "192.168.1.8"
-  });
+  }));
 
   for (const attemptId of [
     first.response.attemptId,
@@ -140,17 +138,10 @@ test("service worker rejects a wrong FINISH page without consuming the attempt",
     type: "BEGIN_DIRECT_OBSERVATION",
     url: DIRECT_URL
   }, edgeSender());
-  observer.observeBefore({
-    requestId: "finish-request",
-    url: DIRECT_URL,
-    initiator: EXTENSION_ORIGIN
-  });
-  observer.observeTerminal({
-    requestId: "finish-request",
-    url: DIRECT_URL,
-    initiator: EXTENSION_ORIGIN,
+  observer.observeBefore(edgeRequest("finish-request"));
+  observer.observeTerminal(edgeRequest("finish-request", {
     ip: "192.168.1.8"
-  });
+  }));
 
   const wrongFinish = dispatch(observer, {
     type: "FINISH_DIRECT_OBSERVATION",

@@ -7,6 +7,9 @@ import {
 const OBSERVATION_TTL_MS = 15_000;
 const RESULT_WAIT_MS = 1_000;
 const RESULT_POLL_MS = 10;
+const EXTENSION_DOCUMENT_TAB_ID = -1;
+const EXTENSION_DOCUMENT_FRAME_ID = 0;
+const EXTENSION_DOCUMENT_PARENT_FRAME_ID = -1;
 const OBSERVATION_PAGE_PATHS = Object.freeze([
   "setup.html",
   "offscreen.html"
@@ -457,7 +460,12 @@ function validateObservationContext(value) {
 }
 
 function matchesInitialEventContext(attempt, details) {
-  if (details?.url !== attempt.url) return false;
+  if (
+    details?.url !== attempt.url ||
+    !hasExtensionDocumentRequestShape(details)
+  ) {
+    return false;
+  }
   if (
     hasInvalidOptionalString(details, "initiator") ||
     hasInvalidOptionalString(details, "documentId")
@@ -476,12 +484,21 @@ function matchesInitialEventContext(attempt, details) {
   ) {
     return false;
   }
-  return eventInitiator === attempt.initiator ||
-    (eventDocumentId !== null && eventDocumentId === attempt.documentId);
+  // Chrome/Edge only exposes requests for which this extension has host
+  // permission to both the target and initiator. An extension document
+  // request has no tab and uses its top-level frame; with one pending attempt,
+  // that browser visibility boundary is sufficient when optional initiator
+  // and documentId are both omitted.
+  return true;
 }
 
 function matchesBoundEventContext(attempt, details) {
-  if (details?.url !== attempt.url) return false;
+  if (
+    details?.url !== attempt.url ||
+    !hasExtensionDocumentRequestShape(details)
+  ) {
+    return false;
+  }
   if (
     hasInvalidOptionalString(details, "initiator") ||
     hasInvalidOptionalString(details, "documentId")
@@ -537,6 +554,13 @@ function hasInvalidOptionalString(source, key) {
     (typeof source[key] !== "string" || source[key].length === 0);
 }
 
+function hasExtensionDocumentRequestShape(details) {
+  return details?.type === "websocket" &&
+    details?.tabId === EXTENSION_DOCUMENT_TAB_ID &&
+    details?.frameId === EXTENSION_DOCUMENT_FRAME_ID &&
+    details?.parentFrameId === EXTENSION_DOCUMENT_PARENT_FRAME_ID;
+}
+
 function optionalUrl(value) {
   if (value === undefined || value === null || value === "") return null;
   try {
@@ -548,6 +572,7 @@ function optionalUrl(value) {
 
 function optionalOrigin(value) {
   if (value === undefined || value === null || value === "") return null;
+  if (value === "null") return null;
   try {
     return canonicalOrigin(new URL(String(value)));
   } catch {

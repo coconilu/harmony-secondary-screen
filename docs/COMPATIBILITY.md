@@ -18,8 +18,11 @@
 新增的 `webRequest` 按允许的扩展页面、可用的 `MessageSender.documentId`、请求
 `documentId` / `initiator` 与同一 requestId 只读观察项目 WebSocket 握手响应及完成/失败终态，
 不使用 blocking 能力、不读取页面请求、不保存原始 IP，也不扩大 host permission。这些发送者与
-请求字段都是可选值：字段存在时必须匹配；Edge 缺少 `documentId` 时要求匹配扩展 origin 的
-`initiator` 且只有一个待处理 attempt；两种请求上下文都不可用、终态缺失或没有可选 `ip` 时仍失败关闭。
+请求字段都是可选值：可验证字段存在时必须匹配。Chrome/Edge 只暴露扩展同时拥有目标和 initiator
+host permission 的请求；若 `initiator` / `documentId` 都缺失或 initiator 为 opaque `null`，
+还必须满足 `tabId=-1`、`frameId=0`、`parentFrameId=-1`、`type=websocket` 的扩展文档请求形状、
+目标 URL 精确匹配且只有一个待处理 attempt，随后只接受同一 requestId 的终态。普通网页标签、网页
+worker、其他扩展、歧义并发、终态缺失或没有可选 `ip` 时仍失败关闭。
 扩展运行时消息/观测 API 缺失时也失败关闭，不得把“无法观测”降级为自动地址已验证。
 
 Edge 143+ 的 Local Network Access 行为仍可能变化，必须在目标 Edge 版本验证 WebSocket。不得用
