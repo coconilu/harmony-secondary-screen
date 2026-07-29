@@ -86,6 +86,7 @@ try {
     @{ Path = 'receiver\entry\src\main\ets\pages\Index.ets'; Pattern = 'mdns.addLocalService' },
     @{ Path = 'receiver\entry\src\main\ets\pages\Index.ets'; Pattern = 'preferences.getPreferences' },
     @{ Path = 'receiver\entry\src\main\ets\pages\Index.ets'; Pattern = 'PLAYBACK_ACTIVE_EVENT' },
+    @{ Path = 'receiver\entry\src\main\ets\pages\Index.ets'; Pattern = 'Scroll()' },
     @{ Path = 'receiver\entry\src\main\ets\entryability\EntryAbility.ets'; Pattern = 'setWindowKeepScreenOn' },
     @{ Path = 'receiver\entry\src\main\ets\entryability\EntryAbility.ets'; Pattern = 'onWindowStageDestroy' },
     @{ Path = 'receiver\entry\src\main\ets\entryability\EntryAbility.ets'; Pattern = 'onAppForeground' },
