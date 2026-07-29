@@ -54,6 +54,7 @@ let sourceEpoch = 0;
 let directTelemetry = createDirectTelemetry();
 const directDelivery = new DirectDeliveryOrchestrator();
 let lastKeyFrameTimestampUs = Number.NaN;
+let captureSessionId = null;
 let running = false;
 let stopping = false;
 
@@ -63,7 +64,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message.type === "START_CAPTURE") {
-    startCapture(message.streamId, message.directInfo)
+    startCapture(
+      message.streamId,
+      message.directInfo,
+      message.captureSessionId
+    )
       .then((telemetry) => sendResponse({ ok: true, telemetry }))
       .catch((error) => sendResponse({
         ok: false,
@@ -91,12 +96,16 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   return false;
 });
 
-async function startCapture(streamId, directInfo) {
+async function startCapture(streamId, directInfo, requestedCaptureSessionId) {
   if (!streamId) {
     throw new Error("缺少标签页媒体流标识");
   }
+  const nextCaptureSessionId = validateCaptureSessionId(
+    requestedCaptureSessionId
+  );
 
   await stopCapture();
+  captureSessionId = nextCaptureSessionId;
   stopping = false;
   directTelemetry = createDirectTelemetry();
   directDelivery.reset();
@@ -193,6 +202,7 @@ function publishTelemetry() {
 
 async function stopCapture() {
   if (!running && !mediaStream && !frameReader && !receiverConnection) {
+    captureSessionId = null;
     return monitor?.sample() ?? null;
   }
 
@@ -233,6 +243,7 @@ async function stopCapture() {
   await closeReceiver();
   const telemetry = collectTelemetry();
   stopping = false;
+  captureSessionId = null;
   return telemetry;
 }
 
@@ -698,11 +709,22 @@ async function sendToServiceWorker(type, payload = {}) {
     await chrome.runtime.sendMessage({
       target: "service-worker",
       type,
-      ...payload
+      ...payload,
+      captureSessionId
     });
   } catch {
     // The service worker can be restarting. The next telemetry tick retries.
   }
+}
+
+function validateCaptureSessionId(value) {
+  if (
+    typeof value !== "string" ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value)
+  ) {
+    throw new Error("捕获会话身份无效");
+  }
+  return value;
 }
 
 function createCaptureFailurePayload(error, prefix = "") {

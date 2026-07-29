@@ -82,8 +82,10 @@ origin/initiator、token、短码、credential、网页标题/URL或精确时间
 失败当下已打开的监控页或紧接着第一次打开监控页应显示 AD1；关闭后重新打开只能看到不含 AD1
 的基准错误，导出结果、session state 与事件列表也不得包含 AD1。setup 配对失败同样只在当前
 popup 显示，关闭后不保留诊断码。捕获页以独立字段传递基准错误与合法诊断码；service worker
-不得从错误文本反向提取诊断码，并且只接受扩展自身精确 `offscreen.html` 的捕获消息。重复、嵌套、
-内嵌或伪造的 AD1 文本不得进入持久状态，也不得获得一次性诊断展示资格。
+不得从错误文本反向提取诊断码，并且只接受扩展自身精确 `offscreen.html` 的捕获消息。每次捕获需
+绑定唯一活动 `DocumentContext.documentId` 和本轮随机会话能力；文档 ID 存在时必须精确匹配，
+Edge 省略时仍须匹配本轮能力，关闭、重建、重置或新 START 后旧能力必须失效。重复、嵌套、内嵌
+或伪造的 AD1 文本不得进入持久状态，也不得获得一次性诊断展示资格。
 
 每次记录：Receiver 与扩展 exact commit、Windows/Edge/HarmonyOS 版本、DNS-SD 注册状态、固定 A
 发布/冲突状态、Windows 解析到的地址类别、WebSocket 连接耗时和用户可见结果。不得保存私网地址

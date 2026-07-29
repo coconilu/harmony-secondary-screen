@@ -17,6 +17,7 @@ const CAPTURABLE_SCHEMES = new Set(["http:", "https:"]);
 let updateQueue = Promise.resolve();
 let startInFlight = false;
 let transientCaptureFailure = null;
+let activeOffscreenSession = null;
 const directRequestObserver = new DirectRequestObserver();
 
 installDirectRequestObserver(directRequestObserver, chrome.webRequest);
@@ -71,7 +72,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "CAPTURE_TELEMETRY") {
-    if (!isTrustedOffscreenSender(sender)) {
+    if (!isTrustedOffscreenSender(message, sender)) {
       sendResponse({ ok: false, error: "拒绝非捕获页遥测" });
       return false;
     }
@@ -81,7 +82,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "CAPTURE_ENDED") {
-    if (!isTrustedOffscreenSender(sender)) {
+    if (!isTrustedOffscreenSender(message, sender)) {
       sendResponse({ ok: false, error: "拒绝非捕获页结束事件" });
       return false;
     }
@@ -91,7 +92,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "CAPTURE_FAILURE") {
-    if (!isTrustedOffscreenSender(sender)) {
+    if (!isTrustedOffscreenSender(message, sender)) {
       sendResponse({ ok: false, error: "拒绝非捕获页失败事件" });
       return false;
     }
@@ -163,12 +164,13 @@ async function startProbeFromAction(tab) {
     await updateAction("starting");
 
     const streamId = await streamIdPromise;
-    await ensureOffscreenDocument();
+    const captureSessionId = await prepareOffscreenSession();
 
     const response = await chrome.runtime.sendMessage({
       target: "offscreen",
       type: "START_CAPTURE",
       streamId,
+      captureSessionId,
       directInfo: {
         trustedDevice,
         sourceEpoch
@@ -203,6 +205,7 @@ async function startProbeFromAction(tab) {
 }
 
 async function stopProbe(reason) {
+  invalidateOffscreenSession();
   await updateState((state) => ({
     ...state,
     mode: "stopping",
@@ -245,6 +248,7 @@ async function stopProbe(reason) {
 
 async function resetProbe() {
   transientCaptureFailure = null;
+  invalidateOffscreenSession();
   if (await hasOffscreenDocument()) {
     try {
       await chrome.runtime.sendMessage({
@@ -339,6 +343,7 @@ async function applyTelemetry(telemetry, options = {}) {
 }
 
 async function finishUnexpectedCapture(reason, telemetry) {
+  invalidateOffscreenSession();
   const stoppedAt = Date.now();
   const state = await updateState((current) => {
     const next = {
@@ -366,6 +371,7 @@ async function failProbe(
   telemetry = null,
   diagnosticCode = null
 ) {
+  invalidateOffscreenSession();
   const persistentMessage = sanitizePersistentFailure(errorMessage);
   transientCaptureFailure = formatTransientCaptureFailure(
     persistentMessage,
@@ -432,8 +438,31 @@ function formatTransientCaptureFailure(persistentMessage, diagnosticCode) {
     : null;
 }
 
-function isTrustedOffscreenSender(sender) {
-  return isTrustedExtensionPageSender(sender, "offscreen.html");
+function isTrustedOffscreenSender(message, sender) {
+  if (!isTrustedExtensionPageSender(sender, "offscreen.html")) {
+    return false;
+  }
+  const session = activeOffscreenSession;
+  if (
+    session === null ||
+    message?.captureSessionId !== session.captureSessionId
+  ) {
+    return false;
+  }
+  if (sender.documentId === undefined) {
+    return true;
+  }
+  if (
+    typeof sender.documentId !== "string" ||
+    sender.documentId.trim().length === 0
+  ) {
+    return false;
+  }
+  if (session.documentId === null) {
+    session.documentId = sender.documentId;
+    return true;
+  }
+  return sender.documentId === session.documentId;
 }
 
 function isTrustedExtensionPageSender(sender, page) {
@@ -461,25 +490,58 @@ function getRuntimeOrigin() {
   return `${runtimeUrl.protocol}//${runtimeUrl.host}`;
 }
 
-async function ensureOffscreenDocument() {
-  if (await hasOffscreenDocument()) {
-    return;
-  }
+async function prepareOffscreenSession() {
+  invalidateOffscreenSession();
+  const context = await ensureOffscreenDocument();
+  const documentId = normalizeOffscreenDocumentId(context.documentId);
+  const captureSessionId = crypto.randomUUID();
+  activeOffscreenSession = {
+    captureSessionId,
+    documentId
+  };
+  return captureSessionId;
+}
 
-  await chrome.offscreen.createDocument({
-    url: "offscreen.html",
-    reasons: ["USER_MEDIA"],
-    justification: "持有用户主动选择的标签页视频流并统计帧是否持续到达"
-  });
+function invalidateOffscreenSession() {
+  activeOffscreenSession = null;
+}
+
+function normalizeOffscreenDocumentId(value) {
+  if (value === undefined) {
+    return null;
+  }
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error("无法确认当前捕获页文档身份");
+  }
+  return value;
+}
+
+async function ensureOffscreenDocument() {
+  let contexts = await getOffscreenContexts();
+  if (contexts.length === 0) {
+    await chrome.offscreen.createDocument({
+      url: "offscreen.html",
+      reasons: ["USER_MEDIA"],
+      justification: "持有用户主动选择的标签页视频流并统计帧是否持续到达"
+    });
+    contexts = await getOffscreenContexts();
+  }
+  if (contexts.length !== 1) {
+    throw new Error("无法唯一确认当前捕获页文档");
+  }
+  return contexts[0];
 }
 
 async function hasOffscreenDocument() {
+  return (await getOffscreenContexts()).length > 0;
+}
+
+async function getOffscreenContexts() {
   const offscreenUrl = chrome.runtime.getURL("offscreen.html");
-  const contexts = await chrome.runtime.getContexts({
+  return chrome.runtime.getContexts({
     contextTypes: ["OFFSCREEN_DOCUMENT"],
     documentUrls: [offscreenUrl]
   });
-  return contexts.length > 0;
 }
 
 function validateCapturableTab(tab) {
