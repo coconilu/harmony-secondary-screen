@@ -527,7 +527,9 @@ struct Index {
         .borderRadius(20)
         .border({ width: 1, color: $r('sys.color.ohos_id_color_list_separator') })
 
-        Column({ space: 14 }) {
+        Column() {
+          Scroll() {
+            Column({ space: 14 }) {
           Text('连接电脑')
             .fontSize(20)
             .fontWeight(FontWeight.Bold)
@@ -640,20 +642,28 @@ struct Index {
               .fontSize(12)
               .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
               .lineHeight(18)
+            }
+            .alignItems(HorizontalAlign.Start)
+            .width('100%')
+            .padding(12)
+            .backgroundColor($r('sys.color.ohos_id_color_component_normal'))
+            .borderRadius(12)
+            }
+            .alignItems(HorizontalAlign.Start)
+            .width('100%')
+            .padding(18)
           }
-          .alignItems(HorizontalAlign.Start)
           .width('100%')
-          .padding(12)
-          .backgroundColor($r('sys.color.ohos_id_color_component_normal'))
-          .borderRadius(12)
-      }
-      .alignItems(HorizontalAlign.Start)
-      .width(340)
-      .height('100%')
-      .padding(18)
-      .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
-      .borderRadius(20)
-      .border({ width: 1, color: $r('sys.color.ohos_id_color_list_separator') })
+          .layoutWeight(1)
+          .scrollable(ScrollDirection.Vertical)
+          .scrollBar(BarState.Auto)
+        }
+        .width(340)
+        .height('100%')
+        .backgroundColor($r('sys.color.ohos_id_color_sub_background'))
+        .borderRadius(20)
+        .border({ width: 1, color: $r('sys.color.ohos_id_color_list_separator') })
+        .clip(true)
       }
       .width('100%')
       .layoutWeight(1)
