@@ -7,6 +7,10 @@ import {
 const OBSERVATION_TTL_MS = 15_000;
 const RESULT_WAIT_MS = 1_000;
 const RESULT_POLL_MS = 10;
+const OBSERVATION_PAGE_PATHS = Object.freeze([
+  "setup.html",
+  "offscreen.html"
+]);
 
 export function classifyObservedAddress(value) {
   const octets = String(value ?? "").split(".");
@@ -95,78 +99,148 @@ export function describeDirectTransportFailure({
   };
 }
 
+export function createDirectObservationContext(sender, runtimeApi) {
+  const extensionId = String(runtimeApi?.id ?? "");
+  const documentId = String(sender?.documentId ?? "");
+  const initiator = `chrome-extension://${extensionId}`;
+  if (typeof runtimeApi?.getURL !== "function") {
+    throw new Error("自动地址检查无法确认扩展运行时来源");
+  }
+  const allowedUrls = new Set(
+    OBSERVATION_PAGE_PATHS.map((path) => runtimeApi.getURL(path))
+  );
+  if (
+    extensionId.length === 0 ||
+    sender?.id !== extensionId ||
+    documentId.length === 0 ||
+    sender?.origin !== initiator ||
+    !allowedUrls.has(sender?.url)
+  ) {
+    throw new Error("自动地址检查只接受扩展配对页或捕获页的文档上下文");
+  }
+  return Object.freeze({
+    documentId,
+    initiator
+  });
+}
+
 export class DirectRequestObserver {
   constructor({ now = () => Date.now() } = {}) {
     this.now = now;
     this.attempts = new Map();
   }
 
-  begin(url) {
+  begin(url, context) {
     this.prune();
     const parsed = validateDirectUrl(url);
+    const validatedContext = validateObservationContext(context);
     const attemptId = crypto.randomUUID();
     this.attempts.set(attemptId, {
       url: parsed.href,
+      ...validatedContext,
       requestId: null,
       observedAddressClass: "unresolved",
       addressObserved: false,
+      terminalObserved: false,
+      contextInvalid: false,
       expiresAt: this.now() + OBSERVATION_TTL_MS
     });
     return attemptId;
   }
 
   observeBefore(details) {
-    const candidate = [...this.attempts.entries()]
+    if (details?.requestId === undefined) return;
+    const candidates = [...this.attempts.entries()]
       .filter(([, attempt]) =>
         attempt.requestId === null &&
         attempt.url === details?.url &&
+        matchesEventContext(attempt, details) &&
         attempt.expiresAt >= this.now())
-      .at(0);
-    if (!candidate) return;
-    candidate[1].requestId = String(details.requestId);
+    if (candidates.length !== 1) {
+      for (const [, attempt] of candidates) {
+        attempt.contextInvalid = true;
+      }
+      return;
+    }
+    candidates[0][1].requestId = String(details.requestId);
   }
 
-  observeAddress(details) {
+  observeResponse(details) {
+    this.observeAddress(details, false);
+  }
+
+  observeTerminal(details) {
+    this.observeAddress(details, true);
+  }
+
+  observeAddress(details, terminal) {
     const attempt = [...this.attempts.values()].find(
       (candidate) => candidate.requestId === String(details?.requestId)
     );
     if (!attempt) return;
-    if (!details?.ip) return;
-    const observedAddressClass = classifyObservedAddress(details.ip);
-    if (
-      attempt.addressObserved &&
-      attempt.observedAddressClass !== observedAddressClass
-    ) {
-      attempt.observedAddressClass = "non_private";
-    } else {
-      attempt.observedAddressClass = observedAddressClass;
+    if (!matchesEventContext(attempt, details)) {
+      attempt.contextInvalid = true;
+    } else if (details?.ip) {
+      const observedAddressClass = classifyObservedAddress(details.ip);
+      if (
+        attempt.addressObserved &&
+        attempt.observedAddressClass !== observedAddressClass
+      ) {
+        attempt.observedAddressClass = "non_private";
+      } else {
+        attempt.observedAddressClass = observedAddressClass;
+      }
+      attempt.addressObserved = true;
     }
-    attempt.addressObserved = true;
+    if (terminal) attempt.terminalObserved = true;
   }
 
-  finish(attemptId, socketOutcome) {
+  finish(attemptId, socketOutcome, context) {
     const attempt = this.attempts.get(String(attemptId));
-    if (!attempt || attempt.expiresAt < this.now()) {
+    if (!attempt || !matchesObservationContext(attempt, context)) {
       return {
         observedAddressClass: "unresolved",
         socketOutcome
       };
     }
     this.attempts.delete(String(attemptId));
+    if (
+      attempt.expiresAt < this.now() ||
+      attempt.requestId === null ||
+      !attempt.terminalObserved ||
+      attempt.contextInvalid
+    ) {
+      return {
+        observedAddressClass: "unresolved",
+        socketOutcome
+      };
+    }
     return {
       observedAddressClass: attempt.observedAddressClass,
       socketOutcome
     };
   }
 
-  async finishWhenReady(attemptId, socketOutcome, waitMs = RESULT_WAIT_MS) {
+  async finishWhenReady(
+    attemptId,
+    socketOutcome,
+    waitMs = RESULT_WAIT_MS,
+    context
+  ) {
+    const attempt = this.attempts.get(String(attemptId));
+    if (!attempt || !matchesObservationContext(attempt, context)) {
+      return {
+        observedAddressClass: "unresolved",
+        socketOutcome
+      };
+    }
     const boundedWaitMs = Math.max(
       0,
       Math.min(Number(waitMs) || 0, RESULT_WAIT_MS)
     );
     const deadline = Date.now() + boundedWaitMs;
     while (
-      this.attempts.get(String(attemptId))?.addressObserved === false &&
+      this.attempts.get(String(attemptId))?.terminalObserved === false &&
       Date.now() < deadline
     ) {
       await new Promise((resolve) => setTimeout(
@@ -174,7 +248,7 @@ export class DirectRequestObserver {
         Math.min(RESULT_POLL_MS, Math.max(0, deadline - Date.now()))
       ));
     }
-    return this.finish(attemptId, socketOutcome);
+    return this.finish(attemptId, socketOutcome, context);
   }
 
   prune() {
@@ -195,15 +269,15 @@ export function installDirectRequestObserver(observer, webRequestApi) {
     filter
   );
   webRequestApi.onResponseStarted.addListener(
-    (details) => observer.observeAddress(details),
+    (details) => observer.observeResponse(details),
     filter
   );
   webRequestApi.onCompleted.addListener(
-    (details) => observer.observeAddress(details),
+    (details) => observer.observeTerminal(details),
     filter
   );
   webRequestApi.onErrorOccurred.addListener(
-    (details) => observer.observeAddress(details),
+    (details) => observer.observeTerminal(details),
     filter
   );
 }
@@ -274,4 +348,30 @@ function validateDirectUrl(value) {
     throw new Error("自动地址检查只允许 Receiver 直连入口");
   }
   return url;
+}
+
+function validateObservationContext(value) {
+  const documentId = String(value?.documentId ?? "");
+  const initiator = String(value?.initiator ?? "");
+  if (
+    documentId.length === 0 ||
+    !initiator.startsWith("chrome-extension://")
+  ) {
+    throw new Error("自动地址检查缺少可信扩展文档上下文");
+  }
+  return {
+    documentId,
+    initiator
+  };
+}
+
+function matchesEventContext(attempt, details) {
+  return details?.url === attempt.url &&
+    details?.documentId === attempt.documentId &&
+    details?.initiator === attempt.initiator;
+}
+
+function matchesObservationContext(attempt, context) {
+  return context?.documentId === attempt.documentId &&
+    context?.initiator === attempt.initiator;
 }

@@ -3,10 +3,32 @@ import assert from "node:assert/strict";
 
 import {
   classifyObservedAddress,
+  createDirectObservationContext,
   describeDirectTransportFailure,
   DirectRequestObserver,
   installDirectRequestObserver
 } from "../direct-network-diagnostics.js";
+
+const EXTENSION_ID = "abcdefghijklmnopabcdefghijklmnop";
+const EXTENSION_ORIGIN = `chrome-extension://${EXTENSION_ID}`;
+const CONTEXT_A = Object.freeze({
+  documentId: "document-a",
+  initiator: EXTENSION_ORIGIN
+});
+const CONTEXT_B = Object.freeze({
+  documentId: "document-b",
+  initiator: EXTENSION_ORIGIN
+});
+
+function requestDetails(url, requestId, context = CONTEXT_A, extra = {}) {
+  return {
+    url,
+    requestId,
+    documentId: context.documentId,
+    initiator: context.initiator,
+    ...extra
+  };
+}
 
 test("classifies only RFC1918 and IPv4 link-local as trusted", () => {
   for (const address of [
@@ -78,23 +100,79 @@ test("correlates one WebSocket request without persisting its raw address", asyn
   let now = 1_000;
   const observer = new DirectRequestObserver({ now: () => now });
   const url = "ws://harmony-web-companion.local:44000/direct";
-  const attemptId = observer.begin(url);
-  observer.observeBefore({ url, requestId: "request-1" });
-  observer.observeAddress({ requestId: "request-1", ip: "192.168.1.8" });
-  assert.deepEqual(await observer.finishWhenReady(attemptId, "open"), {
-    observedAddressClass: "private_ipv4",
-    socketOutcome: "open"
-  });
+  const attemptId = observer.begin(url, CONTEXT_A);
+  observer.observeBefore(requestDetails(url, "request-1"));
+  observer.observeTerminal(requestDetails(
+    url,
+    "request-1",
+    CONTEXT_A,
+    { ip: "192.168.1.8" }
+  ));
+  assert.deepEqual(
+    await observer.finishWhenReady(attemptId, "open", 100, CONTEXT_A),
+    {
+      observedAddressClass: "private_ipv4",
+      socketOutcome: "open"
+    }
+  );
 
-  const expired = observer.begin(url);
+  const expired = observer.begin(url, CONTEXT_A);
   now += 20_000;
-  assert.deepEqual(observer.finish(expired, "error"), {
+  assert.deepEqual(observer.finish(expired, "error", CONTEXT_A), {
     observedAddressClass: "unresolved",
     socketOutcome: "error"
   });
 });
 
-test("waits for the completed handshake when response-started omits its IP", async () => {
+test("validates setup and offscreen runtime document senders", () => {
+  const runtimeApi = {
+    id: EXTENSION_ID,
+    getURL: (path) => `${EXTENSION_ORIGIN}/${path}`
+  };
+  for (const page of ["setup.html", "offscreen.html"]) {
+    assert.deepEqual(createDirectObservationContext({
+      id: EXTENSION_ID,
+      documentId: `document-${page}`,
+      origin: EXTENSION_ORIGIN,
+      url: runtimeApi.getURL(page)
+    }, runtimeApi), {
+      documentId: `document-${page}`,
+      initiator: EXTENSION_ORIGIN
+    });
+  }
+  for (const sender of [
+    {
+      id: EXTENSION_ID,
+      origin: EXTENSION_ORIGIN,
+      url: runtimeApi.getURL("setup.html")
+    },
+    {
+      id: "other-extension",
+      documentId: "document-other",
+      origin: EXTENSION_ORIGIN,
+      url: runtimeApi.getURL("setup.html")
+    },
+    {
+      id: EXTENSION_ID,
+      documentId: "document-monitor",
+      origin: EXTENSION_ORIGIN,
+      url: runtimeApi.getURL("monitor.html")
+    },
+    {
+      id: EXTENSION_ID,
+      documentId: "document-wrong-origin",
+      origin: "https://example.test",
+      url: runtimeApi.getURL("setup.html")
+    }
+  ]) {
+    assert.throws(
+      () => createDirectObservationContext(sender, runtimeApi),
+      /只接受扩展配对页或捕获页/
+    );
+  }
+});
+
+test("waits for terminal and merges a late conflicting address", async () => {
   const observer = new DirectRequestObserver();
   const listeners = new Map();
   const event = (name) => ({
@@ -109,16 +187,59 @@ test("waits for the completed handshake when response-started omits its IP", asy
     onErrorOccurred: event("error")
   });
   const url = "ws://harmony-web-companion.local:44000/direct";
-  const attemptId = observer.begin(url);
-  listeners.get("before")({ url, requestId: "request-late-ip" });
-  listeners.get("response")({ requestId: "request-late-ip" });
+  const attemptId = observer.begin(url, CONTEXT_A);
+  listeners.get("before")(requestDetails(url, "request-late-conflict"));
+  listeners.get("response")(requestDetails(
+    url,
+    "request-late-conflict",
+    CONTEXT_A,
+    { ip: "192.168.1.8" }
+  ));
 
-  const observation = observer.finishWhenReady(attemptId, "open", 100);
+  const observation = observer.finishWhenReady(
+    attemptId,
+    "open",
+    100,
+    CONTEXT_A
+  );
   setTimeout(() => {
-    listeners.get("completed")({
-      requestId: "request-late-ip",
-      ip: "192.168.1.8"
-    });
+    listeners.get("completed")(requestDetails(
+      url,
+      "request-late-conflict",
+      CONTEXT_A,
+      { ip: "203.0.113.8" }
+    ));
+  }, 10);
+
+  assert.deepEqual(await observation, {
+    observedAddressClass: "non_private",
+    socketOutcome: "open"
+  });
+});
+
+test("keeps an earlier private address when the terminal event has no IP", async () => {
+  const observer = new DirectRequestObserver();
+  const url = "ws://harmony-web-companion.local:44000/direct";
+  const attemptId = observer.begin(url, CONTEXT_A);
+  observer.observeBefore(requestDetails(url, "request-empty-terminal"));
+  observer.observeResponse(requestDetails(
+    url,
+    "request-empty-terminal",
+    CONTEXT_A,
+    { ip: "192.168.1.8" }
+  ));
+
+  const observation = observer.finishWhenReady(
+    attemptId,
+    "open",
+    100,
+    CONTEXT_A
+  );
+  setTimeout(() => {
+    observer.observeTerminal(requestDetails(
+      url,
+      "request-empty-terminal"
+    ));
   }, 10);
 
   assert.deepEqual(await observation, {
@@ -127,38 +248,70 @@ test("waits for the completed handshake when response-started omits its IP", asy
   });
 });
 
-test("an empty later event cannot erase an observed private address", async () => {
+test("fails closed when no terminal event arrives before the bound", async () => {
   const observer = new DirectRequestObserver();
   const url = "ws://harmony-web-companion.local:44000/direct";
-  const attemptId = observer.begin(url);
-  observer.observeBefore({ url, requestId: "request-empty-late" });
-  observer.observeAddress({
-    requestId: "request-empty-late",
-    ip: "192.168.1.8"
-  });
-  observer.observeAddress({ requestId: "request-empty-late" });
+  const attemptId = observer.begin(url, CONTEXT_A);
+  observer.observeBefore(requestDetails(url, "request-no-terminal"));
+  observer.observeResponse(requestDetails(
+    url,
+    "request-no-terminal",
+    CONTEXT_A,
+    { ip: "192.168.1.8" }
+  ));
 
-  assert.deepEqual(await observer.finishWhenReady(attemptId, "open"), {
-    observedAddressClass: "private_ipv4",
-    socketOutcome: "open"
-  });
+  assert.deepEqual(
+    await observer.finishWhenReady(attemptId, "open", 20, CONTEXT_A),
+    {
+      observedAddressClass: "unresolved",
+      socketOutcome: "open"
+    }
+  );
 });
 
-test("conflicting address classes for one request fail closed", async () => {
+test("an unrelated document cannot claim a pending same-URL attempt", async () => {
   const observer = new DirectRequestObserver();
   const url = "ws://harmony-web-companion.local:44000/direct";
-  const attemptId = observer.begin(url);
-  observer.observeBefore({ url, requestId: "request-conflict" });
-  observer.observeAddress({
-    requestId: "request-conflict",
-    ip: "192.168.1.8"
-  });
-  observer.observeAddress({
-    requestId: "request-conflict",
-    ip: "203.0.113.8"
-  });
+  const attemptId = observer.begin(url, CONTEXT_A);
 
-  const observation = await observer.finishWhenReady(attemptId, "open");
+  observer.observeBefore(requestDetails(
+    url,
+    "request-unrelated",
+    CONTEXT_B
+  ));
+  observer.observeResponse(requestDetails(
+    url,
+    "request-unrelated",
+    CONTEXT_B,
+    { ip: "192.168.1.8" }
+  ));
+  observer.observeTerminal(requestDetails(
+    url,
+    "request-unrelated",
+    CONTEXT_B,
+    { ip: "192.168.1.8" }
+  ));
+
+  observer.observeBefore(requestDetails(url, "request-actual"));
+  observer.observeResponse(requestDetails(
+    url,
+    "request-actual",
+    CONTEXT_A,
+    { ip: "203.0.113.8" }
+  ));
+  observer.observeTerminal(requestDetails(
+    url,
+    "request-actual",
+    CONTEXT_A,
+    { ip: "203.0.113.8" }
+  ));
+
+  const observation = await observer.finishWhenReady(
+    attemptId,
+    "open",
+    100,
+    CONTEXT_A
+  );
   assert.equal(observation.observedAddressClass, "non_private");
   assert.equal(describeDirectTransportFailure({
     host: "harmony-web-companion.local",
@@ -166,30 +319,133 @@ test("conflicting address classes for one request fail closed", async () => {
   }).allowAuthentication, false);
 });
 
-test("correlates concurrent same-URL attempts in request start order", () => {
+test("same-context concurrent attempts are ambiguous and fail closed", async () => {
   const observer = new DirectRequestObserver();
   const url = "ws://harmony-web-companion.local:44000/direct";
-  const firstAttempt = observer.begin(url);
-  const secondAttempt = observer.begin(url);
-  observer.observeBefore({ url, requestId: "request-first" });
-  observer.observeBefore({ url, requestId: "request-second" });
-  observer.observeAddress({
-    requestId: "request-first",
-    ip: "192.168.1.8"
-  });
-  observer.observeAddress({
-    requestId: "request-second",
-    ip: "203.0.113.8"
-  });
+  const firstAttempt = observer.begin(url, CONTEXT_A);
+  const secondAttempt = observer.begin(url, CONTEXT_A);
+  observer.observeBefore(requestDetails(url, "request-ambiguous"));
+  observer.observeTerminal(requestDetails(
+    url,
+    "request-ambiguous",
+    CONTEXT_A,
+    { ip: "192.168.1.8" }
+  ));
 
-  assert.equal(
-    observer.finish(firstAttempt, "open").observedAddressClass,
-    "private_ipv4"
+  assert.deepEqual(
+    await observer.finishWhenReady(firstAttempt, "open", 0, CONTEXT_A),
+    {
+      observedAddressClass: "unresolved",
+      socketOutcome: "open"
+    }
   );
-  assert.equal(
-    observer.finish(secondAttempt, "open").observedAddressClass,
-    "non_private"
+  assert.deepEqual(
+    await observer.finishWhenReady(secondAttempt, "open", 0, CONTEXT_A),
+    {
+      observedAddressClass: "unresolved",
+      socketOutcome: "open"
+    }
   );
+});
+
+test("missing webRequest document context fails closed", async () => {
+  const observer = new DirectRequestObserver();
+  const url = "ws://harmony-web-companion.local:44000/direct";
+  const attemptId = observer.begin(url, CONTEXT_A);
+  observer.observeBefore({
+    url,
+    requestId: "request-missing-context",
+    initiator: CONTEXT_A.initiator
+  });
+  assert.deepEqual(
+    await observer.finishWhenReady(attemptId, "open", 0, CONTEXT_A),
+    {
+      observedAddressClass: "unresolved",
+      socketOutcome: "open"
+    }
+  );
+});
+
+test("a different extension document cannot consume the finish result", async () => {
+  const observer = new DirectRequestObserver();
+  const url = "ws://harmony-web-companion.local:44000/direct";
+  const attemptId = observer.begin(url, CONTEXT_A);
+  observer.observeBefore(requestDetails(url, "request-finish-context"));
+  observer.observeTerminal(requestDetails(
+    url,
+    "request-finish-context",
+    CONTEXT_A,
+    { ip: "192.168.1.8" }
+  ));
+
+  assert.deepEqual(
+    await observer.finishWhenReady(attemptId, "open", 0, CONTEXT_B),
+    {
+      observedAddressClass: "unresolved",
+      socketOutcome: "open"
+    }
+  );
+  assert.deepEqual(
+    await observer.finishWhenReady(attemptId, "open", 0, CONTEXT_A),
+    {
+      observedAddressClass: "private_ipv4",
+      socketOutcome: "open"
+    }
+  );
+});
+
+test("a terminal event with mismatched context invalidates the attempt", async () => {
+  const observer = new DirectRequestObserver();
+  const url = "ws://harmony-web-companion.local:44000/direct";
+  const attemptId = observer.begin(url, CONTEXT_A);
+  observer.observeBefore(requestDetails(url, "request-terminal-context"));
+  observer.observeResponse(requestDetails(
+    url,
+    "request-terminal-context",
+    CONTEXT_A,
+    { ip: "192.168.1.8" }
+  ));
+  observer.observeTerminal(requestDetails(
+    url,
+    "request-terminal-context",
+    CONTEXT_B
+  ));
+
+  assert.deepEqual(
+    await observer.finishWhenReady(attemptId, "open", 100, CONTEXT_A),
+    {
+      observedAddressClass: "unresolved",
+      socketOutcome: "open"
+    }
+  );
+});
+
+test("a terminal event without any address remains unresolved", async () => {
+  const observer = new DirectRequestObserver();
+  const url = "ws://harmony-web-companion.local:44000/direct";
+  const attemptId = observer.begin(url, CONTEXT_A);
+  observer.observeBefore(requestDetails(url, "request-no-address"));
+  observer.observeTerminal(requestDetails(url, "request-no-address"));
+
+  assert.deepEqual(
+    await observer.finishWhenReady(attemptId, "error", 100, CONTEXT_A),
+    {
+      observedAddressClass: "unresolved",
+      socketOutcome: "error"
+    }
+  );
+});
+
+test("expired observation remains unresolved", () => {
+  let now = 1_000;
+  const observer = new DirectRequestObserver({ now: () => now });
+  const url = "ws://harmony-web-companion.local:44000/direct";
+  const attemptId = observer.begin(url, CONTEXT_A);
+  now += 20_000;
+  assert.deepEqual(observer.finish(attemptId, "error", CONTEXT_A), {
+    observedAddressClass: "unresolved",
+    socketOutcome: "error"
+  });
 });
 
 test("registers read-only WebSocket handshake observers only", () => {

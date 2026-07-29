@@ -3,6 +3,7 @@ import {
   getTrustedReceiver
 } from "./pairing-store.js";
 import {
+  createDirectObservationContext,
   DirectRequestObserver,
   installDirectRequestObserver
 } from "./direct-network-diagnostics.js";
@@ -26,7 +27,7 @@ chrome.runtime.onStartup.addListener(() => {
   void resetProbe();
 });
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.target !== "service-worker") {
     return false;
   }
@@ -89,7 +90,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     try {
       sendResponse({
         ok: true,
-        attemptId: directRequestObserver.begin(message.url)
+        attemptId: directRequestObserver.begin(
+          message.url,
+          createDirectObservationContext(sender, chrome.runtime)
+        )
       });
     } catch (error) {
       sendResponse({ ok: false, error: normalizeError(error) });
@@ -98,13 +102,20 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message.type === "FINISH_DIRECT_OBSERVATION") {
-    directRequestObserver.finishWhenReady(
-      message.attemptId,
-      message.socketOutcome,
-      message.waitMs
-    )
-      .then((observation) => sendResponse({ ok: true, observation }))
-      .catch((error) => sendResponse({ ok: false, error: normalizeError(error) }));
+    try {
+      directRequestObserver.finishWhenReady(
+        message.attemptId,
+        message.socketOutcome,
+        message.waitMs,
+        createDirectObservationContext(sender, chrome.runtime)
+      )
+        .then((observation) => sendResponse({ ok: true, observation }))
+        .catch((error) =>
+          sendResponse({ ok: false, error: normalizeError(error) }));
+    } catch (error) {
+      sendResponse({ ok: false, error: normalizeError(error) });
+      return false;
+    }
     return true;
   }
 
