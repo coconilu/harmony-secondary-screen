@@ -15,8 +15,9 @@
 
 扩展持久 host permission 仅包含 `http://harmony-web-companion.local/*`。手动 IP 回退使用
 `http://*/*` 的 optional host 声明，但只在用户输入并确认具体私网 IPv4 后请求该单一 origin。
-新增的 `webRequest` 只读观察项目 WebSocket 握手的目标地址类别，不使用 blocking 能力、不读取
-页面请求、不保存原始 IP，也不扩大 host permission。
+新增的 `webRequest` 按同一 requestId 只读观察项目 WebSocket 握手响应与完成事件的目标地址类别，
+不使用 blocking 能力、不读取页面请求、不保存原始 IP，也不扩大 host permission。Edge 未提供
+可选 `ip` 时仍失败关闭。
 
 Edge 143+ 的 Local Network Access 行为仍可能变化，必须在目标 Edge 版本验证 WebSocket。不得用
 `<all_urls>` 或网络扫描规避。

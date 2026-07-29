@@ -94,6 +94,104 @@ test("correlates one WebSocket request without persisting its raw address", asyn
   });
 });
 
+test("waits for the completed handshake when response-started omits its IP", async () => {
+  const observer = new DirectRequestObserver();
+  const listeners = new Map();
+  const event = (name) => ({
+    addListener(callback) {
+      listeners.set(name, callback);
+    }
+  });
+  installDirectRequestObserver(observer, {
+    onBeforeRequest: event("before"),
+    onResponseStarted: event("response"),
+    onCompleted: event("completed"),
+    onErrorOccurred: event("error")
+  });
+  const url = "ws://harmony-web-companion.local:44000/direct";
+  const attemptId = observer.begin(url);
+  listeners.get("before")({ url, requestId: "request-late-ip" });
+  listeners.get("response")({ requestId: "request-late-ip" });
+
+  const observation = observer.finishWhenReady(attemptId, "open", 100);
+  setTimeout(() => {
+    listeners.get("completed")({
+      requestId: "request-late-ip",
+      ip: "192.168.1.8"
+    });
+  }, 10);
+
+  assert.deepEqual(await observation, {
+    observedAddressClass: "private_ipv4",
+    socketOutcome: "open"
+  });
+});
+
+test("an empty later event cannot erase an observed private address", async () => {
+  const observer = new DirectRequestObserver();
+  const url = "ws://harmony-web-companion.local:44000/direct";
+  const attemptId = observer.begin(url);
+  observer.observeBefore({ url, requestId: "request-empty-late" });
+  observer.observeAddress({
+    requestId: "request-empty-late",
+    ip: "192.168.1.8"
+  });
+  observer.observeAddress({ requestId: "request-empty-late" });
+
+  assert.deepEqual(await observer.finishWhenReady(attemptId, "open"), {
+    observedAddressClass: "private_ipv4",
+    socketOutcome: "open"
+  });
+});
+
+test("conflicting address classes for one request fail closed", async () => {
+  const observer = new DirectRequestObserver();
+  const url = "ws://harmony-web-companion.local:44000/direct";
+  const attemptId = observer.begin(url);
+  observer.observeBefore({ url, requestId: "request-conflict" });
+  observer.observeAddress({
+    requestId: "request-conflict",
+    ip: "192.168.1.8"
+  });
+  observer.observeAddress({
+    requestId: "request-conflict",
+    ip: "203.0.113.8"
+  });
+
+  const observation = await observer.finishWhenReady(attemptId, "open");
+  assert.equal(observation.observedAddressClass, "non_private");
+  assert.equal(describeDirectTransportFailure({
+    host: "harmony-web-companion.local",
+    ...observation
+  }).allowAuthentication, false);
+});
+
+test("correlates concurrent same-URL attempts in request start order", () => {
+  const observer = new DirectRequestObserver();
+  const url = "ws://harmony-web-companion.local:44000/direct";
+  const firstAttempt = observer.begin(url);
+  const secondAttempt = observer.begin(url);
+  observer.observeBefore({ url, requestId: "request-first" });
+  observer.observeBefore({ url, requestId: "request-second" });
+  observer.observeAddress({
+    requestId: "request-first",
+    ip: "192.168.1.8"
+  });
+  observer.observeAddress({
+    requestId: "request-second",
+    ip: "203.0.113.8"
+  });
+
+  assert.equal(
+    observer.finish(firstAttempt, "open").observedAddressClass,
+    "private_ipv4"
+  );
+  assert.equal(
+    observer.finish(secondAttempt, "open").observedAddressClass,
+    "non_private"
+  );
+});
+
 test("registers read-only WebSocket handshake observers only", () => {
   const registrations = [];
   const event = (name) => ({
@@ -104,11 +202,13 @@ test("registers read-only WebSocket handshake observers only", () => {
   installDirectRequestObserver(new DirectRequestObserver(), {
     onBeforeRequest: event("before"),
     onResponseStarted: event("response"),
+    onCompleted: event("completed"),
     onErrorOccurred: event("error")
   });
   assert.deepEqual(registrations.map(({ name }) => name), [
     "before",
     "response",
+    "completed",
     "error"
   ]);
   for (const registration of registrations) {

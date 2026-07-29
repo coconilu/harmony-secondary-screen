@@ -80,7 +80,7 @@ response 才进入冲突状态。停止接收、Wi-Fi 地址或 interface index 
 | `tabCapture` | 获取用户选择标签页的媒体流 |
 | `offscreen` | 扩展弹窗关闭后持有媒体流和编码器 |
 | `storage` | 保存设备身份、凭据、连接地址和 source epoch |
-| `webRequest` | 只读观察 Receiver WebSocket 握手实际地址类别；不拦截、不修改、不保存原始 IP |
+| `webRequest` | 按 requestId 只读观察 Receiver WebSocket 握手完成事件的实际地址类别；不拦截、不修改、不保存原始 IP |
 | 固定 `.local` host permission | 只访问一个预定 Receiver 地址 |
 | 可选 `http://*/*` 声明 | Chrome match pattern 无法枚举所有 RFC1918；仅在用户输入并确认具体 IP 时请求该精确 origin |
 

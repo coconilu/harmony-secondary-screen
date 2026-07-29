@@ -5,7 +5,8 @@ import {
 } from "./direct-protocol.js";
 
 const OBSERVATION_TTL_MS = 15_000;
-const RESULT_WAIT_MS = 250;
+const RESULT_WAIT_MS = 1_000;
+const RESULT_POLL_MS = 10;
 
 export function classifyObservedAddress(value) {
   const octets = String(value ?? "").split(".");
@@ -108,7 +109,7 @@ export class DirectRequestObserver {
       url: parsed.href,
       requestId: null,
       observedAddressClass: "unresolved",
-      terminalObserved: false,
+      addressObserved: false,
       expiresAt: this.now() + OBSERVATION_TTL_MS
     });
     return attemptId;
@@ -120,7 +121,7 @@ export class DirectRequestObserver {
         attempt.requestId === null &&
         attempt.url === details?.url &&
         attempt.expiresAt >= this.now())
-      .at(-1);
+      .at(0);
     if (!candidate) return;
     candidate[1].requestId = String(details.requestId);
   }
@@ -130,10 +131,17 @@ export class DirectRequestObserver {
       (candidate) => candidate.requestId === String(details?.requestId)
     );
     if (!attempt) return;
-    attempt.observedAddressClass = details?.ip
-      ? classifyObservedAddress(details.ip)
-      : "unresolved";
-    attempt.terminalObserved = true;
+    if (!details?.ip) return;
+    const observedAddressClass = classifyObservedAddress(details.ip);
+    if (
+      attempt.addressObserved &&
+      attempt.observedAddressClass !== observedAddressClass
+    ) {
+      attempt.observedAddressClass = "non_private";
+    } else {
+      attempt.observedAddressClass = observedAddressClass;
+    }
+    attempt.addressObserved = true;
   }
 
   finish(attemptId, socketOutcome) {
@@ -152,12 +160,19 @@ export class DirectRequestObserver {
   }
 
   async finishWhenReady(attemptId, socketOutcome, waitMs = RESULT_WAIT_MS) {
-    const deadline = this.now() + Math.max(0, Math.min(Number(waitMs) || 0, 500));
+    const boundedWaitMs = Math.max(
+      0,
+      Math.min(Number(waitMs) || 0, RESULT_WAIT_MS)
+    );
+    const deadline = Date.now() + boundedWaitMs;
     while (
-      this.attempts.get(String(attemptId))?.terminalObserved === false &&
-      this.now() < deadline
+      this.attempts.get(String(attemptId))?.addressObserved === false &&
+      Date.now() < deadline
     ) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await new Promise((resolve) => setTimeout(
+        resolve,
+        Math.min(RESULT_POLL_MS, Math.max(0, deadline - Date.now()))
+      ));
     }
     return this.finish(attemptId, socketOutcome);
   }
@@ -180,6 +195,10 @@ export function installDirectRequestObserver(observer, webRequestApi) {
     filter
   );
   webRequestApi.onResponseStarted.addListener(
+    (details) => observer.observeAddress(details),
+    filter
+  );
+  webRequestApi.onCompleted.addListener(
     (details) => observer.observeAddress(details),
     filter
   );
