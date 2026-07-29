@@ -80,17 +80,21 @@ response 才进入冲突状态。停止接收、Wi-Fi 地址或 interface index 
 | `tabCapture` | 获取用户选择标签页的媒体流 |
 | `offscreen` | 扩展弹窗关闭后持有媒体流和编码器 |
 | `storage` | 保存设备身份、凭据、连接地址和 source epoch |
-| `webRequest` | 按扩展 documentId、initiator 与 requestId 只读观察 Receiver WebSocket 握手终态的实际地址类别；不拦截、不修改、不保存原始 IP |
+| `webRequest` | 按允许的扩展页面、可用的 documentId / initiator 与 requestId 只读观察 Receiver WebSocket 握手终态的实际地址类别；不拦截、不修改、不保存原始 IP |
 | 固定 `.local` host permission | 只访问一个预定 Receiver 地址 |
 | 可选 `http://*/*` 声明 | Chrome match pattern 无法枚举所有 RFC1918；仅在用户输入并确认具体 IP 时请求该精确 origin |
 
 扩展只保留当前可信设备实际使用的手动私网 origin；配对/保存失败回滚新授权，更新地址和忘记设备时
 枚举并撤销其余手动 origin，且不得把 `permissions.remove()` 的失败当成成功。
 
-扩展只接受来自 `setup.html` / `offscreen.html` 的运行时文档上下文，并要求 WebSocket 请求的
-`documentId` 与 `initiator` 精确一致。只有收到同一 requestId 的完成/失败终态、合并所有非空
-IP 后确认固定 `.local` 落到 RFC1918 或 IPv4 link-local，才发送 QR token 或长期 credential；
-观测 API 缺失、终态缺失、上下文缺失/歧义、地址类别冲突或非私网时均在鉴权前断开；其中观测
+扩展用 `runtime.getURL()` 只接受 `setup.html` / `offscreen.html`，发送者或 `webRequest`
+提供的可选 `id`、`origin`、`documentId`、`initiator` 一旦存在就必须匹配。Edge 缺少
+`documentId` 时，只有匹配扩展 origin 的 `initiator` 和唯一待处理 attempt 才能绑定请求；
+`initiator` 与可匹配 `documentId` 都缺失时失败关闭。BEGIN 返回的随机 attempt id 只留在调用文档
+内存中，不记录、不持久化；缺少 `documentId` 的 FINISH 还必须持有该 id、来自同一允许页面且没有
+歧义。只有收到同一 requestId 的完成/失败终态、
+合并所有非空 IP 后确认固定 `.local` 落到 RFC1918 或 IPv4 link-local，才发送 QR token 或长期
+credential；观测 API 缺失、终态缺失、上下文缺失/歧义、地址类别冲突或非私网时均在鉴权前断开；其中观测
 API 缺失时不创建自动地址 WebSocket。在地址观察完成且请求成功发出前，任何主动
 `paired` / `ready` 响应都按未请求消息拒绝，不能保存身份或打开媒体发送。它不解析浏览器错误
 字符串，也不保存观察到的原始 IP。不申请 `<all_urls>`、`webRequestBlocking`、

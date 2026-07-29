@@ -15,10 +15,11 @@
 
 扩展持久 host permission 仅包含 `http://harmony-web-companion.local/*`。手动 IP 回退使用
 `http://*/*` 的 optional host 声明，但只在用户输入并确认具体私网 IPv4 后请求该单一 origin。
-新增的 `webRequest` 按扩展 `MessageSender.documentId`、请求 `documentId` / `initiator` 与同一
-requestId 只读观察项目 WebSocket 握手响应及完成/失败终态，不使用 blocking 能力、不读取页面请求、
-不保存原始 IP，也不扩大 host permission。上述文档字段自 Chrome 106 可用，低于本项目最低
-Chrome/Edge 116；Edge 未提供终态、可信上下文或可选 `ip` 时仍失败关闭。
+新增的 `webRequest` 按允许的扩展页面、可用的 `MessageSender.documentId`、请求
+`documentId` / `initiator` 与同一 requestId 只读观察项目 WebSocket 握手响应及完成/失败终态，
+不使用 blocking 能力、不读取页面请求、不保存原始 IP，也不扩大 host permission。这些发送者与
+请求字段都是可选值：字段存在时必须匹配；Edge 缺少 `documentId` 时要求匹配扩展 origin 的
+`initiator` 且只有一个待处理 attempt；两种请求上下文都不可用、终态缺失或没有可选 `ip` 时仍失败关闭。
 扩展运行时消息/观测 API 缺失时也失败关闭，不得把“无法观测”降级为自动地址已验证。
 
 Edge 143+ 的 Local Network Access 行为仍可能变化，必须在目标 Edge 版本验证 WebSocket。不得用

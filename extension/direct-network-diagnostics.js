@@ -101,26 +101,48 @@ export function describeDirectTransportFailure({
 
 export function createDirectObservationContext(sender, runtimeApi) {
   const extensionId = String(runtimeApi?.id ?? "");
-  const documentId = String(sender?.documentId ?? "");
-  const initiator = `chrome-extension://${extensionId}`;
   if (typeof runtimeApi?.getURL !== "function") {
     throw new Error("自动地址检查无法确认扩展运行时来源");
   }
-  const allowedUrls = new Set(
-    OBSERVATION_PAGE_PATHS.map((path) => runtimeApi.getURL(path))
+  if (extensionId.length === 0) {
+    throw new Error("自动地址检查缺少扩展运行时标识");
+  }
+
+  const runtimeRoot = new URL(runtimeApi.getURL(""));
+  const initiator = canonicalOrigin(runtimeRoot);
+  const allowedUrls = new Map(
+    OBSERVATION_PAGE_PATHS.map((path) => [
+      new URL(runtimeApi.getURL(path)).href,
+      path
+    ])
   );
-  if (
-    extensionId.length === 0 ||
-    sender?.id !== extensionId ||
-    documentId.length === 0 ||
-    sender?.origin !== initiator ||
-    !allowedUrls.has(sender?.url)
-  ) {
+  const senderUrl = optionalUrl(sender?.url);
+  if (senderUrl === null) {
+    throw new Error("自动地址检查缺少扩展页面 URL");
+  }
+  const page = allowedUrls.get(senderUrl);
+  if (page === undefined) {
     throw new Error("自动地址检查只接受扩展配对页或捕获页的文档上下文");
   }
+  if (sender?.id !== undefined && sender.id !== extensionId) {
+    throw new Error("自动地址检查的来源扩展不匹配");
+  }
+  if (
+    sender?.documentId !== undefined &&
+    optionalString(sender.documentId) === null
+  ) {
+    throw new Error("自动地址检查的文档标识格式无效");
+  }
+  if (
+    sender?.origin !== undefined &&
+    optionalOrigin(sender.origin) !== initiator
+  ) {
+    throw new Error("自动地址检查的来源 origin 不匹配");
+  }
   return Object.freeze({
-    documentId,
-    initiator
+    documentId: optionalString(sender?.documentId),
+    initiator,
+    page
   });
 }
 
@@ -139,6 +161,7 @@ export class DirectRequestObserver {
       url: parsed.href,
       ...validatedContext,
       requestId: null,
+      boundDocumentId: validatedContext.documentId,
       observedAddressClass: "unresolved",
       addressObserved: false,
       terminalObserved: false,
@@ -154,7 +177,7 @@ export class DirectRequestObserver {
       .filter(([, attempt]) =>
         attempt.requestId === null &&
         attempt.url === details?.url &&
-        matchesEventContext(attempt, details) &&
+        matchesInitialEventContext(attempt, details) &&
         attempt.expiresAt >= this.now())
     if (candidates.length !== 1) {
       for (const [, attempt] of candidates) {
@@ -162,7 +185,10 @@ export class DirectRequestObserver {
       }
       return;
     }
-    candidates[0][1].requestId = String(details.requestId);
+    const attempt = candidates[0][1];
+    attempt.requestId = String(details.requestId);
+    attempt.boundDocumentId =
+      optionalString(details?.documentId) ?? attempt.boundDocumentId;
   }
 
   observeResponse(details) {
@@ -178,7 +204,7 @@ export class DirectRequestObserver {
       (candidate) => candidate.requestId === String(details?.requestId)
     );
     if (!attempt) return;
-    if (!matchesEventContext(attempt, details)) {
+    if (!matchesBoundEventContext(attempt, details)) {
       attempt.contextInvalid = true;
     } else if (details?.ip) {
       const observedAddressClass = classifyObservedAddress(details.ip);
@@ -325,6 +351,69 @@ export async function finishDirectTransportObservation(
   });
 }
 
+export function handleDirectObservationMessage(
+  message,
+  sender,
+  { observer, runtimeApi }
+) {
+  if (message?.type === "BEGIN_DIRECT_OBSERVATION") {
+    try {
+      return {
+        handled: true,
+        keepChannelOpen: false,
+        response: {
+          ok: true,
+          attemptId: observer.begin(
+            message.url,
+            createDirectObservationContext(sender, runtimeApi)
+          )
+        }
+      };
+    } catch (error) {
+      return {
+        handled: true,
+        keepChannelOpen: false,
+        response: {
+          ok: false,
+          error: normalizeObservationError(error)
+        }
+      };
+    }
+  }
+  if (message?.type === "FINISH_DIRECT_OBSERVATION") {
+    try {
+      const context = createDirectObservationContext(sender, runtimeApi);
+      return {
+        handled: true,
+        keepChannelOpen: true,
+        responsePromise: observer.finishWhenReady(
+          message.attemptId,
+          message.socketOutcome,
+          message.waitMs,
+          context
+        ).then((observation) => ({ ok: true, observation }))
+          .catch((error) => ({
+            ok: false,
+            error: normalizeObservationError(error)
+          }))
+      };
+    } catch (error) {
+      return {
+        handled: true,
+        keepChannelOpen: false,
+        response: {
+          ok: false,
+          error: normalizeObservationError(error)
+        }
+      };
+    }
+  }
+  return {
+    handled: false,
+    keepChannelOpen: false
+  };
+}
+
 export class DirectTransportError extends Error {
   constructor(verdict) {
     super(verdict.message);
@@ -351,27 +440,128 @@ function validateDirectUrl(value) {
 }
 
 function validateObservationContext(value) {
-  const documentId = String(value?.documentId ?? "");
+  const documentId = optionalString(value?.documentId);
   const initiator = String(value?.initiator ?? "");
+  const page = String(value?.page ?? "");
   if (
-    documentId.length === 0 ||
-    !initiator.startsWith("chrome-extension://")
+    initiator.length === 0 ||
+    !OBSERVATION_PAGE_PATHS.includes(page)
   ) {
     throw new Error("自动地址检查缺少可信扩展文档上下文");
   }
   return {
     documentId,
-    initiator
+    initiator,
+    page
   };
 }
 
-function matchesEventContext(attempt, details) {
-  return details?.url === attempt.url &&
-    details?.documentId === attempt.documentId &&
-    details?.initiator === attempt.initiator;
+function matchesInitialEventContext(attempt, details) {
+  if (details?.url !== attempt.url) return false;
+  if (
+    hasInvalidOptionalString(details, "initiator") ||
+    hasInvalidOptionalString(details, "documentId")
+  ) {
+    return false;
+  }
+  const eventInitiator = optionalOrigin(details?.initiator);
+  const eventDocumentId = optionalString(details?.documentId);
+  if (eventInitiator !== null && eventInitiator !== attempt.initiator) {
+    return false;
+  }
+  if (
+    eventDocumentId !== null &&
+    attempt.documentId !== null &&
+    eventDocumentId !== attempt.documentId
+  ) {
+    return false;
+  }
+  return eventInitiator === attempt.initiator ||
+    (eventDocumentId !== null && eventDocumentId === attempt.documentId);
+}
+
+function matchesBoundEventContext(attempt, details) {
+  if (details?.url !== attempt.url) return false;
+  if (
+    hasInvalidOptionalString(details, "initiator") ||
+    hasInvalidOptionalString(details, "documentId")
+  ) {
+    return false;
+  }
+  const eventInitiator = optionalOrigin(details?.initiator);
+  const eventDocumentId = optionalString(details?.documentId);
+  if (eventInitiator !== null && eventInitiator !== attempt.initiator) {
+    return false;
+  }
+  if (
+    eventDocumentId !== null &&
+    attempt.boundDocumentId !== null &&
+    eventDocumentId !== attempt.boundDocumentId
+  ) {
+    return false;
+  }
+  if (attempt.boundDocumentId === null && eventDocumentId !== null) {
+    attempt.boundDocumentId = eventDocumentId;
+  }
+  return true;
 }
 
 function matchesObservationContext(attempt, context) {
-  return context?.documentId === attempt.documentId &&
-    context?.initiator === attempt.initiator;
+  let validatedContext;
+  try {
+    validatedContext = validateObservationContext(context);
+  } catch {
+    return false;
+  }
+  if (
+    validatedContext.initiator !== attempt.initiator ||
+    validatedContext.page !== attempt.page
+  ) {
+    return false;
+  }
+  const expectedDocumentId =
+    attempt.boundDocumentId ?? attempt.documentId;
+  return expectedDocumentId === null ||
+    validatedContext.documentId === null ||
+    validatedContext.documentId === expectedDocumentId;
+}
+
+function optionalString(value) {
+  if (value === undefined || value === null || value === "") return null;
+  return typeof value === "string" ? value : null;
+}
+
+function hasInvalidOptionalString(source, key) {
+  return source?.[key] !== undefined &&
+    source[key] !== null &&
+    (typeof source[key] !== "string" || source[key].length === 0);
+}
+
+function optionalUrl(value) {
+  if (value === undefined || value === null || value === "") return null;
+  try {
+    return new URL(String(value)).href;
+  } catch {
+    return null;
+  }
+}
+
+function optionalOrigin(value) {
+  if (value === undefined || value === null || value === "") return null;
+  try {
+    return canonicalOrigin(new URL(String(value)));
+  } catch {
+    return "";
+  }
+}
+
+function canonicalOrigin(url) {
+  const standardOrigin = url.origin;
+  return standardOrigin === "null"
+    ? `${url.protocol}//${url.host}`
+    : standardOrigin;
+}
+
+function normalizeObservationError(error) {
+  return error instanceof Error ? error.message : String(error);
 }

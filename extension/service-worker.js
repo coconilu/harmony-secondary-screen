@@ -3,8 +3,8 @@ import {
   getTrustedReceiver
 } from "./pairing-store.js";
 import {
-  createDirectObservationContext,
   DirectRequestObserver,
+  handleDirectObservationMessage,
   installDirectRequestObserver
 } from "./direct-network-diagnostics.js";
 
@@ -86,37 +86,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
 
-  if (message.type === "BEGIN_DIRECT_OBSERVATION") {
-    try {
-      sendResponse({
-        ok: true,
-        attemptId: directRequestObserver.begin(
-          message.url,
-          createDirectObservationContext(sender, chrome.runtime)
-        )
-      });
-    } catch (error) {
-      sendResponse({ ok: false, error: normalizeError(error) });
+  const observationMessage = handleDirectObservationMessage(
+    message,
+    sender,
+    {
+      observer: directRequestObserver,
+      runtimeApi: chrome.runtime
     }
-    return false;
-  }
-
-  if (message.type === "FINISH_DIRECT_OBSERVATION") {
-    try {
-      directRequestObserver.finishWhenReady(
-        message.attemptId,
-        message.socketOutcome,
-        message.waitMs,
-        createDirectObservationContext(sender, chrome.runtime)
-      )
-        .then((observation) => sendResponse({ ok: true, observation }))
-        .catch((error) =>
-          sendResponse({ ok: false, error: normalizeError(error) }));
-    } catch (error) {
-      sendResponse({ ok: false, error: normalizeError(error) });
-      return false;
+  );
+  if (observationMessage.handled) {
+    if (observationMessage.responsePromise) {
+      void observationMessage.responsePromise.then(sendResponse);
+    } else {
+      sendResponse(observationMessage.response);
     }
-    return true;
+    return observationMessage.keepChannelOpen;
   }
 
   return false;

@@ -39,10 +39,13 @@ Edge 首次请求手动私网 IP 权限时可能关闭 popup。扩展会先把�
 手动 IP 配对或保存失败时会回滚本次新增的 origin；更新地址或忘记设备时会枚举并撤销所有未使用的
 手动私网 origin，撤销失败会明确报错。
 
-`webRequest` 不使用 blocking 能力，不修改请求，不读取页面流量。扩展先用
-`MessageSender.documentId` 把观测绑定到发起调用的 `setup.html` 或 `offscreen.html` 文档，
-再要求 WebSocket `onBeforeRequest` 的 `documentId` 与 `initiator` 精确一致，并按同一
-`requestId` 关联响应开始、完成与失败事件。只有观察到 `onCompleted` / `onErrorOccurred`
+`webRequest` 不使用 blocking 能力，不修改请求，不读取页面流量。扩展通过
+`runtime.getURL()` 规范化并只接受 `setup.html` 或 `offscreen.html`；发送者和请求的可选
+`id`、`origin`、`documentId`、`initiator` 存在时必须匹配。Edge 缺少 `documentId` 时，
+只有匹配扩展 origin 的 `initiator` 与唯一待处理 attempt 才能绑定请求；两者都不可用时拒绝。
+随机 attempt id 只返回给发起文档且不记录、不持久化；无 `documentId` 的 FINISH 仍须持有该 id、
+来自同一允许页面且没有歧义。随后按同一 `requestId` 关联响应开始、完成与失败事件。只有观察到
+`onCompleted` / `onErrorOccurred`
 终态后才合并本次握手所有非空实际目标 `ip`；终态缺失、文档上下文缺失/歧义或地址类别冲突均
 失败关闭。运行时消息/观测 API 缺失时不会创建自动 `.local` WebSocket，更不会发送 token 或
 credential。没有 `ip` 的终态不会覆盖先前已确认的地址类别；观察结果只保留

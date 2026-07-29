@@ -15,11 +15,18 @@ const EXTENSION_ID = "abcdefghijklmnopabcdefghijklmnop";
 const EXTENSION_ORIGIN = `chrome-extension://${EXTENSION_ID}`;
 const CONTEXT_A = Object.freeze({
   documentId: "document-a",
-  initiator: EXTENSION_ORIGIN
+  initiator: EXTENSION_ORIGIN,
+  page: "setup.html"
 });
 const CONTEXT_B = Object.freeze({
   documentId: "document-b",
-  initiator: EXTENSION_ORIGIN
+  initiator: EXTENSION_ORIGIN,
+  page: "setup.html"
+});
+const CONTEXT_NO_DOCUMENT = Object.freeze({
+  documentId: null,
+  initiator: EXTENSION_ORIGIN,
+  page: "setup.html"
 });
 
 function requestDetails(url, requestId, context = CONTEXT_A, extra = {}) {
@@ -180,15 +187,33 @@ test("validates setup and offscreen runtime document senders", () => {
       url: runtimeApi.getURL(page)
     }, runtimeApi), {
       documentId: `document-${page}`,
-      initiator: EXTENSION_ORIGIN
+      initiator: EXTENSION_ORIGIN,
+      page
     });
   }
+  assert.deepEqual(createDirectObservationContext({
+    id: EXTENSION_ID,
+    url: runtimeApi.getURL("setup.html")
+  }, runtimeApi), {
+    documentId: null,
+    initiator: EXTENSION_ORIGIN,
+    page: "setup.html"
+  });
+  assert.deepEqual(createDirectObservationContext({
+    origin: `${EXTENSION_ORIGIN}/`,
+    url: runtimeApi.getURL("setup.html")
+  }, runtimeApi), {
+    documentId: null,
+    initiator: EXTENSION_ORIGIN,
+    page: "setup.html"
+  });
+  assert.throws(
+    () => createDirectObservationContext({
+      id: EXTENSION_ID
+    }, runtimeApi),
+    /缺少扩展页面 URL/
+  );
   for (const sender of [
-    {
-      id: EXTENSION_ID,
-      origin: EXTENSION_ORIGIN,
-      url: runtimeApi.getURL("setup.html")
-    },
     {
       id: "other-extension",
       documentId: "document-other",
@@ -210,7 +235,7 @@ test("validates setup and offscreen runtime document senders", () => {
   ]) {
     assert.throws(
       () => createDirectObservationContext(sender, runtimeApi),
-      /只接受扩展配对页或捕获页/
+      /来源扩展不匹配|只接受扩展配对页或捕获页|来源 origin 不匹配/
     );
   }
 });
@@ -391,17 +416,84 @@ test("same-context concurrent attempts are ambiguous and fail closed", async () 
   );
 });
 
-test("missing webRequest document context fails closed", async () => {
+test("Edge-style missing documentId uses a matching initiator", async () => {
   const observer = new DirectRequestObserver();
   const url = "ws://harmony-web-companion.local:44000/direct";
-  const attemptId = observer.begin(url, CONTEXT_A);
+  const attemptId = observer.begin(url, CONTEXT_NO_DOCUMENT);
   observer.observeBefore({
     url,
     requestId: "request-missing-context",
-    initiator: CONTEXT_A.initiator
+    initiator: CONTEXT_NO_DOCUMENT.initiator
+  });
+  observer.observeTerminal({
+    url,
+    requestId: "request-missing-context",
+    initiator: CONTEXT_NO_DOCUMENT.initiator,
+    ip: "192.168.1.8"
   });
   assert.deepEqual(
-    await observer.finishWhenReady(attemptId, "open", 0, CONTEXT_A),
+    await observer.finishWhenReady(
+      attemptId,
+      "open",
+      0,
+      CONTEXT_NO_DOCUMENT
+    ),
+    {
+      observedAddressClass: "private_ipv4",
+      socketOutcome: "open"
+    }
+  );
+});
+
+test("missing both webRequest initiator and matching document fails closed", async () => {
+  const observer = new DirectRequestObserver();
+  const url = "ws://harmony-web-companion.local:44000/direct";
+  const attemptId = observer.begin(url, CONTEXT_NO_DOCUMENT);
+  observer.observeBefore({
+    url,
+    requestId: "request-without-usable-context"
+  });
+  observer.observeTerminal({
+    url,
+    requestId: "request-without-usable-context",
+    ip: "192.168.1.8"
+  });
+  assert.deepEqual(
+    await observer.finishWhenReady(
+      attemptId,
+      "open",
+      0,
+      CONTEXT_NO_DOCUMENT
+    ),
+    {
+      observedAddressClass: "unresolved",
+      socketOutcome: "open"
+    }
+  );
+});
+
+test("another extension initiator cannot claim an Edge-style attempt", async () => {
+  const observer = new DirectRequestObserver();
+  const url = "ws://harmony-web-companion.local:44000/direct";
+  const attemptId = observer.begin(url, CONTEXT_NO_DOCUMENT);
+  observer.observeBefore({
+    url,
+    requestId: "request-other-extension",
+    initiator: "chrome-extension://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  });
+  observer.observeTerminal({
+    url,
+    requestId: "request-other-extension",
+    initiator: "chrome-extension://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    ip: "192.168.1.8"
+  });
+  assert.deepEqual(
+    await observer.finishWhenReady(
+      attemptId,
+      "open",
+      0,
+      CONTEXT_NO_DOCUMENT
+    ),
     {
       observedAddressClass: "unresolved",
       socketOutcome: "open"
