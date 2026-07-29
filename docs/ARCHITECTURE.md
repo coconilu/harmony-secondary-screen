@@ -90,7 +90,8 @@ response 才进入冲突状态。停止接收、Wi-Fi 地址或 interface index 
 扩展只接受来自 `setup.html` / `offscreen.html` 的运行时文档上下文，并要求 WebSocket 请求的
 `documentId` 与 `initiator` 精确一致。只有收到同一 requestId 的完成/失败终态、合并所有非空
 IP 后确认固定 `.local` 落到 RFC1918 或 IPv4 link-local，才发送 QR token 或长期 credential；
-终态缺失、上下文缺失/歧义、地址类别冲突或非私网时均在鉴权前断开。在地址观察完成且请求成功发出前，任何主动
+观测 API 缺失、终态缺失、上下文缺失/歧义、地址类别冲突或非私网时均在鉴权前断开；其中观测
+API 缺失时不创建自动地址 WebSocket。在地址观察完成且请求成功发出前，任何主动
 `paired` / `ready` 响应都按未请求消息拒绝，不能保存身份或打开媒体发送。它不解析浏览器错误
 字符串，也不保存观察到的原始 IP。不申请 `<all_urls>`、`webRequestBlocking`、
 `nativeMessaging`、Cookie、history、正文读取或脚本注入。

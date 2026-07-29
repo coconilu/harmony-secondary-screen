@@ -44,7 +44,8 @@ Edge 首次请求手动私网 IP 权限时可能关闭 popup。扩展会先把�
 再要求 WebSocket `onBeforeRequest` 的 `documentId` 与 `initiator` 精确一致，并按同一
 `requestId` 关联响应开始、完成与失败事件。只有观察到 `onCompleted` / `onErrorOccurred`
 终态后才合并本次握手所有非空实际目标 `ip`；终态缺失、文档上下文缺失/歧义或地址类别冲突均
-失败关闭。没有 `ip` 的终态不会覆盖先前已确认的地址类别；观察结果只保留
+失败关闭。运行时消息/观测 API 缺失时不会创建自动 `.local` WebSocket，更不会发送 token 或
+credential。没有 `ip` 的终态不会覆盖先前已确认的地址类别；观察结果只保留
 `private_ipv4` / `non_private` / `unresolved` 类别，原始 IP 不写入存储或日志。
 不申请 `nativeMessaging`、`<all_urls>`、`webRequestBlocking`、Cookie、history、页面正文或
 站点脚本注入。

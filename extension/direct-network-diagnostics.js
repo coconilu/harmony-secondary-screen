@@ -283,7 +283,9 @@ export function installDirectRequestObserver(observer, webRequestApi) {
 }
 
 export async function beginDirectTransportObservation(url) {
-  if (!globalThis.chrome?.runtime?.sendMessage) return null;
+  if (!globalThis.chrome?.runtime?.sendMessage) {
+    throw new Error("自动地址安全检查不可用，已拒绝建立 Receiver 连接");
+  }
   const response = await chrome.runtime.sendMessage({
     target: "service-worker",
     type: "BEGIN_DIRECT_OBSERVATION",
@@ -304,9 +306,7 @@ export async function finishDirectTransportObservation(
     return describeDirectTransportFailure({
       host,
       socketOutcome,
-      observedAddressClass: normalizeReceiverHost(host) === DEFAULT_RECEIVER_HOST
-        ? "private_ipv4"
-        : "unresolved"
+      observedAddressClass: "unresolved"
     });
   }
   const response = await chrome.runtime.sendMessage({

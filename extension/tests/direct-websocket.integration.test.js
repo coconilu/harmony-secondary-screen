@@ -13,6 +13,14 @@ import { createDirectVideoMessage } from "../direct-protocol.js";
 
 globalThis.WebSocket = WebSocket;
 
+const TEST_TRANSPORT_OBSERVATION = Object.freeze({
+  beginTransportObservation: async () => "explicit-test-observation",
+  finishTransportObservation: async () => ({
+    allowAuthentication: true,
+    recoverable: true
+  })
+});
+
 test("QR authorization pairs with a fake Receiver and returns stable credentials", async (context) => {
   const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
   context.after(() => server.close());
@@ -34,6 +42,7 @@ test("QR authorization pairs with a fake Receiver and returns stable credentials
     });
   });
   const trusted = await pairReceiver({
+    ...TEST_TRANSPORT_OBSERVATION,
     host: "192.168.1.8",
     authorization: {
       sessionId: "1".repeat(32),
@@ -64,6 +73,7 @@ test("expired QR is reported as authorization expiry, not a network failure", as
 
   await assert.rejects(
     pairReceiver({
+      ...TEST_TRANSPORT_OBSERVATION,
       host: "192.168.1.8",
       authorization: {
         sessionId: "1".repeat(32),
@@ -74,6 +84,66 @@ test("expired QR is reported as authorization expiry, not a network failure", as
     }),
     /二维码或短码已经过期，请重新生成/
   );
+});
+
+test("missing runtime observation sends neither pairing nor auth credentials", async (context) => {
+  const previousChrome = globalThis.chrome;
+  delete globalThis.chrome;
+  context.after(() => {
+    if (previousChrome === undefined) {
+      delete globalThis.chrome;
+    } else {
+      globalThis.chrome = previousChrome;
+    }
+  });
+
+  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  context.after(() => server.close());
+  await once(server, "listening");
+  const address = server.address();
+  assert.equal(typeof address, "object");
+  let socketFactoryCalls = 0;
+  let receivedRequests = 0;
+  server.on("connection", (socket) => {
+    socket.on("message", () => {
+      receivedRequests += 1;
+    });
+  });
+  const socketFactory = () => {
+    socketFactoryCalls += 1;
+    return new WebSocket(`ws://127.0.0.1:${address.port}`);
+  };
+
+  await assert.rejects(
+    pairReceiver({
+      host: "harmony-web-companion.local",
+      authorization: {
+        sessionId: "1".repeat(32),
+        token: "2".repeat(64)
+      },
+      senderId: "019fa3cf-75c7-7000-8000-000000000001",
+      socketFactory
+    }),
+    /安全检查不可用/
+  );
+
+  const connection = new DirectReceiverConnection({
+    trustedDevice: {
+      senderId: "019fa3cf-75c7-7000-8000-000000000001",
+      deviceId: "00112233445566778899aabbccddeeff",
+      credential: "a".repeat(64),
+      host: "harmony-web-companion.local",
+      pairedAt: 1
+    },
+    sourceEpoch: 9,
+    socketFactory,
+    heartbeatIntervalMs: 60_000
+  });
+  await assert.rejects(connection.connect(), /安全检查不可用/);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(socketFactoryCalls, 0);
+  assert.equal(receivedRequests, 0);
+  assert.equal(connection.connected, false);
 });
 
 test("unsolicited paired response cannot bypass the private-address gate", async (context) => {
@@ -97,6 +167,7 @@ test("unsolicited paired response cannot bypass the private-address gate", async
 
   await assert.rejects(
     pairReceiver({
+      ...TEST_TRANSPORT_OBSERVATION,
       host: "harmony-web-companion.local",
       authorization: {
         sessionId: "1".repeat(32),
@@ -135,6 +206,7 @@ test("unsolicited ready response cannot authenticate or enable media", async (co
   });
 
   const connection = new DirectReceiverConnection({
+    ...TEST_TRANSPORT_OBSERVATION,
     trustedDevice: {
       senderId: "019fa3cf-75c7-7000-8000-000000000001",
       deviceId: "00112233445566778899aabbccddeeff",
@@ -204,6 +276,7 @@ test("direct WebSocket authenticates and delivers one Annex-B AU to a fake Recei
   });
 
   const connection = new DirectReceiverConnection({
+    ...TEST_TRANSPORT_OBSERVATION,
     trustedDevice: {
       senderId: "019fa3cf-75c7-7000-8000-000000000001",
       deviceId: "00112233445566778899aabbccddeeff",
@@ -260,6 +333,7 @@ test("direct WebSocket does not expose a reconnect as connected before ready", a
   });
 
   const connection = new DirectReceiverConnection({
+    ...TEST_TRANSPORT_OBSERVATION,
     trustedDevice: {
       senderId: "019fa3cf-75c7-7000-8000-000000000001",
       deviceId: "00112233445566778899aabbccddeeff",
@@ -329,6 +403,7 @@ test("direct WebSocket recovers an abnormal drop without replacing the capture s
   });
 
   const connection = new DirectReceiverConnection({
+    ...TEST_TRANSPORT_OBSERVATION,
     trustedDevice: {
       senderId: "019fa3cf-75c7-7000-8000-000000000001",
       deviceId: "00112233445566778899aabbccddeeff",
@@ -398,6 +473,7 @@ test("direct WebSocket recovery stops immediately when Receiver rejects auth", a
   });
 
   const connection = new DirectReceiverConnection({
+    ...TEST_TRANSPORT_OBSERVATION,
     trustedDevice: {
       senderId: "019fa3cf-75c7-7000-8000-000000000001",
       deviceId: "00112233445566778899aabbccddeeff",
@@ -471,6 +547,7 @@ test("direct WebSocket recovery survives more than 184 seconds without buffering
   });
 
   const connection = new DirectReceiverConnection({
+    ...TEST_TRANSPORT_OBSERVATION,
     trustedDevice: {
       senderId: "019fa3cf-75c7-7000-8000-000000000001",
       deviceId: "00112233445566778899aabbccddeeff",
@@ -559,6 +636,7 @@ test("direct WebSocket recovery survives more than 184 seconds without buffering
 
 test("direct WebSocket recovery cancellation prevents an old source from retrying", async () => {
   const connection = new DirectReceiverConnection({
+    ...TEST_TRANSPORT_OBSERVATION,
     trustedDevice: {
       senderId: "019fa3cf-75c7-7000-8000-000000000001",
       deviceId: "00112233445566778899aabbccddeeff",
@@ -596,6 +674,7 @@ test("direct WebSocket recovery cancellation prevents an old source from retryin
 
 test("direct WebSocket recovery generation change cannot overwrite a new source", async () => {
   const connection = new DirectReceiverConnection({
+    ...TEST_TRANSPORT_OBSERVATION,
     trustedDevice: {
       senderId: "019fa3cf-75c7-7000-8000-000000000001",
       deviceId: "00112233445566778899aabbccddeeff",

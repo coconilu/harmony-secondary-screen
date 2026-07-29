@@ -2,10 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  beginDirectTransportObservation,
   classifyObservedAddress,
   createDirectObservationContext,
   describeDirectTransportFailure,
   DirectRequestObserver,
+  finishDirectTransportObservation,
   installDirectRequestObserver
 } from "../direct-network-diagnostics.js";
 
@@ -94,6 +96,47 @@ test("never allows credentials before a private automatic address is observed", 
     socketOutcome: "open",
     observedAddressClass: "private_ipv4"
   }).allowAuthentication, true);
+});
+
+test("missing runtime observation fails closed for automatic host", async () => {
+  const previousChrome = globalThis.chrome;
+  delete globalThis.chrome;
+  try {
+    await assert.rejects(
+      beginDirectTransportObservation(
+        "ws://harmony-web-companion.local:44000/direct"
+      ),
+      /安全检查不可用/
+    );
+    assert.deepEqual(
+      await finishDirectTransportObservation(
+        null,
+        "harmony-web-companion.local",
+        "open"
+      ),
+      {
+        code: "automatic_address_unverified",
+        message:
+          "无法验证自动地址的私网归属，已拒绝发送凭据；请改用平板显示的数字 IPv4",
+        allowAuthentication: false,
+        recoverable: false
+      }
+    );
+    assert.equal(
+      (await finishDirectTransportObservation(
+        null,
+        "192.168.1.8",
+        "open"
+      )).allowAuthentication,
+      true
+    );
+  } finally {
+    if (previousChrome === undefined) {
+      delete globalThis.chrome;
+    } else {
+      globalThis.chrome = previousChrome;
+    }
+  }
 });
 
 test("correlates one WebSocket request without persisting its raw address", async () => {
