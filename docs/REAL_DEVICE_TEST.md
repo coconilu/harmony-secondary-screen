@@ -8,7 +8,7 @@
 | --- | --- |
 | 日期 / 操作者 / commit | 待填写 |
 | Windows / Edge 版本 | 待填写 |
-| 扩展版本 | `0.5.5` |
+| 扩展版本 | `0.5.6` |
 | HarmonyOS / API / Receiver 构建 | 待填写 |
 | 平板型号（只作证据） | 待填写 |
 | Wi-Fi / AP / VPN 状态 | 待填写 |
@@ -66,6 +66,20 @@ DNS-SD 注册成功、单元测试或 TCP 端口可达均不能替代 Windows �
 | 不可解析 | 阻断/隔离 multicast 后尝试默认连接 | 显示“自动地址解析失败/超时”，唯一下一步为数字 IPv4 回退 |
 | 手动回退 | 输入 Receiver 显示的数字 IPv4 | 仅请求精确 origin；扫码与配对成功；不清除既有设备身份 |
 
+自动地址失败时，只抄录错误末尾完整的 `AD1` 诊断码，不打开 DevTools、不导出测试结果。
+按下表解释本次 attempt，不把任何原始网络或鉴权值写入记录：
+
+| 诊断字段 | 真机记录 |
+| --- | --- |
+| `B` | `1` 表示 BEGIN attempt 已创建；`0` 表示安全检查在创建前失败 |
+| `Q` | `bound` 表示绑定 `onBeforeRequest`；`not_seen` 表示未见精确目标请求；其余值是稳定的形状或显式上下文拒绝枚举 |
+| `R` / `T` | 是否见 `onResponseStarted`，以及 `completed` / `error` / `none` / `multiple` 终态 |
+| `I` / `C` | 是否有事件带非空 IP，以及绑定后的上下文/歧义是否 invalid |
+| `S` | `not_started` / `open` / `error` / `timeout` / `other` WebSocket 结果 |
+
+成功连接不应显示诊断码。诊断码不得包含或替代记录 IP、URL、requestId、documentId、
+origin/initiator、token、短码、credential、网页标题/URL或精确时间。
+
 每次记录：Receiver 与扩展 exact commit、Windows/Edge/HarmonyOS 版本、DNS-SD 注册状态、固定 A
 发布/冲突状态、Windows 解析到的地址类别、WebSocket 连接耗时和用户可见结果。不得保存私网地址
 原值、token、短码、credential、网页 URL/标题或视频帧到仓库。
@@ -79,6 +93,7 @@ DNS-SD 注册成功、单元测试或 TCP 端口可达均不能替代 Windows �
 | 权限 | 仅新增只读 `webRequest`；固定与可选 host 范围未扩大；无 `<all_urls>` 或 `webRequestBlocking` |
 | HarmonyOS 构建 | unsigned Release 已编译 `recvmsg`、`IP_PKTINFO`、`IP_RECVTTL`、`IP_MULTICAST_ALL=0` 生产 adapter；不代表目标设备运行时 multicast socket 与 Edge 解析成功 |
 | 真实 Edge + Receiver | `9f5bcd272823b9db60c9a051a632b66b2963dee7` 已安装：Receiver 显示两层发布成功，但 Windows/Edge `.local` 解析失败。实机抓包确认 Windows 在 WLAN 23 向 `224.0.0.251:5353` 发出源端口 5353、A/IN、IP TTL 1 的查询；旧门禁未响应。同查询改为 TTL 255 后收到一个正确 A response。TTL 1 修复仍须安装新的 exact-head 复验，当前不得标记 PASS。 |
+| 真实 Edge 0.5.5 | 扩展 `f54d47d20d1df302fb4a5c4c0250087ebbbcbc6f` 在 Receiver 重启、Windows `.local` 已解析为私网 IPv4 且 `hostname:44000` 可达时，扫码点击完成连接仍返回 `automatic_address_unverified`。0.5.5 未覆盖真实事件；0.5.6 只增加非敏感 `AD1` 阶段码，尚待重载复验，不能标记 PASS。 |
 
 在上述真机行补齐 exact-head 证据前，Issue #19 的首两项端到端验收不得标记为 PASS。
 

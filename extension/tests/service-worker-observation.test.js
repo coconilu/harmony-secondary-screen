@@ -126,7 +126,9 @@ test("service worker keeps no-document attempts fail-closed when ambiguous", asy
       ok: true,
       observation: {
         observedAddressClass: "unresolved",
-        socketOutcome: "open"
+        socketOutcome: "open",
+        diagnosticCode:
+          "AD1|B=1|Q=ambiguous|R=0|T=completed|I=1|C=1|S=open"
       }
     });
   }
@@ -153,7 +155,9 @@ test("service worker rejects a wrong FINISH page without consuming the attempt",
     ok: true,
     observation: {
       observedAddressClass: "unresolved",
-      socketOutcome: "open"
+      socketOutcome: "open",
+      diagnosticCode:
+        "AD1|B=0|Q=not_seen|R=0|T=none|I=0|C=1|S=open"
     }
   });
 
@@ -184,7 +188,9 @@ test("service worker returns unresolved for an unknown FINISH capability", async
     ok: true,
     observation: {
       observedAddressClass: "unresolved",
-      socketOutcome: "open"
+      socketOutcome: "open",
+      diagnosticCode:
+        "AD1|B=0|Q=not_seen|R=0|T=none|I=0|C=1|S=open"
     }
   });
 });

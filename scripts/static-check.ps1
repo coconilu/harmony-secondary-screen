@@ -49,6 +49,13 @@ try {
   }
   if ($LASTEXITCODE -ne 1) { throw "Extension privacy scan failed: $LASTEXITCODE" }
 
+  $diagnosticPersistence = & rg -n 'console\.|chrome\.storage|storage\.(local|session|sync)' `
+    extension\direct-network-diagnostics.js 2>$null
+  if ($LASTEXITCODE -eq 0) {
+    throw "Automatic-address diagnostics must remain attempt-local and user-visible only:`n$diagnosticPersistence"
+  }
+  if ($LASTEXITCODE -ne 1) { throw "Diagnostic persistence scan failed: $LASTEXITCODE" }
+
   foreach ($check in @(
     @{ Path = 'extension\offscreen.js'; Pattern = 'audio: false' },
     @{ Path = 'extension\offscreen.js'; Pattern = 'new DirectReceiverConnection' },
@@ -75,14 +82,17 @@ try {
     @{ Path = 'extension\direct-network-diagnostics.js'; Pattern = 'createDirectObservationContext' },
     @{ Path = 'extension\direct-network-diagnostics.js'; Pattern = 'new URL(runtimeApi.getURL(""))' },
     @{ Path = 'extension\direct-network-diagnostics.js'; Pattern = 'terminalObserved' },
-    @{ Path = 'extension\direct-network-diagnostics.js'; Pattern = 'matchesInitialEventContext' },
+    @{ Path = 'extension\direct-network-diagnostics.js'; Pattern = 'classifyInitialEventContext' },
     @{ Path = 'extension\direct-network-diagnostics.js'; Pattern = 'hasExtensionDocumentRequestShape' },
+    @{ Path = 'extension\direct-network-diagnostics.js'; Pattern = 'DIAGNOSTIC_CODE_PATTERN' },
     @{ Path = 'extension\direct-network-diagnostics.js'; Pattern = 'onCompleted.addListener' },
     @{ Path = 'extension\direct-network-diagnostics.js'; Pattern = 'if (!globalThis.chrome?.runtime?.sendMessage)' },
     @{ Path = 'extension\service-worker.js'; Pattern = 'handleDirectObservationMessage' },
     @{ Path = 'extension\tests\service-worker-observation.test.js'; Pattern = 'without optional origin or documentId' },
     @{ Path = 'extension\tests\direct-websocket.integration.test.js'; Pattern = 'missing runtime observation sends neither pairing nor auth credentials' },
     @{ Path = 'extension\tests\direct-websocket.integration.test.js'; Pattern = 'sends no token or credential without a private IP' },
+    @{ Path = 'extension\tests\direct-network-diagnostics.test.js'; Pattern = 'diagnostic codes are stable enums and never echo supplied values' },
+    @{ Path = 'extension\tests\direct-network-diagnostics.test.js'; Pattern = 'diagnoses every initial request-shape and explicit-context rejection' },
     @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'IsCurrentWifiIpv4' },
     @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'tcpAddress.sin_addr = address' },
     @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'std::strncmp(item->ifa_name, "wlan", 4)' },

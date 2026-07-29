@@ -73,6 +73,20 @@ function createEdgeFallbackTransport(observedIp) {
   };
 }
 
+function isRedactedDiagnosticFailure(error) {
+  assert.match(error.message, /诊断码：AD1\|B=1\|Q=bound/);
+  for (const sensitive of [
+    "203.0.113.8",
+    "harmony-web-companion.local",
+    "1".repeat(32),
+    "2".repeat(64),
+    "a".repeat(64)
+  ]) {
+    assert.equal(error.message.includes(sensitive), false);
+  }
+  return true;
+}
+
 test("QR authorization pairs with a fake Receiver and returns stable credentials", async (context) => {
   const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
   context.after(() => server.close());
@@ -202,7 +216,7 @@ test("Edge fallback sends no token or credential without a private IP", async (c
         senderId: "019fa3cf-75c7-7000-8000-000000000001",
         socketFactory: pairingTransport.wrapSocketFactory(actualUrl)
       }),
-      /已拒绝/
+      isRedactedDiagnosticFailure
     );
 
     const authTransport = createEdgeFallbackTransport(observedIp);
@@ -221,7 +235,7 @@ test("Edge fallback sends no token or credential without a private IP", async (c
     });
     await assert.rejects(
       connection.connect(),
-      /已拒绝/
+      isRedactedDiagnosticFailure
     );
     assert.equal(connection.connected, false);
   }

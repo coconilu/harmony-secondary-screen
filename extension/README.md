@@ -53,6 +53,23 @@ Edge 首次请求手动私网 IP 权限时可能关闭 popup。扩展会先把�
 失败关闭。运行时消息/观测 API 缺失时不会创建自动 `.local` WebSocket，更不会发送 token 或
 credential。没有 `ip` 的终态不会覆盖先前已确认的地址类别；观察结果只保留
 `private_ipv4` / `non_private` / `unresolved` 类别，原始 IP 不写入存储或日志。
+自动地址失败时，用户可见错误末尾会显示一次当前连接尝试的 `AD1` 诊断码；成功路径不显示。
+诊断状态只存在于本次 attempt 的内存对象中，FINISH 后立即删除，不写入 console、storage 或测试导出。
+固定字段如下：
+
+| 字段 | 含义 |
+| --- | --- |
+| `B` | BEGIN 是否成功创建 attempt |
+| `Q` | `onBeforeRequest` 是否绑定；`not_seen`、`bound`、`ambiguous`，或具体的 request id、请求形状、initiator/document 拒绝枚举 |
+| `R` | 是否见到同一尝试的 `onResponseStarted` |
+| `T` | 终态：`none`、`completed`、`error` 或异常的 `multiple` |
+| `I` | 是否有相关事件携带非空 `ip`；不包含 IP 原值或地址类别 |
+| `C` | 已绑定上下文是否失配，或并发/终态是否产生歧义 |
+| `S` | WebSocket 结果：`not_started`、`open`、`error`、`timeout` 或 `other` |
+
+例如 `AD1|B=1|Q=shape_parent|R=1|T=completed|I=1|C=0|S=open`
+只说明浏览器事件缺少 `parentFrameId`，不会暴露 URL、requestId、documentId、origin/initiator、
+token、短码、credential、网页信息、原始 IP 或精确时间。
 不申请 `nativeMessaging`、`<all_urls>`、`webRequestBlocking`、Cookie、history、页面正文或
 站点脚本注入。
 
@@ -78,7 +95,8 @@ npm audit --audit-level=high
 `sourceEpoch` 的异常断线恢复与关键帧请求、虚拟时钟超过 184 秒后继续恢复、断线期间不缓存
 视频 payload、认证 ready 前禁止发送、AU 丢弃后的关键帧恢复、STOP/换源取消旧恢复，以及模拟
 权限弹窗中断和 popup 重建的模块测试；地址诊断测试分别覆盖解析失败、非私网、连接超时和
-WebSocket 不可达，并验证固定 `.local` 未观察到私网地址前不会发送 token/credential。
+WebSocket 不可达，逐项覆盖事件阶段码、请求形状/显式上下文拒绝枚举、诊断值白名单和
+敏感值不回显，并验证固定 `.local` 未观察到私网地址前不会发送 token/credential。
 真实 ws 恶意 Receiver 测试还会在地址观察完成前主动发送 `paired` / `ready`，验证扩展不保存身份、
 不进入 authenticated、不发送 auth 或媒体。
 Receiver 测试覆盖 same-epoch 重连、完整 SPS/PPS/IDR

@@ -128,7 +128,8 @@ test("missing runtime observation fails closed for automatic host", async () => 
       {
         code: "automatic_address_unverified",
         message:
-          "无法验证自动地址的私网归属，已拒绝发送凭据；请改用平板显示的数字 IPv4",
+          "无法验证自动地址的私网归属，已拒绝发送凭据；请改用平板显示的数字 IPv4" +
+          "（诊断码：AD1|B=0|Q=not_seen|R=0|T=none|I=0|C=0|S=open）",
         allowAuthentication: false,
         recoverable: false
       }
@@ -148,6 +149,136 @@ test("missing runtime observation fails closed for automatic host", async () => 
       globalThis.chrome = previousChrome;
     }
   }
+});
+
+test("diagnostic codes are stable enums and never echo supplied values", () => {
+  const secret = [
+    "ws://harmony-web-companion.local:44000/direct",
+    "request-sensitive",
+    "document-sensitive",
+    "chrome-extension://sensitive",
+    "token-sensitive",
+    "123456",
+    "credential-sensitive"
+  ].join(":");
+  const verdict = describeDirectTransportFailure({
+    host: "harmony-web-companion.local",
+    socketOutcome: "open",
+    observedAddressClass: "unresolved",
+    diagnosticCode: `AD1|B=1|Q=${secret}`
+  });
+  assert.match(verdict.message, /诊断码：AD1\|B=0\|Q=not_seen/);
+  assert.equal(verdict.message.includes(secret), false);
+
+  const connected = describeDirectTransportFailure({
+    host: "harmony-web-companion.local",
+    socketOutcome: "open",
+    observedAddressClass: "private_ipv4",
+    diagnosticCode: secret
+  });
+  assert.equal(connected.code, "connected");
+  assert.equal(connected.message, "");
+  assert.equal("diagnosticCode" in connected, false);
+});
+
+test("diagnoses every initial request-shape and explicit-context rejection", () => {
+  const url = "ws://harmony-web-companion.local:44000/direct";
+  const cases = [
+    ["request_id", { requestId: undefined }],
+    ["request_id", { requestId: 42 }],
+    ["shape_type", { type: undefined }],
+    ["shape_tab", { tabId: 8 }],
+    ["shape_frame", { frameId: -1 }],
+    ["shape_parent", { parentFrameId: undefined }],
+    ["initiator", {
+      initiator: "chrome-extension://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }],
+    ["document", { documentId: "document-other" }]
+  ];
+  for (const [expected, extra] of cases) {
+    const observer = new DirectRequestObserver();
+    const attemptId = observer.begin(url, CONTEXT_A);
+    observer.observeBefore(requestDetails(
+      url,
+      "request-sensitive",
+      CONTEXT_A,
+      extra
+    ));
+    const observation = observer.finish(
+      attemptId,
+      "open",
+      CONTEXT_A
+    );
+    assert.equal(
+      observation.diagnosticCode,
+      `AD1|B=1|Q=${expected}|R=0|T=none|I=0|C=0|S=open`
+    );
+    assert.equal(observation.observedAddressClass, "unresolved");
+    assert.equal(observer.attempts.size, 0);
+  }
+});
+
+test("diagnoses response, terminal, IP, invalid context and socket outcome", () => {
+  const url = "ws://harmony-web-companion.local:44000/direct";
+  const observer = new DirectRequestObserver();
+  const attemptId = observer.begin(url, CONTEXT_A);
+  observer.observeResponse(requestDetails(
+    url,
+    "request-sensitive",
+    CONTEXT_A,
+    { ip: "192.168.123.45" }
+  ));
+  observer.observeTerminal(requestDetails(
+    url,
+    "request-sensitive",
+    CONTEXT_A
+  ), "error");
+
+  const observation = observer.finish(
+    attemptId,
+    "timeout",
+    CONTEXT_A
+  );
+  assert.deepEqual(observation, {
+    observedAddressClass: "unresolved",
+    socketOutcome: "timeout",
+    diagnosticCode:
+      "AD1|B=1|Q=not_seen|R=1|T=error|I=1|C=0|S=timeout"
+  });
+  assert.equal(observer.attempts.size, 0);
+  for (const sensitive of [
+    url,
+    "request-sensitive",
+    "document-a",
+    EXTENSION_ORIGIN,
+    "192.168.123.45"
+  ]) {
+    assert.equal(observation.diagnosticCode.includes(sensitive), false);
+  }
+});
+
+test("conflicting terminal events diagnose invalid context and fail closed", () => {
+  const url = "ws://harmony-web-companion.local:44000/direct";
+  const observer = new DirectRequestObserver();
+  const attemptId = observer.begin(url, CONTEXT_A);
+  observer.observeBefore(requestDetails(url, "request-terminal-multiple"));
+  observer.observeTerminal(requestDetails(
+    url,
+    "request-terminal-multiple",
+    CONTEXT_A,
+    { ip: "192.168.1.8" }
+  ), "completed");
+  observer.observeTerminal(requestDetails(
+    url,
+    "request-terminal-multiple",
+    CONTEXT_A
+  ), "error");
+  assert.deepEqual(observer.finish(attemptId, "open", CONTEXT_A), {
+    observedAddressClass: "unresolved",
+    socketOutcome: "open",
+    diagnosticCode:
+      "AD1|B=1|Q=bound|R=0|T=multiple|I=1|C=1|S=open"
+  });
 });
 
 test("correlates one WebSocket request without persisting its raw address", async () => {
@@ -174,7 +305,9 @@ test("correlates one WebSocket request without persisting its raw address", asyn
   now += 20_000;
   assert.deepEqual(observer.finish(expired, "error", CONTEXT_A), {
     observedAddressClass: "unresolved",
-    socketOutcome: "error"
+    socketOutcome: "error",
+    diagnosticCode:
+      "AD1|B=1|Q=expired|R=0|T=none|I=0|C=0|S=error"
   });
 });
 
@@ -285,7 +418,9 @@ test("waits for terminal and merges a late conflicting address", async () => {
 
   assert.deepEqual(await observation, {
     observedAddressClass: "non_private",
-    socketOutcome: "open"
+    socketOutcome: "open",
+    diagnosticCode:
+      "AD1|B=1|Q=bound|R=1|T=completed|I=1|C=0|S=open"
   });
 });
 
@@ -336,7 +471,9 @@ test("fails closed when no terminal event arrives before the bound", async () =>
     await observer.finishWhenReady(attemptId, "open", 20, CONTEXT_A),
     {
       observedAddressClass: "unresolved",
-      socketOutcome: "open"
+      socketOutcome: "open",
+      diagnosticCode:
+        "AD1|B=1|Q=bound|R=1|T=none|I=1|C=0|S=open"
     }
   );
 });
@@ -384,7 +521,12 @@ test("an unrelated document cannot claim a pending same-URL attempt", async () =
     100,
     CONTEXT_A
   );
-  assert.equal(observation.observedAddressClass, "non_private");
+  assert.deepEqual(observation, {
+    observedAddressClass: "unresolved",
+    socketOutcome: "open",
+    diagnosticCode:
+      "AD1|B=1|Q=bound|R=1|T=completed|I=1|C=1|S=open"
+  });
   assert.equal(describeDirectTransportFailure({
     host: "harmony-web-companion.local",
     ...observation
@@ -408,14 +550,18 @@ test("same-context concurrent attempts are ambiguous and fail closed", async () 
     await observer.finishWhenReady(firstAttempt, "open", 0, CONTEXT_A),
     {
       observedAddressClass: "unresolved",
-      socketOutcome: "open"
+      socketOutcome: "open",
+      diagnosticCode:
+        "AD1|B=1|Q=ambiguous|R=0|T=completed|I=1|C=1|S=open"
     }
   );
   assert.deepEqual(
     await observer.finishWhenReady(secondAttempt, "open", 0, CONTEXT_A),
     {
       observedAddressClass: "unresolved",
-      socketOutcome: "open"
+      socketOutcome: "open",
+      diagnosticCode:
+        "AD1|B=1|Q=ambiguous|R=0|T=completed|I=1|C=1|S=open"
     }
   );
 });
@@ -557,7 +703,9 @@ test("an external tab cannot claim the no-context fallback", async () => {
     ),
     {
       observedAddressClass: "unresolved",
-      socketOutcome: "open"
+      socketOutcome: "open",
+      diagnosticCode:
+        "AD1|B=1|Q=shape_tab|R=0|T=completed|I=1|C=0|S=open"
     }
   );
 });
@@ -596,7 +744,9 @@ test("an external worker cannot claim the no-context fallback", async () => {
     ),
     {
       observedAddressClass: "unresolved",
-      socketOutcome: "open"
+      socketOutcome: "open",
+      diagnosticCode:
+        "AD1|B=1|Q=shape_frame|R=0|T=completed|I=1|C=0|S=open"
     }
   );
 });
@@ -633,7 +783,9 @@ test("another extension initiator cannot claim an Edge-style attempt", async () 
     ),
     {
       observedAddressClass: "unresolved",
-      socketOutcome: "open"
+      socketOutcome: "open",
+      diagnosticCode:
+        "AD1|B=1|Q=initiator|R=0|T=completed|I=1|C=0|S=open"
     }
   );
 });
@@ -654,7 +806,9 @@ test("a different extension document cannot consume the finish result", async ()
     await observer.finishWhenReady(attemptId, "open", 0, CONTEXT_B),
     {
       observedAddressClass: "unresolved",
-      socketOutcome: "open"
+      socketOutcome: "open",
+      diagnosticCode:
+        "AD1|B=0|Q=not_seen|R=0|T=none|I=0|C=1|S=open"
     }
   );
   assert.deepEqual(
@@ -687,7 +841,9 @@ test("a terminal event with mismatched context invalidates the attempt", async (
     await observer.finishWhenReady(attemptId, "open", 100, CONTEXT_A),
     {
       observedAddressClass: "unresolved",
-      socketOutcome: "open"
+      socketOutcome: "open",
+      diagnosticCode:
+        "AD1|B=1|Q=bound|R=1|T=completed|I=1|C=1|S=open"
     }
   );
 });
@@ -703,7 +859,9 @@ test("a terminal event without any address remains unresolved", async () => {
     await observer.finishWhenReady(attemptId, "error", 100, CONTEXT_A),
     {
       observedAddressClass: "unresolved",
-      socketOutcome: "error"
+      socketOutcome: "error",
+      diagnosticCode:
+        "AD1|B=1|Q=bound|R=0|T=completed|I=0|C=0|S=error"
     }
   );
 });
@@ -740,7 +898,9 @@ test("a different requestId cannot provide the private terminal result", async (
     ),
     {
       observedAddressClass: "unresolved",
-      socketOutcome: "open"
+      socketOutcome: "open",
+      diagnosticCode:
+        "AD1|B=1|Q=bound|R=0|T=none|I=0|C=0|S=open"
     }
   );
 });
@@ -753,7 +913,9 @@ test("expired observation remains unresolved", () => {
   now += 20_000;
   assert.deepEqual(observer.finish(attemptId, "error", CONTEXT_A), {
     observedAddressClass: "unresolved",
-    socketOutcome: "error"
+    socketOutcome: "error",
+    diagnosticCode:
+      "AD1|B=1|Q=expired|R=0|T=none|I=0|C=0|S=error"
   });
 });
 

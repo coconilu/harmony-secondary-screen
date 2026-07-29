@@ -14,6 +14,25 @@ const OBSERVATION_PAGE_PATHS = Object.freeze([
   "setup.html",
   "offscreen.html"
 ]);
+const DIAGNOSTIC_CODE_PATTERN =
+  /^AD1\|B=[01]\|Q=(not_seen|bound|request_id|shape_type|shape_tab|shape_frame|shape_parent|initiator|document|expired|ambiguous)\|R=[01]\|T=(none|completed|error|multiple)\|I=[01]\|C=[01]\|S=(not_started|open|error|timeout|other)$/;
+
+function formatDirectObservationDiagnostic(attempt, socketOutcome) {
+  const socket = ["not_started", "open", "error", "timeout"]
+    .includes(socketOutcome) ? socketOutcome : "other";
+  return `AD1|B=${attempt?.url ? 1 : 0}` +
+    `|Q=${attempt?.beforeDiagnostic ?? "not_seen"}` +
+    `|R=${attempt?.responseStartedObserved ? 1 : 0}` +
+    `|T=${attempt?.terminalDiagnostic ?? "none"}` +
+    `|I=${attempt?.ipObserved ? 1 : 0}` +
+    `|C=${attempt?.contextInvalid ? 1 : 0}|S=${socket}`;
+}
+
+function normalizeDiagnosticCode(value, socketOutcome) {
+  return typeof value === "string" && DIAGNOSTIC_CODE_PATTERN.test(value)
+    ? value
+    : formatDirectObservationDiagnostic(null, socketOutcome);
+}
 
 export function classifyObservedAddress(value) {
   const octets = String(value ?? "").split(".");
@@ -36,15 +55,20 @@ export function classifyObservedAddress(value) {
 export function describeDirectTransportFailure({
   host,
   socketOutcome,
-  observedAddressClass = "unresolved"
+  observedAddressClass = "unresolved",
+  diagnosticCode
 }) {
   const normalizedHost = normalizeReceiverHost(host);
   const automatic = normalizedHost === DEFAULT_RECEIVER_HOST;
+  const diagnosticSuffix = automatic
+    ? `（诊断码：${normalizeDiagnosticCode(diagnosticCode, socketOutcome)}）`
+    : "";
   if (automatic && observedAddressClass === "non_private") {
     return {
       code: "automatic_address_not_private",
       message:
-        "自动地址解析到了非私网地址，已拒绝连接；请改用平板显示的数字 IPv4",
+        "自动地址解析到了非私网地址，已拒绝连接；请改用平板显示的数字 IPv4" +
+        diagnosticSuffix,
       allowAuthentication: false,
       recoverable: false
     };
@@ -54,7 +78,8 @@ export function describeDirectTransportFailure({
       return {
         code: "automatic_address_unverified",
         message:
-          "无法验证自动地址的私网归属，已拒绝发送凭据；请改用平板显示的数字 IPv4",
+          "无法验证自动地址的私网归属，已拒绝发送凭据；请改用平板显示的数字 IPv4" +
+          diagnosticSuffix,
         allowAuthentication: false,
         recoverable: false
       };
@@ -84,8 +109,10 @@ export function describeDirectTransportFailure({
         ? "automatic_address_resolution_timeout"
         : "automatic_address_resolution_failed",
       message: socketOutcome === "timeout"
-        ? "自动地址解析超时；请改用平板显示的数字 IPv4"
-        : "自动地址解析失败；请改用平板显示的数字 IPv4",
+        ? "自动地址解析超时；请改用平板显示的数字 IPv4" +
+          diagnosticSuffix
+        : "自动地址解析失败；请改用平板显示的数字 IPv4" +
+          diagnosticSuffix,
       allowAuthentication: false,
       recoverable: true
     };
@@ -95,8 +122,10 @@ export function describeDirectTransportFailure({
       ? "automatic_address_connection_timeout"
       : "automatic_address_unreachable",
     message: socketOutcome === "timeout"
-      ? "已解析到平板私网地址，但连接超时；请确认局域网未隔离"
-      : "已解析到平板私网地址，但 Receiver WebSocket 不可达；请确认 Receiver 正在接收",
+      ? "已解析到平板私网地址，但连接超时；请确认局域网未隔离" +
+        diagnosticSuffix
+      : "已解析到平板私网地址，但 Receiver WebSocket 不可达；请确认 Receiver 正在接收" +
+        diagnosticSuffix,
     allowAuthentication: false,
     recoverable: true
   };
@@ -169,44 +198,88 @@ export class DirectRequestObserver {
       addressObserved: false,
       terminalObserved: false,
       contextInvalid: false,
+      beforeDiagnostic: "not_seen",
+      responseStartedObserved: false,
+      terminalDiagnostic: "none",
+      ipObserved: false,
       expiresAt: this.now() + OBSERVATION_TTL_MS
     });
     return attemptId;
   }
 
   observeBefore(details) {
-    if (details?.requestId === undefined) return;
-    const candidates = [...this.attempts.entries()]
+    this.prune();
+    const exactUrlAttempts = [...this.attempts.entries()]
       .filter(([, attempt]) =>
         attempt.requestId === null &&
-        attempt.url === details?.url &&
-        matchesInitialEventContext(attempt, details) &&
-        attempt.expiresAt >= this.now())
+        attempt.url === details?.url);
+    const candidates = [];
+    for (const entry of exactUrlAttempts) {
+      const attempt = entry[1];
+      if (details?.ip) attempt.ipObserved = true;
+      const classification = classifyInitialEventContext(
+        attempt,
+        details,
+        this.now()
+      );
+      if (classification === "bound") {
+        candidates.push(entry);
+      } else {
+        attempt.beforeDiagnostic = classification;
+      }
+    }
     if (candidates.length !== 1) {
       for (const [, attempt] of candidates) {
         attempt.contextInvalid = true;
+        attempt.beforeDiagnostic = "ambiguous";
       }
       return;
     }
     const attempt = candidates[0][1];
     attempt.requestId = String(details.requestId);
+    attempt.beforeDiagnostic = "bound";
+    if (
+      attempt.responseStartedObserved ||
+      attempt.terminalDiagnostic !== "none"
+    ) {
+      attempt.contextInvalid = true;
+    }
     attempt.boundDocumentId =
       optionalString(details?.documentId) ?? attempt.boundDocumentId;
   }
 
   observeResponse(details) {
-    this.observeAddress(details, false);
+    this.observeAddress(details, "response");
   }
 
-  observeTerminal(details) {
-    this.observeAddress(details, true);
+  observeTerminal(details, outcome = "completed") {
+    this.observeAddress(
+      details,
+      outcome === "error" ? "error" : "completed"
+    );
   }
 
-  observeAddress(details, terminal) {
+  observeAddress(details, stage) {
     const attempt = [...this.attempts.values()].find(
       (candidate) => candidate.requestId === String(details?.requestId)
     );
-    if (!attempt) return;
+    if (!attempt) {
+      const pending = [...this.attempts.values()].filter(
+        (candidate) =>
+          candidate.requestId === null &&
+          candidate.url === details?.url &&
+          candidate.expiresAt >= this.now()
+      );
+      for (const candidate of pending) {
+        if (pending.length > 1) {
+          candidate.contextInvalid = true;
+          candidate.beforeDiagnostic = "ambiguous";
+        }
+        recordObservedStage(candidate, details, stage, false);
+      }
+      return;
+    }
+    recordObservedStage(attempt, details, stage, true);
     if (!matchesBoundEventContext(attempt, details)) {
       attempt.contextInvalid = true;
     } else if (details?.ip) {
@@ -221,33 +294,33 @@ export class DirectRequestObserver {
       }
       attempt.addressObserved = true;
     }
-    if (terminal) attempt.terminalObserved = true;
   }
 
   finish(attemptId, socketOutcome, context) {
     const attempt = this.attempts.get(String(attemptId));
     if (!attempt || !matchesObservationContext(attempt, context)) {
-      return {
-        observedAddressClass: "unresolved",
-        socketOutcome
-      };
+      return createObservation({ contextInvalid: true }, socketOutcome);
     }
     this.attempts.delete(String(attemptId));
+    if (
+      attempt.expiresAt < this.now() &&
+      attempt.beforeDiagnostic === "not_seen"
+    ) {
+      attempt.beforeDiagnostic = "expired";
+    }
     if (
       attempt.expiresAt < this.now() ||
       attempt.requestId === null ||
       !attempt.terminalObserved ||
       attempt.contextInvalid
     ) {
-      return {
-        observedAddressClass: "unresolved",
-        socketOutcome
-      };
+      return createObservation(attempt, socketOutcome);
     }
-    return {
-      observedAddressClass: attempt.observedAddressClass,
-      socketOutcome
-    };
+    return createObservation(
+      attempt,
+      socketOutcome,
+      attempt.observedAddressClass
+    );
   }
 
   async finishWhenReady(
@@ -258,10 +331,7 @@ export class DirectRequestObserver {
   ) {
     const attempt = this.attempts.get(String(attemptId));
     if (!attempt || !matchesObservationContext(attempt, context)) {
-      return {
-        observedAddressClass: "unresolved",
-        socketOutcome
-      };
+      return createObservation({ contextInvalid: true }, socketOutcome);
     }
     const boundedWaitMs = Math.max(
       0,
@@ -302,18 +372,21 @@ export function installDirectRequestObserver(observer, webRequestApi) {
     filter
   );
   webRequestApi.onCompleted.addListener(
-    (details) => observer.observeTerminal(details),
+    (details) => observer.observeTerminal(details, "completed"),
     filter
   );
   webRequestApi.onErrorOccurred.addListener(
-    (details) => observer.observeTerminal(details),
+    (details) => observer.observeTerminal(details, "error"),
     filter
   );
 }
 
 export async function beginDirectTransportObservation(url) {
   if (!globalThis.chrome?.runtime?.sendMessage) {
-    throw new Error("自动地址安全检查不可用，已拒绝建立 Receiver 连接");
+    throw new Error(
+      "自动地址安全检查不可用，已拒绝建立 Receiver 连接" +
+      `（诊断码：${formatDirectObservationDiagnostic(null, "not_started")}）`
+    );
   }
   const response = await chrome.runtime.sendMessage({
     target: "service-worker",
@@ -321,7 +394,13 @@ export async function beginDirectTransportObservation(url) {
     url
   });
   if (!response?.ok || !response.attemptId) {
-    throw new Error(response?.error || "无法启动自动地址安全检查");
+    throw new Error(
+      (response?.error || "无法启动自动地址安全检查") +
+      `（诊断码：${formatDirectObservationDiagnostic(
+        { contextInvalid: true },
+        "not_started"
+      )}）`
+    );
   }
   return response.attemptId;
 }
@@ -426,6 +505,41 @@ export class DirectTransportError extends Error {
   }
 }
 
+function createObservation(attempt, socketOutcome, addressClass = "unresolved") {
+  const result = {
+    observedAddressClass: addressClass,
+    socketOutcome
+  };
+  return addressClass === "private_ipv4" && socketOutcome === "open"
+    ? result
+    : {
+      ...result,
+      diagnosticCode: formatDirectObservationDiagnostic(
+        attempt,
+        socketOutcome
+      )
+    };
+}
+
+function recordObservedStage(attempt, details, stage, bound) {
+  if (details?.ip) attempt.ipObserved = true;
+  if (stage === "response") {
+    attempt.responseStartedObserved = true;
+    return;
+  }
+  if (bound) attempt.terminalObserved = true;
+  const terminalDiagnostic = stage === "error" ? "error" : "completed";
+  if (
+    attempt.terminalDiagnostic !== "none" &&
+    attempt.terminalDiagnostic !== terminalDiagnostic
+  ) {
+    attempt.terminalDiagnostic = "multiple";
+    attempt.contextInvalid = true;
+    return;
+  }
+  attempt.terminalDiagnostic = terminalDiagnostic;
+}
+
 function validateDirectUrl(value) {
   const url = new URL(String(value ?? ""));
   const host = normalizeReceiverHost(url.hostname);
@@ -459,37 +573,36 @@ function validateObservationContext(value) {
   };
 }
 
-function matchesInitialEventContext(attempt, details) {
+function classifyInitialEventContext(attempt, details, now) {
+  if (attempt.expiresAt < now) return "expired";
   if (
-    details?.url !== attempt.url ||
-    !hasExtensionDocumentRequestShape(details)
+    typeof details?.requestId !== "string" ||
+    details.requestId.length === 0
   ) {
-    return false;
+    return "request_id";
   }
-  if (
-    hasInvalidOptionalString(details, "initiator") ||
-    hasInvalidOptionalString(details, "documentId")
-  ) {
-    return false;
-  }
+  const shapeDiagnostic = classifyExtensionDocumentRequestShape(details);
+  if (shapeDiagnostic !== "bound") return shapeDiagnostic;
+  if (hasInvalidOptionalString(details, "initiator")) return "initiator";
+  if (hasInvalidOptionalString(details, "documentId")) return "document";
   const eventInitiator = optionalOrigin(details?.initiator);
   const eventDocumentId = optionalString(details?.documentId);
   if (eventInitiator !== null && eventInitiator !== attempt.initiator) {
-    return false;
+    return "initiator";
   }
   if (
     eventDocumentId !== null &&
     attempt.documentId !== null &&
     eventDocumentId !== attempt.documentId
   ) {
-    return false;
+    return "document";
   }
   // Chrome/Edge only exposes requests for which this extension has host
   // permission to both the target and initiator. An extension document
   // request has no tab and uses its top-level frame; with one pending attempt,
   // that browser visibility boundary is sufficient when optional initiator
   // and documentId are both omitted.
-  return true;
+  return "bound";
 }
 
 function matchesBoundEventContext(attempt, details) {
@@ -555,10 +668,19 @@ function hasInvalidOptionalString(source, key) {
 }
 
 function hasExtensionDocumentRequestShape(details) {
-  return details?.type === "websocket" &&
-    details?.tabId === EXTENSION_DOCUMENT_TAB_ID &&
-    details?.frameId === EXTENSION_DOCUMENT_FRAME_ID &&
-    details?.parentFrameId === EXTENSION_DOCUMENT_PARENT_FRAME_ID;
+  return classifyExtensionDocumentRequestShape(details) === "bound";
+}
+
+function classifyExtensionDocumentRequestShape(details) {
+  for (const [field, expected, diagnostic] of [
+    ["type", "websocket", "shape_type"],
+    ["tabId", EXTENSION_DOCUMENT_TAB_ID, "shape_tab"],
+    ["frameId", EXTENSION_DOCUMENT_FRAME_ID, "shape_frame"],
+    ["parentFrameId", EXTENSION_DOCUMENT_PARENT_FRAME_ID, "shape_parent"]
+  ]) {
+    if (details?.[field] !== expected) return diagnostic;
+  }
+  return "bound";
 }
 
 function optionalUrl(value) {
