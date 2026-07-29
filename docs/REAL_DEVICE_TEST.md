@@ -79,6 +79,9 @@ DNS-SD 注册成功、单元测试或 TCP 端口可达均不能替代 Windows �
 
 成功连接不应显示诊断码。诊断码不得包含或替代记录 IP、URL、requestId、documentId、
 origin/initiator、token、短码、credential、网页标题/URL或精确时间。
+失败当下已打开的监控页或紧接着第一次打开监控页应显示 AD1；关闭后重新打开只能看到不含 AD1
+的基准错误，导出结果、session state 与事件列表也不得包含 AD1。setup 配对失败同样只在当前
+popup 显示，关闭后不保留诊断码。
 
 每次记录：Receiver 与扩展 exact commit、Windows/Edge/HarmonyOS 版本、DNS-SD 注册状态、固定 A
 发布/冲突状态、Windows 解析到的地址类别、WebSocket 连接耗时和用户可见结果。不得保存私网地址

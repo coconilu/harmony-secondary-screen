@@ -5,7 +5,8 @@ import {
 import {
   DirectRequestObserver,
   handleDirectObservationMessage,
-  installDirectRequestObserver
+  installDirectRequestObserver,
+  splitDirectObservationError
 } from "./direct-network-diagnostics.js";
 
 const STATE_KEY = "captureProbeState";
@@ -15,6 +16,7 @@ const CAPTURABLE_SCHEMES = new Set(["http:", "https:"]);
 
 let updateQueue = Promise.resolve();
 let startInFlight = false;
+let transientCaptureFailure = null;
 const directRequestObserver = new DirectRequestObserver();
 
 installDirectRequestObserver(directRequestObserver, chrome.webRequest);
@@ -86,6 +88,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
 
+  if (message.type === "TAKE_TRANSIENT_CAPTURE_FAILURE") {
+    const allowed = sender?.url === chrome.runtime.getURL(MONITOR_PAGE) &&
+      (sender?.id === undefined || sender.id === chrome.runtime.id);
+    const error = allowed ? transientCaptureFailure : null;
+    if (allowed) transientCaptureFailure = null;
+    sendResponse({ ok: true, error });
+    return false;
+  }
+
   const observationMessage = handleDirectObservationMessage(
     message,
     sender,
@@ -116,6 +127,7 @@ async function startProbeFromRequest() {
 
 async function startProbeFromAction(tab) {
   try {
+    transientCaptureFailure = null;
     validateCapturableTab(tab);
     const trustedDevice = await getTrustedReceiver();
     if (!trustedDevice) {
@@ -210,6 +222,7 @@ async function stopProbe(reason) {
 }
 
 async function resetProbe() {
+  transientCaptureFailure = null;
   if (await hasOffscreenDocument()) {
     try {
       await chrome.runtime.sendMessage({
@@ -327,16 +340,22 @@ async function finishUnexpectedCapture(reason, telemetry) {
 }
 
 async function failProbe(errorMessage, telemetry = null) {
+  const failure = splitDirectObservationError(errorMessage);
+  transientCaptureFailure = failure.transientMessage;
   const stoppedAt = Date.now();
   const state = await updateState((current) => {
     const next = {
       ...current,
       ...telemetryToState(telemetry),
       mode: "error",
-      error: errorMessage,
+      error: failure.persistentMessage,
       stoppedAt,
       updatedAt: stoppedAt,
-      events: appendEvent(current.events, "ERROR", errorMessage)
+      events: appendEvent(
+        current.events,
+        "ERROR",
+        failure.persistentMessage
+      )
     };
     return {
       ...next,

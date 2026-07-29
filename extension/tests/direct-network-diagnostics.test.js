@@ -8,7 +8,8 @@ import {
   describeDirectTransportFailure,
   DirectRequestObserver,
   finishDirectTransportObservation,
-  installDirectRequestObserver
+  installDirectRequestObserver,
+  splitDirectObservationError
 } from "../direct-network-diagnostics.js";
 
 const EXTENSION_ID = "abcdefghijklmnopabcdefghijklmnop";
@@ -179,6 +180,25 @@ test("diagnostic codes are stable enums and never echo supplied values", () => {
   assert.equal(connected.code, "connected");
   assert.equal(connected.message, "");
   assert.equal("diagnosticCode" in connected, false);
+});
+
+test("splits only a valid AD1 suffix for transient display", () => {
+  const baseline =
+    "无法验证自动地址的私网归属，已拒绝发送凭据；请改用数字 IPv4";
+  const diagnostic =
+    "AD1|B=1|Q=shape_parent|R=1|T=completed|I=1|C=0|S=open";
+  assert.deepEqual(
+    splitDirectObservationError(`${baseline}（诊断码：${diagnostic}）`),
+    {
+      persistentMessage: baseline,
+      transientMessage: `${baseline}（诊断码：${diagnostic}）`
+    }
+  );
+  const invalid = `${baseline}（诊断码：AD1|url=private）`;
+  assert.deepEqual(splitDirectObservationError(invalid), {
+    persistentMessage: invalid,
+    transientMessage: null
+  });
 });
 
 test("diagnoses every initial request-shape and explicit-context rejection", () => {

@@ -227,6 +227,32 @@ test("forget keeps permissions.remove false visible while returning to pairing",
   );
 });
 
+test("pairing shows AD1 only in the current popup and never stores it", async (context) => {
+  const environment = createPopupEnvironment();
+  const setup = await loadSetupModule(context, environment);
+  const message =
+    "无法验证自动地址（诊断码：" +
+    "AD1|B=1|Q=shape_parent|R=1|T=completed|I=1|C=0|S=open）";
+  await setup.completePairing({
+    async pair() {
+      throw new Error(message);
+    }
+  });
+  assert.equal(
+    environment.elements.get("#error-message").textContent,
+    message
+  );
+  assert.equal(environment.elements.get("#error-message").hidden, false);
+  assert.equal(
+    JSON.stringify([...environment.sessionValues.entries()]).includes("AD1"),
+    false
+  );
+  assert.equal(
+    JSON.stringify([...environment.values.entries()]).includes("AD1"),
+    false
+  );
+});
+
 test("permission popup interruption restores the same pending pairing and finishes without a second prompt", async (context) => {
   let markPermissionRequested;
   const permissionRequested = new Promise((resolve) => {

@@ -34,6 +34,22 @@ function normalizeDiagnosticCode(value, socketOutcome) {
     : formatDirectObservationDiagnostic(null, socketOutcome);
 }
 
+export function splitDirectObservationError(value) {
+  const message = String(value ?? "");
+  const marker = "（诊断码：";
+  const markerIndex = message.lastIndexOf(marker);
+  if (markerIndex < 0 || !message.endsWith("）")) {
+    return { persistentMessage: message, transientMessage: null };
+  }
+  const code = message.slice(markerIndex + marker.length, -1);
+  return DIAGNOSTIC_CODE_PATTERN.test(code)
+    ? {
+      persistentMessage: message.slice(0, markerIndex),
+      transientMessage: message
+    }
+    : { persistentMessage: message, transientMessage: null };
+}
+
 export function classifyObservedAddress(value) {
   const octets = String(value ?? "").split(".");
   if (

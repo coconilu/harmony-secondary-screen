@@ -54,7 +54,10 @@ Edge 首次请求手动私网 IP 权限时可能关闭 popup。扩展会先把�
 credential。没有 `ip` 的终态不会覆盖先前已确认的地址类别；观察结果只保留
 `private_ipv4` / `non_private` / `unresolved` 类别，原始 IP 不写入存储或日志。
 自动地址失败时，用户可见错误末尾会显示一次当前连接尝试的 `AD1` 诊断码；成功路径不显示。
-诊断状态只存在于本次 attempt 的内存对象中，FINISH 后立即删除，不写入 console、storage 或测试导出。
+观测状态只存在于本次 attempt 的内存对象中，FINISH 后立即删除；生成的当前错误只通过
+service worker 的一次性内存通道交给已打开或下一次打开的监控页，读取、重置或下一轮开始后即清除。
+持久 `state.error` / events 只保存去除 AD1 的基准错误，关闭再打开不会保留 AD1；setup 配对页也只
+在当前 popup 显示。两条路径都不把 AD1 写入 console、storage 或测试导出。
 固定字段如下：
 
 | 字段 | 含义 |

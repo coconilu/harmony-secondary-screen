@@ -36,6 +36,7 @@ for (const button of elements.stages) {
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName === "session" && changes[STATE_KEY]?.newValue) {
     render(changes[STATE_KEY].newValue);
+    void loadTransientFailure();
   }
 });
 
@@ -44,6 +45,19 @@ void loadState();
 async function loadState() {
   const result = await chrome.storage.session.get(STATE_KEY);
   render(result[STATE_KEY] ?? createFallbackState());
+  await loadTransientFailure();
+}
+
+async function loadTransientFailure() {
+  try {
+    const response = await chrome.runtime.sendMessage({
+      target: "service-worker",
+      type: "TAKE_TRANSIENT_CAPTURE_FAILURE"
+    });
+    if (response?.error) showLocalError(response.error);
+  } catch {
+    // Persisted baseline state remains visible if the worker restarted.
+  }
 }
 
 async function stopCapture() {
