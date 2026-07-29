@@ -75,6 +75,8 @@ function createEdgeFallbackTransport(observedIp) {
 
 function isRedactedDiagnosticFailure(error) {
   assert.match(error.message, /诊断码：AD1\|B=1\|Q=bound/);
+  assert.equal(error.persistentMessage.includes("AD1"), false);
+  assert.match(error.diagnosticCode, /^AD1\|B=1\|Q=bound/);
   for (const sensitive of [
     "203.0.113.8",
     "harmony-web-companion.local",

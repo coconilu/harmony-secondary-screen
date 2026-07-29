@@ -54,10 +54,14 @@ Edge 首次请求手动私网 IP 权限时可能关闭 popup。扩展会先把�
 credential。没有 `ip` 的终态不会覆盖先前已确认的地址类别；观察结果只保留
 `private_ipv4` / `non_private` / `unresolved` 类别，原始 IP 不写入存储或日志。
 自动地址失败时，用户可见错误末尾会显示一次当前连接尝试的 `AD1` 诊断码；成功路径不显示。
-观测状态只存在于本次 attempt 的内存对象中，FINISH 后立即删除；生成的当前错误只通过
-service worker 的一次性内存通道交给已打开或下一次打开的监控页，读取、重置或下一轮开始后即清除。
-持久 `state.error` / events 只保存去除 AD1 的基准错误，关闭再打开不会保留 AD1；setup 配对页也只
-在当前 popup 显示。两条路径都不把 AD1 写入 console、storage 或测试导出。
+观测状态只存在于本次 attempt 的内存对象中，FINISH 后立即删除；offscreen 将基准错误和经过固定
+枚举校验的诊断码分字段发送，service worker 不从错误字符串反向解析 AD1。只有扩展自身精确
+`offscreen.html` 文档可提交捕获遥测、结束或失败消息；浏览器未提供的可选 sender 字段允许缺失，
+一旦提供则必须与扩展身份一致。当前错误只通过 service worker 的一次性内存通道交给已打开或下一次
+打开的监控页，读取、重置或下一轮开始后即清除。持久 `state.error` / events 会将含任意 AD1 字面量
+的非结构化错误整体替换为通用错误，重复、嵌套、内嵌或伪造字符串都不会被识别为诊断码；setup
+配对页同样只在当前 popup 显示合法诊断。
+两条路径都不把 AD1 写入 console、storage 或测试导出。
 固定字段如下：
 
 | 字段 | 含义 |

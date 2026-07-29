@@ -13,6 +13,9 @@ import {
   DirectReceiverConnection,
   ReceiverRecoveryCancelledError
 } from "./direct-client.js";
+import {
+  isDirectObservationDiagnosticCode
+} from "./direct-network-diagnostics.js";
 import { DirectDeliveryOrchestrator } from "./direct-delivery-orchestrator.js";
 import { shouldRequestPeriodicKeyFrame } from "./keyframe-policy.js";
 
@@ -62,7 +65,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === "START_CAPTURE") {
     startCapture(message.streamId, message.directInfo)
       .then((telemetry) => sendResponse({ ok: true, telemetry }))
-      .catch((error) => sendResponse({ ok: false, error: normalizeError(error) }));
+      .catch((error) => sendResponse({
+        ok: false,
+        ...createCaptureFailurePayload(error)
+      }));
     return true;
   }
 
@@ -160,7 +166,7 @@ async function consumeFrames() {
   } catch (error) {
     if (!stopping) {
       await sendToServiceWorker("CAPTURE_FAILURE", {
-        error: normalizeError(error),
+        ...createCaptureFailurePayload(error),
         telemetry: collectTelemetry()
       });
     }
@@ -260,7 +266,7 @@ async function createVideoEncoder() {
       if (!stopping) {
         running = false;
         void sendToServiceWorker("CAPTURE_FAILURE", {
-          error: `H.264 编码失败：${normalizeError(error)}`,
+          ...createCaptureFailurePayload(error, "H.264 编码失败："),
           telemetry: collectTelemetry()
         });
       }
@@ -411,7 +417,7 @@ function handleEncodedChunk(chunk) {
     if (!stopping) {
       running = false;
       void sendToServiceWorker("CAPTURE_FAILURE", {
-        error: `发送到平板失败：${normalizeError(error)}`,
+        ...createCaptureFailurePayload(error, "发送到平板失败："),
         telemetry: collectTelemetry()
       });
     }
@@ -549,7 +555,7 @@ function beginReceiverRecovery(connection) {
     directTelemetry.directRecoveryLastOutcome = "failed_permanent";
     running = false;
     void sendToServiceWorker("CAPTURE_FAILURE", {
-      error: `平板连接恢复失败：${normalizeError(error)}`,
+      ...createCaptureFailurePayload(error, "平板连接恢复失败："),
       telemetry: collectTelemetry()
     });
   }).finally(() => {
@@ -579,7 +585,9 @@ function applyReceiverControl(message) {
     if (!stopping) {
       running = false;
       void sendToServiceWorker("CAPTURE_FAILURE", {
-        error: `平板拒绝接收画面（${String(message.code ?? "unknown").slice(0, 64)}）`,
+        ...createCaptureFailurePayload(
+          `平板拒绝接收画面（${String(message.code ?? "unknown").slice(0, 64)}）`
+        ),
         telemetry: collectTelemetry()
       });
     }
@@ -695,6 +703,21 @@ async function sendToServiceWorker(type, payload = {}) {
   } catch {
     // The service worker can be restarting. The next telemetry tick retries.
   }
+}
+
+function createCaptureFailurePayload(error, prefix = "") {
+  const persistentMessage = typeof error?.persistentMessage === "string"
+    ? error.persistentMessage
+    : normalizeError(error);
+  const diagnosticCode = isDirectObservationDiagnosticCode(
+    error?.diagnosticCode
+  )
+    ? error.diagnosticCode
+    : null;
+  return {
+    error: `${prefix}${persistentMessage}`,
+    diagnosticCode
+  };
 }
 
 function normalizeError(error) {

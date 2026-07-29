@@ -6,7 +6,7 @@ import {
   DirectRequestObserver,
   handleDirectObservationMessage,
   installDirectRequestObserver,
-  splitDirectObservationError
+  isDirectObservationDiagnosticCode
 } from "./direct-network-diagnostics.js";
 
 const STATE_KEY = "captureProbeState";
@@ -71,26 +71,41 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "CAPTURE_TELEMETRY") {
+    if (!isTrustedOffscreenSender(sender)) {
+      sendResponse({ ok: false, error: "拒绝非捕获页遥测" });
+      return false;
+    }
     void applyTelemetry(message.telemetry);
     sendResponse({ ok: true });
     return false;
   }
 
   if (message.type === "CAPTURE_ENDED") {
+    if (!isTrustedOffscreenSender(sender)) {
+      sendResponse({ ok: false, error: "拒绝非捕获页结束事件" });
+      return false;
+    }
     void finishUnexpectedCapture(message.reason, message.telemetry);
     sendResponse({ ok: true });
     return false;
   }
 
   if (message.type === "CAPTURE_FAILURE") {
-    void failProbe(message.error, message.telemetry);
+    if (!isTrustedOffscreenSender(sender)) {
+      sendResponse({ ok: false, error: "拒绝非捕获页失败事件" });
+      return false;
+    }
+    void failProbe(
+      message.error,
+      message.telemetry,
+      message.diagnosticCode
+    );
     sendResponse({ ok: true });
     return false;
   }
 
   if (message.type === "TAKE_TRANSIENT_CAPTURE_FAILURE") {
-    const allowed = sender?.url === chrome.runtime.getURL(MONITOR_PAGE) &&
-      (sender?.id === undefined || sender.id === chrome.runtime.id);
+    const allowed = isTrustedExtensionPageSender(sender, MONITOR_PAGE);
     const error = allowed ? transientCaptureFailure : null;
     if (allowed) transientCaptureFailure = null;
     sendResponse({ ok: true, error });
@@ -160,7 +175,10 @@ async function startProbeFromAction(tab) {
       }
     });
     if (!response?.ok) {
-      throw new Error(response?.error || "offscreen 捕获启动失败");
+      throw createCaptureFailureError(
+        response?.error || "offscreen 捕获启动失败",
+        response?.diagnosticCode
+      );
     }
 
     await applyTelemetry(response.telemetry, {
@@ -175,7 +193,11 @@ async function startProbeFromAction(tab) {
     await updateAction("capturing");
     return getState();
   } catch (error) {
-    await failProbe(normalizeError(error));
+    await failProbe(
+      error?.persistentMessage ?? normalizeError(error),
+      null,
+      error?.diagnosticCode
+    );
     throw error;
   }
 }
@@ -339,22 +361,29 @@ async function finishUnexpectedCapture(reason, telemetry) {
   await updateAction(state.mode);
 }
 
-async function failProbe(errorMessage, telemetry = null) {
-  const failure = splitDirectObservationError(errorMessage);
-  transientCaptureFailure = failure.transientMessage;
+async function failProbe(
+  errorMessage,
+  telemetry = null,
+  diagnosticCode = null
+) {
+  const persistentMessage = sanitizePersistentFailure(errorMessage);
+  transientCaptureFailure = formatTransientCaptureFailure(
+    persistentMessage,
+    diagnosticCode
+  );
   const stoppedAt = Date.now();
   const state = await updateState((current) => {
     const next = {
       ...current,
       ...telemetryToState(telemetry),
       mode: "error",
-      error: failure.persistentMessage,
+      error: persistentMessage,
       stoppedAt,
       updatedAt: stoppedAt,
       events: appendEvent(
         current.events,
         "ERROR",
-        failure.persistentMessage
+        persistentMessage
       )
     };
     return {
@@ -372,6 +401,64 @@ async function failProbe(errorMessage, telemetry = null) {
   }
   await chrome.action.setPopup({ popup: MONITOR_PAGE });
   await updateAction(state.mode);
+}
+
+function createCaptureFailureError(errorMessage, diagnosticCode) {
+  const persistentMessage = sanitizePersistentFailure(errorMessage);
+  const normalizedDiagnostic = isDirectObservationDiagnosticCode(diagnosticCode)
+    ? diagnosticCode
+    : null;
+  const error = new Error(
+    formatTransientCaptureFailure(
+      persistentMessage,
+      normalizedDiagnostic
+    ) ?? persistentMessage
+  );
+  error.persistentMessage = persistentMessage;
+  error.diagnosticCode = normalizedDiagnostic;
+  return error;
+}
+
+function sanitizePersistentFailure(errorMessage) {
+  const message = String(errorMessage ?? "未知捕获错误");
+  return message.includes("AD1")
+    ? "捕获失败：错误信息包含无效诊断内容"
+    : message;
+}
+
+function formatTransientCaptureFailure(persistentMessage, diagnosticCode) {
+  return isDirectObservationDiagnosticCode(diagnosticCode)
+    ? `${persistentMessage}（诊断码：${diagnosticCode}）`
+    : null;
+}
+
+function isTrustedOffscreenSender(sender) {
+  return isTrustedExtensionPageSender(sender, "offscreen.html");
+}
+
+function isTrustedExtensionPageSender(sender, page) {
+  if (sender?.url !== chrome.runtime.getURL(page)) {
+    return false;
+  }
+  if (sender.id !== undefined && sender.id !== chrome.runtime.id) {
+    return false;
+  }
+  const expectedOrigin = getRuntimeOrigin();
+  if (
+    sender.origin !== undefined &&
+    sender.origin !== expectedOrigin &&
+    sender.origin !== `${expectedOrigin}/`
+  ) {
+    return false;
+  }
+  return sender.documentId === undefined ||
+    (typeof sender.documentId === "string" &&
+      sender.documentId.trim().length > 0);
+}
+
+function getRuntimeOrigin() {
+  const runtimeUrl = new URL(chrome.runtime.getURL(""));
+  return `${runtimeUrl.protocol}//${runtimeUrl.host}`;
 }
 
 async function ensureOffscreenDocument() {

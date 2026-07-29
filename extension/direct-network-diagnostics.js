@@ -29,25 +29,14 @@ function formatDirectObservationDiagnostic(attempt, socketOutcome) {
 }
 
 function normalizeDiagnosticCode(value, socketOutcome) {
-  return typeof value === "string" && DIAGNOSTIC_CODE_PATTERN.test(value)
+  return isDirectObservationDiagnosticCode(value)
     ? value
     : formatDirectObservationDiagnostic(null, socketOutcome);
 }
 
-export function splitDirectObservationError(value) {
-  const message = String(value ?? "");
-  const marker = "（诊断码：";
-  const markerIndex = message.lastIndexOf(marker);
-  if (markerIndex < 0 || !message.endsWith("）")) {
-    return { persistentMessage: message, transientMessage: null };
-  }
-  const code = message.slice(markerIndex + marker.length, -1);
-  return DIAGNOSTIC_CODE_PATTERN.test(code)
-    ? {
-      persistentMessage: message.slice(0, markerIndex),
-      transientMessage: message
-    }
-    : { persistentMessage: message, transientMessage: null };
+export function isDirectObservationDiagnosticCode(value) {
+  return typeof value === "string" &&
+    DIAGNOSTIC_CODE_PATTERN.test(value);
 }
 
 export function classifyObservedAddress(value) {
@@ -76,29 +65,25 @@ export function describeDirectTransportFailure({
 }) {
   const normalizedHost = normalizeReceiverHost(host);
   const automatic = normalizedHost === DEFAULT_RECEIVER_HOST;
-  const diagnosticSuffix = automatic
-    ? `（诊断码：${normalizeDiagnosticCode(diagnosticCode, socketOutcome)}）`
-    : "";
+  const diagnostic = automatic
+    ? normalizeDiagnosticCode(diagnosticCode, socketOutcome)
+    : null;
   if (automatic && observedAddressClass === "non_private") {
-    return {
-      code: "automatic_address_not_private",
-      message:
-        "自动地址解析到了非私网地址，已拒绝连接；请改用平板显示的数字 IPv4" +
-        diagnosticSuffix,
-      allowAuthentication: false,
-      recoverable: false
-    };
+    return createFailureVerdict(
+      "automatic_address_not_private",
+      "自动地址解析到了非私网地址，已拒绝连接；请改用平板显示的数字 IPv4",
+      false,
+      diagnostic
+    );
   }
   if (socketOutcome === "open") {
     if (automatic && observedAddressClass !== "private_ipv4") {
-      return {
-        code: "automatic_address_unverified",
-        message:
-          "无法验证自动地址的私网归属，已拒绝发送凭据；请改用平板显示的数字 IPv4" +
-          diagnosticSuffix,
-        allowAuthentication: false,
-        recoverable: false
-      };
+      return createFailureVerdict(
+        "automatic_address_unverified",
+        "无法验证自动地址的私网归属，已拒绝发送凭据；请改用平板显示的数字 IPv4",
+        false,
+        diagnostic
+      );
     }
     return {
       code: "connected",
@@ -108,42 +93,50 @@ export function describeDirectTransportFailure({
     };
   }
   if (!automatic) {
-    return {
-      code: socketOutcome === "timeout"
+    return createFailureVerdict(
+      socketOutcome === "timeout"
         ? "manual_address_timeout"
         : "manual_address_unreachable",
-      message: socketOutcome === "timeout"
+      socketOutcome === "timeout"
         ? "数字 IPv4 连接超时；请核对平板显示的地址和局域网隔离设置"
         : "数字 IPv4 已接受，但 Receiver WebSocket 不可达；请核对平板显示的地址",
-      allowAuthentication: false,
-      recoverable: true
-    };
+      true
+    );
   }
   if (observedAddressClass !== "private_ipv4") {
-    return {
-      code: socketOutcome === "timeout"
+    return createFailureVerdict(
+      socketOutcome === "timeout"
         ? "automatic_address_resolution_timeout"
         : "automatic_address_resolution_failed",
-      message: socketOutcome === "timeout"
-        ? "自动地址解析超时；请改用平板显示的数字 IPv4" +
-          diagnosticSuffix
-        : "自动地址解析失败；请改用平板显示的数字 IPv4" +
-          diagnosticSuffix,
-      allowAuthentication: false,
-      recoverable: true
-    };
+      socketOutcome === "timeout"
+        ? "自动地址解析超时；请改用平板显示的数字 IPv4"
+        : "自动地址解析失败；请改用平板显示的数字 IPv4",
+      true,
+      diagnostic
+    );
   }
-  return {
-    code: socketOutcome === "timeout"
+  return createFailureVerdict(
+    socketOutcome === "timeout"
       ? "automatic_address_connection_timeout"
       : "automatic_address_unreachable",
-    message: socketOutcome === "timeout"
-      ? "已解析到平板私网地址，但连接超时；请确认局域网未隔离" +
-        diagnosticSuffix
-      : "已解析到平板私网地址，但 Receiver WebSocket 不可达；请确认 Receiver 正在接收" +
-        diagnosticSuffix,
+    socketOutcome === "timeout"
+      ? "已解析到平板私网地址，但连接超时；请确认局域网未隔离"
+      : "已解析到平板私网地址，但 Receiver WebSocket 不可达；请确认 Receiver 正在接收",
+    true,
+    diagnostic
+  );
+}
+
+function createFailureVerdict(code, persistentMessage, recoverable, diagnosticCode = null) {
+  return {
+    code,
+    message: diagnosticCode === null
+      ? persistentMessage
+      : `${persistentMessage}（诊断码：${diagnosticCode}）`,
+    persistentMessage,
+    diagnosticCode,
     allowAuthentication: false,
-    recoverable: true
+    recoverable
   };
 }
 
@@ -518,6 +511,12 @@ export class DirectTransportError extends Error {
     this.name = "DirectTransportError";
     this.code = verdict.code;
     this.recoverable = verdict.recoverable;
+    this.persistentMessage = verdict.persistentMessage ?? verdict.message;
+    this.diagnosticCode = isDirectObservationDiagnosticCode(
+      verdict.diagnosticCode
+    )
+      ? verdict.diagnosticCode
+      : null;
   }
 }
 
