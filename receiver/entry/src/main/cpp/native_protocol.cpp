@@ -257,7 +257,7 @@ std::string PairProofMessage(std::string_view proofMode,
       !DecodeLowerHex(deviceId, 16U)) {
     return {};
   }
-  return "HWC5-PAIR-PROOF\n" + std::string(proofMode) + "\n" +
+  return "HWC6-PAIR-PROOF\n" + std::string(proofMode) + "\n" +
          std::string(sessionId) + "\n" + std::string(senderId) + "\n" +
          std::string(nonce) + "\n" +
          std::string(deviceId);
@@ -266,15 +266,19 @@ std::string PairProofMessage(std::string_view proofMode,
 std::string AuthProofMessage(std::string_view senderId,
                              std::string_view deviceId,
                              std::uint32_t sourceEpoch,
-                             std::string_view nonce) {
+                             std::string_view nonce,
+                             MediaContract contract) {
   if (!SenderIdValid(senderId) || !DecodeLowerHex(deviceId, 16U) ||
-      sourceEpoch == 0U || !DecodeLowerHex(nonce, 32U)) {
+      sourceEpoch == 0U || !DecodeLowerHex(nonce, 32U) ||
+      !IsValidMediaContract(contract)) {
     return {};
   }
-  return "HWC5-AUTH-PROOF\n" + std::string(senderId) + "\n" +
+  return "HWC6-AUTH-PROOF\n" + std::string(senderId) + "\n" +
          std::string(deviceId) + "\n" + std::to_string(sourceEpoch) + "\n" +
          std::string(nonce) +
-         "\nvideo/avc\nannexb\n1280\n720\n60";
+         "\nvideo/avc\nannexb\n" + std::to_string(contract.width) + "\n" +
+         std::to_string(contract.height) + "\n" +
+         std::to_string(contract.maxFps);
 }
 
 std::string ComputePairProof(std::string_view secret,
@@ -297,13 +301,28 @@ std::string ComputeAuthProof(std::string_view credential,
                              std::string_view senderId,
                              std::string_view deviceId,
                              std::uint32_t sourceEpoch,
-                             std::string_view nonce) {
+                             std::string_view nonce,
+                             MediaContract contract) {
   const auto key = DecodeLowerHex(credential, 32U);
   const std::string message =
-      AuthProofMessage(senderId, deviceId, sourceEpoch, nonce);
+      AuthProofMessage(senderId, deviceId, sourceEpoch, nonce, contract);
   if (!key || message.empty()) return {};
   const auto digest = HmacSha256(key->data(), key->size(), message);
   return LowerHex(digest.data(), digest.size());
+}
+
+bool IsValidMediaContract(MediaContract contract) {
+  if (contract.width == 0U || contract.height == 0U ||
+      (contract.width % 2U) != 0U || (contract.height % 2U) != 0U ||
+      contract.maxFps == 0U || contract.maxFps > 60U) {
+    return false;
+  }
+  const std::uint64_t width = contract.width;
+  const std::uint64_t height = contract.height;
+  const std::uint64_t longEdge = std::max(width, height);
+  const std::uint64_t shortEdge = std::min(width, height);
+  return longEdge <= 1920U && shortEdge <= 1080U &&
+         width * height <= 1920ULL * 1080ULL;
 }
 
 namespace {
@@ -378,8 +397,20 @@ std::optional<std::int64_t> JsonInteger(std::string_view json, std::string_view 
   const auto start = ValueStart(json, key);
   if (!start) return std::nullopt;
   std::int64_t value = 0;
-  const auto result = std::from_chars(json.data() + *start, json.data() + json.size(), value);
-  return result.ec == std::errc{} ? std::optional<std::int64_t>(value) : std::nullopt;
+  const auto result = std::from_chars(
+      json.data() + *start, json.data() + json.size(), value);
+  if (result.ec != std::errc{}) return std::nullopt;
+  const char* cursor = result.ptr;
+  while (cursor < json.data() + json.size() &&
+         (*cursor == ' ' || *cursor == '\t' ||
+          *cursor == '\r' || *cursor == '\n')) {
+    ++cursor;
+  }
+  if (cursor == json.data() + json.size() ||
+      (*cursor != ',' && *cursor != '}' && *cursor != ']')) {
+    return std::nullopt;
+  }
+  return value;
 }
 
 std::string EscapeJson(std::string_view value) {

@@ -8,7 +8,7 @@ Windows 11 与 HarmonyOS 平板处于同一可信 Wi-Fi 时，用户首次由平
 ## Scope
 
 - Edge MV3 `tabCapture` + offscreen + WebCodecs H.264 Annex-B；
-- Edge 直连 HarmonyOS Receiver HWC5 WebSocket；
+- Edge 直连 HarmonyOS Receiver HWC6 WebSocket；
 - HarmonyOS 原生 ArkTS + C++ AVCodec + XComponent；
 - 60 秒一次性 QR；短码仅配合手动数字私网 IPv4 回退；
 - deviceId/credential 持久信任，IP 与身份分离；

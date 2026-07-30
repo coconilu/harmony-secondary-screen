@@ -107,6 +107,13 @@ async function exportResult() {
     averageBitrateKbps: state.averageBitrateKbps,
     lastEncodedAgeMs: state.lastEncodedAgeMs,
     encoderConfig: state.encoderConfig,
+    mediaContract: state.mediaContract,
+    sourceDimensions: state.sourceDimensions,
+    captureSettingsWidth: state.captureSettingsWidth,
+    captureSettingsHeight: state.captureSettingsHeight,
+    initialFrameMatchedSettings: state.initialFrameMatchedSettings,
+    videoReconfigurationCount: state.videoReconfigurationCount,
+    videoReconfigurationState: state.videoReconfigurationState,
     directConnected: state.directConnected,
     directSentFrames: state.directSentFrames,
     directSentBytes: state.directSentBytes,
@@ -226,11 +233,15 @@ function formatEncoderConfig(config) {
     return "等待 H.264 能力探测";
   }
   const bitrateMbps = Number(config.bitrate || 0) / 1_000_000;
+  const selection = config.selection === "fallback"
+    ? "自动（安全回退）"
+    : "自动";
   return [
+    selection,
     config.codec,
     `${config.width}×${config.height}`,
-    `${config.framerate} fps`,
-    `${bitrateMbps.toFixed(1)} Mbps`,
+    `最高 ${config.maxFps ?? config.framerate} fps`,
+    `目标 ${bitrateMbps.toFixed(1)} Mbps`,
     config.avcFormat,
     config.hardwareAcceleration
   ]
@@ -321,6 +332,13 @@ function createFallbackState() {
     encodeQueueSize: 0,
     encodeErrors: 0,
     encoderConfig: null,
+    mediaContract: null,
+    sourceDimensions: null,
+    captureSettingsWidth: null,
+    captureSettingsHeight: null,
+    initialFrameMatchedSettings: null,
+    videoReconfigurationCount: 0,
+    videoReconfigurationState: "idle",
     directConnected: false,
     directSentFrames: 0,
     directSentBytes: 0,

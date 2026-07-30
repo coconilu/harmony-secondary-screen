@@ -126,6 +126,9 @@ napi_value GetStatus(napi_env env, napi_callback_info) {
   SetInteger(env, result, "framesDecoded", status.framesDecoded);
   SetInteger(env, result, "framesDropped", status.framesDropped);
   SetInteger(env, result, "receivedFrames", status.receivedFrames);
+  SetInteger(env, result, "mediaWidth", status.mediaWidth);
+  SetInteger(env, result, "mediaHeight", status.mediaHeight);
+  SetInteger(env, result, "mediaMaxFps", status.mediaMaxFps);
   return result;
 }
 

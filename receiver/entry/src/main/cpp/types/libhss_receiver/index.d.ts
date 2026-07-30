@@ -13,6 +13,9 @@ export interface ReceiverStatus {
   framesDecoded: number;
   framesDropped: number;
   receivedFrames: number;
+  mediaWidth: number;
+  mediaHeight: number;
+  mediaMaxFps: number;
 }
 
 export interface PairingRecord {

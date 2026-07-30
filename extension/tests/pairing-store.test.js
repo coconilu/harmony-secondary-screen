@@ -45,6 +45,19 @@ test("trusted identity survives address changes until explicitly forgotten", asy
   assert.equal(await getTrustedReceiver(storage), null);
 });
 
+test("an HWC5-era credential record migrates to HWC6 without rescanning", async () => {
+  const storage = createStorage();
+  const legacyRecord = {
+    senderId: "019fa3cf-75c7-7000-8000-000000000001",
+    deviceId: "00112233445566778899aabbccddeeff",
+    credential: "b".repeat(64),
+    host: "harmony-web-companion.local",
+    pairedAt: 456
+  };
+  await storage.set({ trustedReceiver: legacyRecord });
+  assert.deepEqual(await getTrustedReceiver(storage), legacyRecord);
+});
+
 test("source epoch increases monotonically across capture starts", async () => {
   const storage = createStorage();
   assert.equal(await allocateSourceEpoch(storage), 1);

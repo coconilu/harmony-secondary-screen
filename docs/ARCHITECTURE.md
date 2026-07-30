@@ -21,8 +21,10 @@ Windows Relay/Native Host 不再属于正常路径，也不由 `scripts/test.ps1
   ↓ activeTab + tabCapture
 唯一 video track
   ↓ MediaStreamTrackProcessor
+自动媒体合同（等比偶数尺寸、不放大、≤1920×1080、≤2073600 像素、≤60 fps）
+  ↓ VideoEncoder 能力探测（AVC Level 4.2；必要时 ≤720p Level 4.0）
 唯一 VideoEncoder（H.264 Annex-B）
-  ↓ HWC5 binary WebSocket message
+  ↓ HWC6 binary WebSocket message
 Receiver 绑定用户确认的具体私网 wlan IPv4:44000
   ↓ sourceEpoch 校验
 OH_VideoDecoder
@@ -69,8 +71,13 @@ response 才进入冲突状态。停止接收、Wi-Fi 地址或 interface index 
 
 ## 竞态边界
 
-每次开始捕获分配单调递增的 `sourceEpoch`。Receiver 记录最新 epoch，只接受当前 epoch 的视频头；
-旧 epoch 的迟到帧直接丢弃。扩展在开始新捕获前停止旧 reader、轨道和 encoder，确保单活动来源。
+每次开始捕获和稳定尺寸变化都通过 service worker 串行分配单调递增的 `sourceEpoch`。Receiver
+记录最新 epoch，只接受当前 epoch 的视频头；同 epoch 必须保持同一动态媒体合同。旧 encoder
+输出携不可变 generation/epoch/合同，迟到帧直接丢弃。新 epoch 先重建 encoder、重新鉴权并让
+Receiver 动态重建 AVCodec；首个可交付 AU 必须包含 SPS/PPS + IDR。
+
+Receiver 将协商宽高暴露给 ArkUI，两种播放 Surface 都按真实宽高比 contain；横屏和竖屏来源
+不会被固定 16:9 拉伸。
 
 ## 权限
 
@@ -87,7 +94,8 @@ response 才进入冲突状态。停止接收、Wi-Fi 地址或 interface index 
 枚举并撤销其余手动 origin，且不得把 `permissions.remove()` 的失败当成成功。
 
 Edge 不会稳定向扩展公开 WebSocket 的真实远端 IP。默认 `.local` 配对使用高熵 QR token 的
-HWC5 challenge/proof，扩展验证 proof 和全部绑定字段后才发送 token；长期 credential 鉴权同理。
+HWC6 challenge/proof，扩展验证 proof 和全部绑定字段后才发送 token；长期 credential 鉴权还
+绑定 `sourceEpoch`、`width`、`height` 和 `maxFps`。
 六位短码不能用作 HMAC key，否则可从一次 proof 离线枚举，因此自动 `.local` 明确拒绝短码授权。
 短码只允许用户在扩展填写 Receiver 显示的数字私网 IPv4并授予精确 origin 后走
 `pair_manual_ipv4`；该手动地址确认是 out-of-band endpoint authentication，首包携一次性 token。

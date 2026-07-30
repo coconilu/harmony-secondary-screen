@@ -12,7 +12,7 @@ const SENDER_ID_KEY: string = 'senderId';
 const CREDENTIAL_KEY: string = 'credential';
 const PAIRING_VERSION_KEY: string = 'pairingVersion';
 const THEME_MODE_KEY: string = 'themeMode';
-const DIRECT_PROTOCOL_VERSION: number = 5;
+const DIRECT_PROTOCOL_VERSION: number = 6;
 const DIRECT_PORT: number = 44000;
 const FULLSCREEN_CONTROLS_TIMEOUT_MS: number = 5000;
 
@@ -31,6 +31,10 @@ struct Index {
   @State framesDecoded: number = 0;
   @State framesDropped: number = 0;
   @State receivedFrames: number = 0;
+  @State mediaWidth: number = 0;
+  @State mediaHeight: number = 0;
+  @State mediaMaxFps: number = 0;
+  @State videoAspectRatio: number = 16 / 9;
   @State isFullscreen: boolean = false;
   @State fullscreenControlsVisible: boolean = false;
   @State themeMode: string = 'system';
@@ -127,6 +131,12 @@ struct Index {
     this.framesDecoded = status.framesDecoded;
     this.framesDropped = status.framesDropped;
     this.receivedFrames = status.receivedFrames;
+    this.mediaWidth = status.mediaWidth;
+    this.mediaHeight = status.mediaHeight;
+    this.mediaMaxFps = status.mediaMaxFps;
+    if (status.mediaWidth > 0 && status.mediaHeight > 0) {
+      this.videoAspectRatio = status.mediaWidth / status.mediaHeight;
+    }
     this.updatePlaybackActive(status.connected);
     if ((wasListening || status.state === 'error') &&
       !status.listening && this.receivingRequested) {
@@ -411,13 +421,23 @@ struct Index {
   build() {
     if (this.isFullscreen) {
       Stack({ alignContent: Alignment.Center }) {
-        XComponent({
-          id: 'hssVideoSurface',
-          type: XComponentType.SURFACE,
-          libraryname: 'hss_receiver'
-        })
-          .width('100%')
-          .aspectRatio(16 / 9)
+        if (this.videoAspectRatio >= 1) {
+          XComponent({
+            id: 'hssVideoSurface',
+            type: XComponentType.SURFACE,
+            libraryname: 'hss_receiver'
+          })
+            .width('100%')
+            .aspectRatio(this.videoAspectRatio)
+        } else {
+          XComponent({
+            id: 'hssVideoSurface',
+            type: XComponentType.SURFACE,
+            libraryname: 'hss_receiver'
+          })
+            .height('100%')
+            .aspectRatio(this.videoAspectRatio)
+        }
 
         if (!this.isConnected) {
           Text(this.isListening ? '等待电脑发送画面' : '电脑画面已断开，请退出全屏后重新连接')
@@ -538,15 +558,27 @@ struct Index {
           .width('100%')
 
           Stack({ alignContent: Alignment.Center }) {
-            XComponent({
-              id: 'hssVideoSurface',
-              type: XComponentType.SURFACE,
-              libraryname: 'hss_receiver'
-            })
-            .width('100%')
-            .height('100%')
-            .borderRadius(16)
-            .visibility(this.isConnected ? Visibility.Visible : Visibility.Hidden)
+            if (this.videoAspectRatio >= 16 / 9) {
+              XComponent({
+                id: 'hssVideoSurface',
+                type: XComponentType.SURFACE,
+                libraryname: 'hss_receiver'
+              })
+                .width('100%')
+                .aspectRatio(this.videoAspectRatio)
+                .borderRadius(16)
+                .visibility(this.isConnected ? Visibility.Visible : Visibility.Hidden)
+            } else {
+              XComponent({
+                id: 'hssVideoSurface',
+                type: XComponentType.SURFACE,
+                libraryname: 'hss_receiver'
+              })
+                .height('100%')
+                .aspectRatio(this.videoAspectRatio)
+                .borderRadius(16)
+                .visibility(this.isConnected ? Visibility.Visible : Visibility.Hidden)
+            }
 
             if (!this.isConnected) {
               Column() {
@@ -699,6 +731,12 @@ struct Index {
               .fontSize(12)
               .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
               .lineHeight(18)
+            if (this.mediaWidth > 0 && this.mediaHeight > 0) {
+              Text(`自动视频 ${this.mediaWidth}×${this.mediaHeight} · 最高 ${this.mediaMaxFps} fps`)
+                .fontSize(12)
+                .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+                .lineHeight(18)
+            }
             }
             .alignItems(HorizontalAlign.Start)
             .width('100%')

@@ -1,7 +1,9 @@
 import {
-  allocateSourceEpoch,
   getTrustedReceiver
 } from "./pairing-store.js";
+import {
+  createSerializedSourceEpochAllocator
+} from "./source-epoch-allocator.js";
 const STATE_KEY = "captureProbeState";
 const SETUP_PAGE = "setup.html";
 const MONITOR_PAGE = "monitor.html";
@@ -9,6 +11,8 @@ const CAPTURABLE_SCHEMES = new Set(["http:", "https:"]);
 
 let updateQueue = Promise.resolve();
 let startInFlight = false;
+const allocateSerializedSourceEpoch =
+  createSerializedSourceEpochAllocator(chrome.storage.local);
 chrome.runtime.onInstalled.addListener(() => {
   void resetProbe();
 });
@@ -34,6 +38,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .finally(() => {
         startInFlight = false;
       });
+    return true;
+  }
+
+  if (message.type === "ALLOCATE_SOURCE_EPOCH") {
+    allocateSerializedSourceEpoch()
+      .then((sourceEpoch) => sendResponse({ ok: true, sourceEpoch }))
+      .catch((error) => sendResponse({
+        ok: false,
+        error: normalizeError(error)
+      }));
     return true;
   }
 
@@ -94,7 +108,7 @@ async function startProbeFromAction(tab) {
     if (!trustedDevice) {
       throw new Error("请先用平板扫描二维码完成一次配对");
     }
-    const sourceEpoch = await allocateSourceEpoch();
+    const sourceEpoch = await allocateSerializedSourceEpoch();
     const streamIdPromise = chrome.tabCapture.getMediaStreamId({
       targetTabId: tab.id
     });
@@ -399,6 +413,13 @@ function createInitialState() {
     averageBitrateKbps: 0,
     lastEncodedAgeMs: null,
     encoderConfig: null,
+    mediaContract: null,
+    sourceDimensions: null,
+    captureSettingsWidth: null,
+    captureSettingsHeight: null,
+    initialFrameMatchedSettings: null,
+    videoReconfigurationCount: 0,
+    videoReconfigurationState: "idle",
     directConnected: false,
     directSentFrames: 0,
     directSentBytes: 0,
@@ -458,6 +479,13 @@ function telemetryToState(telemetry) {
     averageBitrateKbps: telemetry.averageBitrateKbps,
     lastEncodedAgeMs: telemetry.lastEncodedAgeMs,
     encoderConfig: telemetry.encoderConfig,
+    mediaContract: telemetry.mediaContract,
+    sourceDimensions: telemetry.sourceDimensions,
+    captureSettingsWidth: telemetry.captureSettingsWidth,
+    captureSettingsHeight: telemetry.captureSettingsHeight,
+    initialFrameMatchedSettings: telemetry.initialFrameMatchedSettings,
+    videoReconfigurationCount: telemetry.videoReconfigurationCount,
+    videoReconfigurationState: telemetry.videoReconfigurationState,
     directConnected: telemetry.directConnected,
     directSentFrames: telemetry.directSentFrames,
     directSentBytes: telemetry.directSentBytes,

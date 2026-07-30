@@ -24,7 +24,7 @@ Edge 扩展
   → 显示 60 秒、单次使用二维码
 平板扫描二维码
   → Edge 解析固定 harmony-web-companion.local
-  → Receiver 用二维码高熵 token 完成 HWC5 挑战证明
+  → Receiver 用二维码高熵 token 完成 HWC6 挑战证明
   → 两端保存与 IP 无关的 deviceId / 设备凭据
 
 后续：打开 Receiver → 在目标标签页点击“发送当前标签页”
@@ -46,7 +46,8 @@ mDNS A 响应器发布固定 `harmony-web-companion.local`。两者是不同层�
 ```text
 Edge tabCapture（video only）
   → offscreen document
-  → WebCodecs H.264 Annex-B 1280×720 @ 60 fps（目标 8 Mbps，实测帧率以监控页为准）
+  → 自动媒体合同（等比偶数尺寸、不放大、≤1920×1080、≤60 fps）
+  → WebCodecs H.264 Annex-B（Level 4.2，必要时自动降级到 ≤720p Level 4.0）
   → ws://<Receiver>:44000/direct
   → HarmonyOS C++ WebSocket server
   → OH_VideoDecoder
@@ -54,7 +55,8 @@ Edge tabCapture（video only）
 ```
 
 协议在同一已鉴权 WebSocket 中承载配对、控制、心跳、关键帧请求、遥测和 H.264 二进制消息。
-`sourceEpoch` 保证旧页面迟到帧不会覆盖最新来源；任意时刻仅有一个捕获轨、编码器和媒体流。
+`sourceEpoch` 与媒体合同一起鉴权，保证旧页面/旧 encoder 的迟到帧不会覆盖最新来源；稳定尺寸
+变化会自动分配新 epoch 并重建两端编解码链路。任意时刻仅有一个捕获轨、编码器和媒体流。
 
 ## 当前验证状态
 
@@ -98,7 +100,7 @@ Receiver 仓库配置不包含证书、私钥、口令或本机绝对签名路�
 ## 文档
 
 - [系统架构](docs/ARCHITECTURE.md)
-- [HWC5 直连协议](docs/PROTOCOL.md)
+- [HWC6 直连协议](docs/PROTOCOL.md)
 - [真实设备测试](docs/REAL_DEVICE_TEST.md)
 - [兼容性策略](docs/COMPATIBILITY.md)
 - [Edge 扩展说明](extension/README.md)
