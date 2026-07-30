@@ -90,6 +90,40 @@ DNS-SD 注册成功、单元测试或 TCP 端口可达均不能替代 Windows �
 
 在上述真机行补齐 exact-head 证据前，Issue #19 的首两项端到端验收不得标记为 PASS。
 
+### 2026-07-30 HWC5 exact-head 真机验收
+
+本节代码验收对象固定为
+`8eb2aed3c723ddffd1d5d1d3628210739a7f9635`；后续仅追加本节记录的文档提交不改变该代码验收对象。
+
+| 环境项 | exact-head 验收环境 |
+| --- | --- |
+| Windows / Edge | Windows 11 Pro 10.0.26200（build 26200）/ Edge 150.0.4078.99 |
+| 扩展 | `0.6.0` |
+| 平板系统 | HarmonyOS 6.1.0.117，API 23 |
+| Receiver | `io.github.coconilu.harmonysecondaryscreen`，versionName `0.1.0`，versionCode `1000000` |
+
+| 场景 | 真机结果 | 判定 |
+| --- | --- | --- |
+| 默认自动地址 | Receiver 开始接收后，Windows 将固定 `.local` 解析为且仅解析为 1 个私网 IPv4；媒体连接建立前，TCP 44000 可达 | PASS |
+| 清除数据后首次配对 | 安装 HWC5 exact-head Receiver，扩展保留默认 `.local`；只扫描一轮新二维码，未输入数字 IPv4，完成配对 | PASS |
+| 动态画面 | 播放画面正常，未观察到花屏 | PASS |
+| Receiver 重启 | 停止并重新开始接收后，无需重新扫码，播放恢复 | PASS |
+| 数字 IPv4 回退 | 扩展忘记设备后，输入 Receiver 显示的数字私网 IPv4，重新扫码并授权该精确 origin；配对与播放成功 | PASS |
+| 已配对地址切回默认值 | 将数字私网 IPv4 改回固定 `.local`，无需重新扫码，播放成功 | PASS |
+| 非默认 `.local` | 使用“非默认 `.local`”脱敏测试输入；扩展在连接前拒绝，且未覆盖已信任配置 | PASS |
+| Receiver 不可达与恢复 | Receiver 停止时扩展明确显示“自动地址解析或 Receiver 连接失败，请改用平板显示的数字 IPv4”；重新开始接收后，无需重新扫码，播放恢复 | PASS |
+| Wi-Fi 短时中断与恢复 | 平板关闭 Wi-Fi 约 10 秒后重新打开；用户确认无需重新扫码即恢复播放 | PASS |
+
+仓库外的脱敏监控共记录 162 个解析状态样本，观察到
+`resolved → unresolved → resolved`，其中 24 个为 `unresolved`；监控未保存实际 IPv4。
+
+| 证据边界 | 记录 |
+| --- | --- |
+| TCP 探测 | 只用于证明媒体连接建立前的初始端口可达；媒体连接占用期间的 TCP 探测没有证据价值，也未用作恢复成功依据。恢复以用户可见动态画面为准。 |
+| 连接耗时 | 未单独采集用户可见连接耗时，不作时延结论。 |
+| 同名 mDNS 冲突 | **未执行真实同名冲突真机测试**；当前只有自动化覆盖，不得标记为真机 PASS。 |
+| 隐私 | 本节及仓库外脱敏监控均未记录实际 IP、token、短码、credential、网页 URL/标题、视频帧、设备标识符或签名路径/秘密。 |
+
 ### 摄像头 → 六位短码
 
 1. 取消 ScanKit UI或在无相机环境测试。
