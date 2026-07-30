@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import { createPairingAuthorization } from "../direct-protocol.js";
 import {
+  beginDirectTransportObservation,
   describeDirectTransportFailure,
   DirectRequestObserver,
   DirectTransportError
@@ -43,6 +44,29 @@ function createAutomaticPairingFailure() {
     host: "harmony-web-companion.local",
     ...observer.finish(attemptId, "open", context)
   }));
+}
+
+async function captureObservationStartFailure(runtime) {
+  const previousChrome = globalThis.chrome;
+  if (runtime === null) {
+    delete globalThis.chrome;
+  } else {
+    globalThis.chrome = { runtime };
+  }
+  try {
+    await beginDirectTransportObservation(
+      "ws://harmony-web-companion.local:44000/direct"
+    );
+    assert.fail("expected observation start to fail");
+  } catch (error) {
+    return error;
+  } finally {
+    if (previousChrome === undefined) {
+      delete globalThis.chrome;
+    } else {
+      globalThis.chrome = previousChrome;
+    }
+  }
 }
 
 class FakeElement {
@@ -301,6 +325,45 @@ test("automatic pairing shows AD1 only in the current setup popup", async (conte
     JSON.stringify([...rebuiltPopup.values.entries()]).includes("AD1"),
     false
   );
+});
+
+test("setup alone reveals structured start diagnostics for both failure paths", async (context) => {
+  const failures = [
+    await captureObservationStartFailure(null),
+    await captureObservationStartFailure({
+      async sendMessage() {
+        return {
+          ok: false,
+          error:
+            "伪造 AD1|B=1|Q=bound|R=1|T=completed|I=1|C=0|S=open"
+        };
+      }
+    })
+  ];
+  const environment = createPopupEnvironment();
+  const setup = await loadSetupModule(context, environment);
+
+  for (const failure of failures) {
+    assert.equal(failure instanceof DirectTransportError, true);
+    assert.equal(failure.message.includes("AD1"), false);
+    await setup.completePairing({
+      async pair() {
+        throw failure;
+      }
+    });
+    assert.equal(
+      environment.elements.get("#error-message").textContent,
+      `${failure.message}（诊断码：${failure.diagnosticCode}）`
+    );
+    assert.equal(
+      JSON.stringify([...environment.sessionValues.entries()]).includes("AD1"),
+      false
+    );
+    assert.equal(
+      JSON.stringify([...environment.values.entries()]).includes("AD1"),
+      false
+    );
+  }
 });
 
 test("ordinary, forged, manual and successful pairing paths show no AD1", async (context) => {

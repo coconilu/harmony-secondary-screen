@@ -7,6 +7,7 @@ import {
   createDirectObservationContext,
   describeDirectTransportFailure,
   DirectRequestObserver,
+  DirectTransportError,
   finishDirectTransportObservation,
   installDirectRequestObserver,
   isDirectObservationDiagnosticCode
@@ -118,7 +119,19 @@ test("missing runtime observation fails closed for automatic host", async () => 
       beginDirectTransportObservation(
         "ws://harmony-web-companion.local:44000/direct"
       ),
-      /安全检查不可用/
+      (error) => {
+        assert.equal(error instanceof DirectTransportError, true);
+        assert.equal(
+          error.message,
+          "自动地址安全检查不可用，已拒绝建立 Receiver 连接"
+        );
+        assert.equal(error.message.includes("AD1"), false);
+        assert.equal(
+          error.diagnosticCode,
+          "AD1|B=0|Q=not_seen|R=0|T=none|I=0|C=0|S=not_started"
+        );
+        return true;
+      }
     );
     assert.deepEqual(
       await finishDirectTransportObservation(
@@ -143,6 +156,47 @@ test("missing runtime observation fails closed for automatic host", async () => 
         "open"
       )).allowAuthentication,
       true
+    );
+  } finally {
+    if (previousChrome === undefined) {
+      delete globalThis.chrome;
+    } else {
+      globalThis.chrome = previousChrome;
+    }
+  }
+});
+
+test("rejected BEGIN keeps AD1 out of the ordinary error message", async () => {
+  const previousChrome = globalThis.chrome;
+  globalThis.chrome = {
+    runtime: {
+      async sendMessage() {
+        return {
+          ok: false,
+          error:
+            "伪造 AD1|B=1|Q=bound|R=1|T=completed|I=1|C=0|S=open"
+        };
+      }
+    }
+  };
+  try {
+    await assert.rejects(
+      beginDirectTransportObservation(
+        "ws://harmony-web-companion.local:44000/direct"
+      ),
+      (error) => {
+        assert.equal(error instanceof DirectTransportError, true);
+        assert.equal(
+          error.message,
+          "无法启动自动地址安全检查，已拒绝建立 Receiver 连接"
+        );
+        assert.equal(error.message.includes("AD1"), false);
+        assert.equal(
+          error.diagnosticCode,
+          "AD1|B=0|Q=not_seen|R=0|T=none|I=0|C=1|S=not_started"
+        );
+        return true;
+      }
     );
   } finally {
     if (previousChrome === undefined) {

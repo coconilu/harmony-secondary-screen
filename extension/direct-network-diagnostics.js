@@ -391,9 +391,10 @@ export function installDirectRequestObserver(observer, webRequestApi) {
 
 export async function beginDirectTransportObservation(url) {
   if (!globalThis.chrome?.runtime?.sendMessage) {
-    throw new Error(
-      "自动地址安全检查不可用，已拒绝建立 Receiver 连接" +
-      `（诊断码：${formatDirectObservationDiagnostic(null, "not_started")}）`
+    throw createObservationStartError(
+      "automatic_address_observation_unavailable",
+      "自动地址安全检查不可用，已拒绝建立 Receiver 连接",
+      formatDirectObservationDiagnostic(null, "not_started")
     );
   }
   const response = await chrome.runtime.sendMessage({
@@ -402,12 +403,13 @@ export async function beginDirectTransportObservation(url) {
     url
   });
   if (!response?.ok || !response.attemptId) {
-    throw new Error(
-      (response?.error || "无法启动自动地址安全检查") +
-      `（诊断码：${formatDirectObservationDiagnostic(
+    throw createObservationStartError(
+      "automatic_address_observation_rejected",
+      "无法启动自动地址安全检查，已拒绝建立 Receiver 连接",
+      formatDirectObservationDiagnostic(
         { contextInvalid: true },
         "not_started"
-      )}）`
+      )
     );
   }
   return response.attemptId;
@@ -516,6 +518,15 @@ export class DirectTransportError extends Error {
       ? verdict.diagnosticCode
       : null;
   }
+}
+
+function createObservationStartError(code, message, diagnosticCode) {
+  return new DirectTransportError({
+    code,
+    message,
+    recoverable: false,
+    diagnosticCode
+  });
 }
 
 function createObservation(attempt, socketOutcome, addressClass = "unresolved") {
