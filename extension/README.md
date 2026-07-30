@@ -13,11 +13,11 @@
 1. 平板打开 HarmonyOS Receiver，确认当前私网 Wi-Fi IPv4并开始接收。
 2. 点击扩展，显示 60 秒一次性二维码。
 3. 平板点击“扫码配对”，扫描二维码。
-4. 扩展点击“已扫码，连接平板”；默认解析固定 `.local`，确认实际落到允许的私网地址后才发送授权。
+4. 扩展点击“已扫码，连接平板”；默认 `.local` 路径先验证 Receiver 的 HWC5 QR proof，再发送 token。
 5. 配对成功后，进入普通 HTTP/HTTPS 标签页，点击“发送当前标签页”。
 
-摄像头不可用时，在平板输入扩展显示的六位短码；`.local` 失败时，在扩展输入 Receiver 显示的
-私网 IPv4。更新 IP 不重新配对。
+摄像头不可用时，在平板输入扩展显示的六位短码，并把扩展“平板地址”改为 Receiver 显示的数字
+私网 IPv4；自动 `.local` 不接受低熵短码 proof。更新 IP 不重新配对。
 
 Edge 首次请求手动私网 IP 权限时可能关闭 popup。扩展会先把当前二维码授权、短码、到期时间和
 输入地址保存在 `chrome.storage.session`；60 秒内重新打开 popup 会恢复同一二维码和地址，并在
@@ -32,51 +32,21 @@ Edge 首次请求手动私网 IP 权限时可能关闭 popup。扩展会先把�
 | `tabCapture` | 捕获当前标签页视频 |
 | `offscreen` | 持有视频轨和编码器 |
 | `storage` | 持久保存可信设备与 source epoch |
-| `webRequest` | 只读观察 Receiver WebSocket 握手的目标地址类别，鉴权前拒绝非私网结果 |
 | 固定 `.local` origin | 尝试单一 Receiver 地址 |
 | optional HTTP origin | 用户手动输入私网 IP 后，只请求该精确 origin |
 
 手动 IP 配对或保存失败时会回滚本次新增的 origin；更新地址或忘记设备时会枚举并撤销所有未使用的
 手动私网 origin，撤销失败会明确报错。
 
-`webRequest` 不使用 blocking 能力，不修改请求，不读取页面流量。扩展通过
-`runtime.getURL()` 规范化并只接受 `setup.html` 或 `offscreen.html`；发送者和请求的可选
-`id`、`origin`、`documentId`、`initiator` 可验证时必须匹配。Chrome/Edge 只暴露扩展同时拥有
-目标和 initiator host permission 的请求；当 `initiator` / `documentId` 同时缺失或 initiator
-为 opaque `null` 时，还必须满足 `tabId=-1`、`frameId=0`、`parentFrameId=-1`、
-`type=websocket` 的扩展文档请求形状、目标 URL 精确匹配且只有一个待处理 attempt。普通网页标签、
-网页 worker 和其他扩展不能使用该回退。
-随机 attempt id 只返回给发起文档且不记录、不持久化；无 `documentId` 的 FINISH 仍须持有该 id、
-来自同一允许页面且没有歧义。随后按同一 `requestId` 关联响应开始、完成与失败事件。只有观察到
-`onCompleted` / `onErrorOccurred`
-终态后才合并本次握手所有非空实际目标 `ip`；终态缺失、文档上下文缺失/歧义或地址类别冲突均
-失败关闭。运行时消息/观测 API 缺失时不会创建自动 `.local` WebSocket，更不会发送 token 或
-credential。没有 `ip` 的终态不会覆盖先前已确认的地址类别；观察结果只保留
-`private_ipv4` / `non_private` / `unresolved` 类别，原始 IP 不写入存储或日志。
-只有 `setup.html` 首次配对自动 `.local` 失败时，当前 popup 的错误末尾才显示本次 attempt 的
-`AD1` 诊断码；手动数字 IPv4、成功路径、捕获启动、offscreen 自动重连和监控页均不显示。
-`DirectTransportError.message` 始终只含基准错误，诊断码保存在独立字段；setup 仅接受该错误类型
-且通过固定枚举格式校验后才在当前 DOM 中组合显示。普通、重复、嵌套或伪造错误不能生成诊断展示。
-观测状态只存在于本次 attempt 的内存对象中，FINISH 后立即删除；popup 关闭后诊断自然消失，
-不经过 offscreen、service worker 或 monitor，也不写入 console、storage、事件或测试导出。
-固定字段如下：
-
-| 字段 | 含义 |
-| --- | --- |
-| `B` | BEGIN 是否成功创建 attempt |
-| `Q` | `onBeforeRequest` 是否绑定；`not_seen`、`bound`、`ambiguous`，或具体的 request id、请求形状、initiator/document 拒绝枚举 |
-| `R` | 是否见到同一尝试的 `onResponseStarted` |
-| `T` | 终态：`none`、`completed`、`error` 或异常的 `multiple` |
-| `I` | 是否有相关事件携带非空 `ip`；不包含 IP 原值或地址类别 |
-| `C` | 已绑定上下文是否失配，或并发/终态是否产生歧义 |
-| `S` | WebSocket 结果：`not_started`、`open`、`error`、`timeout` 或 `other` |
-
-例如首次配对 popup 可能显示
-`AD1|B=1|Q=shape_parent|R=1|T=completed|I=1|C=0|S=open`
-只说明浏览器事件缺少 `parentFrameId`，不会暴露 URL、requestId、documentId、origin/initiator、
-token、短码、credential、网页信息、原始 IP 或精确时间。
-不申请 `nativeMessaging`、`<all_urls>`、`webRequestBlocking`、Cookie、history、页面正文或
-站点脚本注入。
+真实 Edge 不会稳定公开 WebSocket 的远端 IP，扩展因此不再申请 `webRequest`。默认 `.local`
+配对只允许高熵 QR token 的 HMAC-SHA256 proof；proof、nonce、模式、senderId、sessionId 和
+deviceId 全部匹配后才发送 token。六位短码不能安全充当 HMAC key，否则一次 proof 就能被离线
+枚举；因此短码仅在用户抄写 Receiver 数字私网 IPv4、授予该精确 origin 后使用
+`pair_manual_ipv4`，首个控制消息会携带一次性 token。长期 credential 鉴权始终使用 challenge。
+自动路径的主动 `paired`、错 nonce/mode/identity、伪造或重放 proof 均在秘密发送前失败。
+nonce、proof 与 challenge 状态不写入 storage、日志、监控或导出。
+不申请 `nativeMessaging`、`<all_urls>`、`webRequest`、`webRequestBlocking`、Cookie、history、
+页面正文或站点脚本注入。
 
 ## 编码与隐私
 
@@ -99,11 +69,9 @@ npm audit --audit-level=high
 测试包含真实本机 WebSocket 假 Receiver、逐字节比对至少一个 Annex-B Access Unit、同一
 `sourceEpoch` 的异常断线恢复与关键帧请求、虚拟时钟超过 184 秒后继续恢复、断线期间不缓存
 视频 payload、认证 ready 前禁止发送、AU 丢弃后的关键帧恢复、STOP/换源取消旧恢复，以及模拟
-权限弹窗中断和 popup 重建的模块测试；地址诊断测试分别覆盖解析失败、非私网、连接超时和
-WebSocket 不可达，逐项覆盖事件阶段码、请求形状/显式上下文拒绝枚举、诊断值白名单和
-敏感值不回显，并验证固定 `.local` 未观察到私网地址前不会发送 token/credential。
-真实 ws 恶意 Receiver 测试还会在地址观察完成前主动发送 `paired` / `ready`，验证扩展不保存身份、
-不进入 authenticated、不发送 auth 或媒体。
+权限弹窗中断和 popup 重建的模块测试；网络错误覆盖自动地址/连接与手动 IPv4 连接分类。
+真实 ws 恶意 Receiver 测试覆盖自动 `.local` 的 QR proof、短码拒绝且零 token、伪造/重放/错
+nonce/mode/identity、主动 `paired` / `ready`，以及手动 IPv4 短码成功路径。
 Receiver 测试覆盖 same-epoch 重连、完整 SPS/PPS/IDR
 门禁、Flush 窗口的 `NeedInput` 竞态、重复/缺失 codec data、解码队列溢出恢复和正常连续播放；
 发送端测试通过 offscreen 实际使用的编排 seam 验证序号、发送计数与 key 成功送达前的 delta 门禁。

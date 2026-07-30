@@ -12,7 +12,7 @@ const SENDER_ID_KEY: string = 'senderId';
 const CREDENTIAL_KEY: string = 'credential';
 const PAIRING_VERSION_KEY: string = 'pairingVersion';
 const THEME_MODE_KEY: string = 'themeMode';
-const DIRECT_PROTOCOL_VERSION: number = 4;
+const DIRECT_PROTOCOL_VERSION: number = 5;
 const DIRECT_PORT: number = 44000;
 const FULLSCREEN_CONTROLS_TIMEOUT_MS: number = 5000;
 
@@ -389,7 +389,7 @@ struct Index {
         this.statusText = '连接二维码无效或已经过期，请在电脑上刷新后重试';
       }
     } catch (error) {
-      this.statusText = '扫码未完成，也可以输入电脑上显示的 6 位连接码';
+      this.statusText = '扫码未完成；使用连接码时还需在扩展填写本机数字 IPv4';
     }
   }
 
@@ -652,6 +652,10 @@ struct Index {
               .onChange((value: string) => {
                 this.shortCode = value;
               })
+
+            Text('连接码模式还需在扩展“平板地址”中填写上方数字 IPv4。')
+              .fontSize(12)
+              .fontColor($r('sys.color.ohos_id_color_text_secondary'))
 
             Button('使用连接码')
               .width('100%')

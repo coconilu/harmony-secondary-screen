@@ -22,7 +22,7 @@ Windows Relay/Native Host 不再属于正常路径，也不由 `scripts/test.ps1
 唯一 video track
   ↓ MediaStreamTrackProcessor
 唯一 VideoEncoder（H.264 Annex-B）
-  ↓ HWC4 binary WebSocket message
+  ↓ HWC5 binary WebSocket message
 Receiver 绑定用户确认的具体私网 wlan IPv4:44000
   ↓ sourceEpoch 校验
 OH_VideoDecoder
@@ -36,8 +36,8 @@ XComponent Surface
 
 | 概念 | 生命周期 |
 | --- | --- |
-| QR session/token | 60 秒、成功一次后销毁，不持久化 |
-| 六位短码 | token 的人工校验回退，60 秒，不持久化 |
+| QR session/token | 60 秒、成功一次后销毁；仅暂存 `storage.session`，不写 `storage.local` |
+| 六位短码 | token 的人工校验回退，60 秒；只允许配合用户抄写的数字私网 IPv4 |
 | `deviceId` + credential | 两端应用沙箱持久化，直到用户忘记设备 |
 | IP / `.local` | 连接地址，可变化，不代表设备身份 |
 | WebSocket | Receiver 打开时按需建立，断开不清除信任 |
@@ -80,28 +80,21 @@ response 才进入冲突状态。停止接收、Wi-Fi 地址或 interface index 
 | `tabCapture` | 获取用户选择标签页的媒体流 |
 | `offscreen` | 扩展弹窗关闭后持有媒体流和编码器 |
 | `storage` | 保存设备身份、凭据、连接地址和 source epoch |
-| `webRequest` | 按允许的扩展页面、浏览器可见性、扩展文档请求形状与 requestId 只读观察 Receiver WebSocket 握手终态的实际地址类别；不拦截、不修改、不保存原始 IP |
 | 固定 `.local` host permission | 只访问一个预定 Receiver 地址 |
 | 可选 `http://*/*` 声明 | Chrome match pattern 无法枚举所有 RFC1918；仅在用户输入并确认具体 IP 时请求该精确 origin |
 
 扩展只保留当前可信设备实际使用的手动私网 origin；配对/保存失败回滚新授权，更新地址和忘记设备时
 枚举并撤销其余手动 origin，且不得把 `permissions.remove()` 的失败当成成功。
 
-扩展用 `runtime.getURL()` 只接受 `setup.html` / `offscreen.html`，发送者或 `webRequest`
-提供的可选 `id`、`origin`、`documentId`、`initiator` 一旦可验证就必须匹配。Chrome/Edge 只向
-扩展暴露同时具备目标和 initiator host permission 的请求；在此可见性边界内，WebSocket 事件还必须
-精确满足扩展文档形状（`tabId=-1`、`frameId=0`、`parentFrameId=-1`、`type=websocket`）和目标 URL。
-当 `initiator` / `documentId` 同时缺失或 initiator 为 opaque `null` 时，只有唯一待处理 attempt
-才能绑定浏览器会话内唯一的 requestId；普通网页标签或网页 worker 不符合该形状，其他扩展请求不会
-向本扩展暴露。BEGIN 返回的随机 attempt id 只留在调用文档
-内存中，不记录、不持久化；缺少 `documentId` 的 FINISH 还必须持有该 id、来自同一允许页面且没有
-歧义。只有收到同一 requestId 的完成/失败终态、
-合并所有非空 IP 后确认固定 `.local` 落到 RFC1918 或 IPv4 link-local，才发送 QR token 或长期
-credential；观测 API 缺失、终态缺失、上下文缺失/歧义、地址类别冲突或非私网时均在鉴权前断开；其中观测
-API 缺失时不创建自动地址 WebSocket。在地址观察完成且请求成功发出前，任何主动
-`paired` / `ready` 响应都按未请求消息拒绝，不能保存身份或打开媒体发送。它不解析浏览器错误
-字符串，也不保存观察到的原始 IP。不申请 `<all_urls>`、`webRequestBlocking`、
-`nativeMessaging`、Cookie、history、正文读取或脚本注入。
+Edge 不会稳定向扩展公开 WebSocket 的真实远端 IP。默认 `.local` 配对使用高熵 QR token 的
+HWC5 challenge/proof，扩展验证 proof 和全部绑定字段后才发送 token；长期 credential 鉴权同理。
+六位短码不能用作 HMAC key，否则可从一次 proof 离线枚举，因此自动 `.local` 明确拒绝短码授权。
+短码只允许用户在扩展填写 Receiver 显示的数字私网 IPv4并授予精确 origin 后走
+`pair_manual_ipv4`；该手动地址确认是 out-of-band endpoint authentication，首包携一次性 token。
+自动路径的乱序、错 nonce、错 mode、错身份、伪造或重放 proof 均在秘密发送前失败。
+nonce、proof 与 challenge 状态只存在于当前 WebSocket 内存中，不写入 storage、日志、监控或导出。
+扩展不申请 `<all_urls>`、`webRequest`、`webRequestBlocking`、`nativeMessaging`、Cookie、
+history、正文读取或脚本注入。
 
 ## 非目标
 

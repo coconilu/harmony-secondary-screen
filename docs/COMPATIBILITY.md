@@ -15,15 +15,12 @@
 
 扩展持久 host permission 仅包含 `http://harmony-web-companion.local/*`。手动 IP 回退使用
 `http://*/*` 的 optional host 声明，但只在用户输入并确认具体私网 IPv4 后请求该单一 origin。
-新增的 `webRequest` 按允许的扩展页面、可用的 `MessageSender.documentId`、请求
-`documentId` / `initiator` 与同一 requestId 只读观察项目 WebSocket 握手响应及完成/失败终态，
-不使用 blocking 能力、不读取页面请求、不保存原始 IP，也不扩大 host permission。这些发送者与
-请求字段都是可选值：可验证字段存在时必须匹配。Chrome/Edge 只暴露扩展同时拥有目标和 initiator
-host permission 的请求；若 `initiator` / `documentId` 都缺失或 initiator 为 opaque `null`，
-还必须满足 `tabId=-1`、`frameId=0`、`parentFrameId=-1`、`type=websocket` 的扩展文档请求形状、
-目标 URL 精确匹配且只有一个待处理 attempt，随后只接受同一 requestId 的终态。普通网页标签、网页
-worker、其他扩展、歧义并发、终态缺失或没有可选 `ip` 时仍失败关闭。
-扩展运行时消息/观测 API 缺失时也失败关闭，不得把“无法观测”降级为自动地址已验证。
+真实 Edge 不会稳定向扩展公开 WebSocket 的远端 IP，因此 HWC5 不申请 `webRequest`，也不把
+浏览器未公开的地址观测当作身份信任。默认 `.local` 首次配对只接受高熵 QR token
+challenge/proof；长期鉴权使用高熵 credential challenge/proof。六位短码不生成 proof，以免形成
+可离线枚举的低熵 oracle；它只在用户抄写 Receiver 数字私网 IPv4并授予精确 origin 后使用
+`pair_manual_ipv4`。该手动路径首包含一次性 token，数字地址确认是其 endpoint authentication。
+Receiver 仍只绑定用户确认的 `wlan*` 私网地址并拒绝公网来源。
 
 Edge 143+ 的 Local Network Access 行为仍可能变化，必须在目标 Edge 版本验证 WebSocket。不得用
 `<all_urls>` 或网络扫描规避。
@@ -34,8 +31,8 @@ HarmonyOS DNS-SD 服务实例注册、最小 mDNS A 响应和裸 `.local` 主机
 1. DNS-SD 服务实例注册是否成功；
 2. Receiver 固定 A 响应器是否显示“已发布”，是否有名称冲突；
 3. Windows 是否把 `harmony-web-companion.local` 解析为 Receiver 显示的同一私网 IPv4；
-4. Edge 是否在发送凭据前确认私网结果并建立对应 WebSocket；
-5. 手动私网 IPv4 是否成功。
+4. Edge 默认 `.local` 是否在发送秘密前验证 Receiver 的 HWC5 QR proof；
+5. 手动私网 IPv4 是否成功，且只有该路径允许六位短码。
 
 ## 页面范围
 
@@ -70,5 +67,6 @@ response 影响所有权；出站响应 IP TTL 仍固定为 255。若目标 Harm
 - Windows 查询 TTL 1 被自动化接受不等于修复后的 exact-head 已通过同机复验；
 - 假 Receiver 收到 Annex-B 不等于真实 Edge/平板端到端通过；
 - 配置 60 fps 不等于实际源视频或 Edge 一定持续产出 60 帧；
-- 旧 Relay 的 13 分 24 秒结果不等于 HWC4 直连链路通过；
+- 旧 Relay 的 13 分 24 秒结果不等于 HWC5 直连链路通过；
+- HWC4 与 HWC5 不兼容；本次验收必须同时更新扩展和 Receiver，并重新配对；
 - 短时画面不等于 #3 的 30 分钟、延迟、丢包和恢复验收。

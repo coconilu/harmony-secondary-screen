@@ -238,15 +238,18 @@ bool ReceiverSession::AuthorizeQr(std::string sessionId, std::string token,
 bool ReceiverSession::AuthorizeShortCode(std::string shortCode) {
   if (shortCode.size() != 6U ||
       !std::all_of(shortCode.begin(), shortCode.end(),
-                   [](unsigned char character) { return std::isdigit(character) != 0; })) {
+                   [](unsigned char character) {
+                     return std::isdigit(character) != 0;
+                   })) {
     return false;
   }
   std::scoped_lock lock(state_mutex_);
   pending_session_id_.clear();
   pending_token_.clear();
   pending_short_code_ = std::move(shortCode);
-  pairing_expires_at_ = std::chrono::system_clock::now() + std::chrono::seconds(60);
-  detail_ = "一次性短码授权已就绪，等待 Edge 连接";
+  pairing_expires_at_ =
+      std::chrono::system_clock::now() + std::chrono::seconds(60);
+  detail_ = "一次性短码授权已就绪，请在扩展填写本机数字 IPv4";
   return true;
 }
 
@@ -411,6 +414,32 @@ bool ReceiverSession::ReadUpgrade(int client) {
 bool ReceiverSession::AuthenticateConnection() {
   const int socket = control_socket_.load();
   if (socket < 0) return false;
+  enum class ChallengeStage {
+    kInitial,
+    kPairFinal,
+    kAuthFinal,
+  };
+  struct PairChallengeState {
+    std::string sessionId;
+    std::string senderId;
+    std::string nonce;
+    std::string deviceId;
+    bool manualIpv4 = false;
+  };
+  struct AuthChallengeState {
+    std::string senderId;
+    std::string deviceId;
+    std::string nonce;
+    std::uint32_t sourceEpoch = 0;
+  };
+  ChallengeStage stage = ChallengeStage::kInitial;
+  PairChallengeState pairChallenge;
+  AuthChallengeState authChallenge;
+  const auto sendError = [this](std::string_view code) {
+    return SendControl(
+        "{\"type\":\"error\",\"protocol\":5,\"code\":\"" +
+        protocol::EscapeJson(code) + "\"}");
+  };
   std::array<std::byte, 8192> buffer{};
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
   while (desired_ && std::chrono::steady_clock::now() < deadline) {
@@ -428,20 +457,121 @@ bool ReceiverSession::AuthenticateConnection() {
       return false;
     }
     for (const auto& message : messages) {
-      if (message.opcode != websocket::Opcode::kText) return false;
+      if (message.opcode != websocket::Opcode::kText ||
+          message.payload.size() > 2048U) {
+        sendError("challenge_invalid");
+        return false;
+      }
       const std::string json(reinterpret_cast<const char*>(message.payload.data()),
                              message.payload.size());
       if (protocol::JsonInteger(json, "protocol") != protocol::kVersion) {
-        SendControl(R"({"type":"error","protocol":4,"code":"protocol_mismatch"})");
+        sendError("protocol_mismatch");
         return false;
       }
       const auto type = protocol::JsonString(json, "type");
-      if (type == "pair") {
-        const std::string sessionId = protocol::JsonString(json, "sessionId").value_or("");
-        const std::string token = protocol::JsonString(json, "token").value_or("");
-        const std::string senderId = protocol::JsonString(json, "senderId").value_or("");
-        std::string error;
+      if (stage == ChallengeStage::kInitial &&
+          type == "pair_manual_ipv4") {
+        const std::string sessionId =
+            protocol::JsonString(json, "sessionId").value_or("");
+        const std::string senderId =
+            protocol::JsonString(json, "senderId").value_or("");
+        if (protocol::JsonString(json, "mode") != "pair_manual_ipv4" ||
+            !Hex(sessionId, 32) || !SenderIdValid(senderId)) {
+          sendError("challenge_invalid");
+          return false;
+        }
         std::string deviceId;
+        {
+          std::scoped_lock lock(state_mutex_);
+          deviceId = device_id_;
+        }
+        pairChallenge = {sessionId, senderId, "", deviceId, true};
+        stage = ChallengeStage::kPairFinal;
+      }
+      if (stage == ChallengeStage::kInitial && type == "pair_challenge") {
+        const std::string sessionId = protocol::JsonString(json, "sessionId").value_or("");
+        const std::string senderId = protocol::JsonString(json, "senderId").value_or("");
+        const std::string nonce = protocol::JsonString(json, "nonce").value_or("");
+        if (protocol::JsonString(json, "mode") != "pair" ||
+            !Hex(sessionId, 32) || !SenderIdValid(senderId) ||
+            !Hex(nonce, 64)) {
+          sendError("challenge_invalid");
+          return false;
+        }
+        std::string error;
+        std::string proofMode;
+        std::string proofSecret;
+        std::string deviceId;
+        {
+          std::scoped_lock lock(state_mutex_);
+          const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::system_clock::now().time_since_epoch()).count();
+          const auto expiresAt = std::chrono::duration_cast<std::chrono::milliseconds>(
+              pairing_expires_at_.time_since_epoch()).count();
+          if (!consumed_session_id_.empty() &&
+              sessionId == consumed_session_id_) {
+            error = "authorization_replayed";
+          } else if (now >= expiresAt) {
+            error = "authorization_expired";
+          } else if (!pending_session_id_.empty() &&
+                     sessionId == pending_session_id_ &&
+                     Hex(pending_token_, 64)) {
+            proofMode = "qr";
+            proofSecret = pending_token_;
+          } else if (!pending_short_code_.empty()) {
+            error = "short_code_requires_manual_ipv4";
+          } else {
+            error = "pairing_failed";
+          }
+          deviceId = device_id_;
+        }
+        if (!error.empty()) {
+          sendError(error);
+          return false;
+        }
+        const std::string proof = protocol::ComputePairProof(
+            proofSecret, proofMode, sessionId, senderId, nonce, deviceId);
+        if (proof.empty()) {
+          sendError("challenge_invalid");
+          return false;
+        }
+        pairChallenge = {sessionId, senderId, nonce, deviceId, false};
+        stage = ChallengeStage::kPairFinal;
+        std::ostringstream reply;
+        reply << "{\"type\":\"pair_proof\",\"protocol\":5,\"mode\":\"pair\","
+              << "\"proofMode\":\"" << proofMode << "\",\"sessionId\":\""
+              << sessionId << "\",\"senderId\":\"" << senderId
+              << "\",\"nonce\":\"" << nonce
+              << "\",\"deviceId\":\"" << deviceId << "\",\"proof\":\""
+              << proof << "\"}";
+        if (!SendControl(reply.str())) return false;
+        continue;
+      }
+      if (stage == ChallengeStage::kPairFinal) {
+        const std::string sessionId =
+            protocol::JsonString(json, "sessionId").value_or("");
+        const std::string token =
+            protocol::JsonString(json, "token").value_or("");
+        const std::string senderId =
+            protocol::JsonString(json, "senderId").value_or("");
+        const std::string nonce =
+            protocol::JsonString(json, "nonce").value_or("");
+        const bool manualFinal =
+            pairChallenge.manualIpv4 &&
+            type == "pair_manual_ipv4" &&
+            protocol::JsonString(json, "mode") == "pair_manual_ipv4";
+        const bool proofFinal =
+            !pairChallenge.manualIpv4 &&
+            type == "pair" &&
+            protocol::JsonString(json, "mode") == "pair";
+        if ((!manualFinal && !proofFinal) ||
+            sessionId != pairChallenge.sessionId ||
+            senderId != pairChallenge.senderId ||
+            nonce != pairChallenge.nonce || !Hex(token, 64)) {
+          sendError("challenge_state_invalid");
+          return false;
+        }
+        std::string error;
         std::string credential;
         {
           std::scoped_lock lock(state_mutex_);
@@ -464,16 +594,11 @@ bool ReceiverSession::AuthenticateConnection() {
             case protocol::PairingAuthorizationResult::kAccepted:
               break;
           }
-          if (error.empty() && !SenderIdValid(senderId)) {
-            error = "pairing_failed";
-          }
           if (error.empty()) {
             credential = RandomHex(32);
-            if (credential.empty()) {
+            if (credential.empty() || device_id_ != pairChallenge.deviceId) {
               error = "pairing_failed";
             } else {
-              if (device_id_.empty()) device_id_ = RandomHex(16);
-              deviceId = device_id_;
               trusted_sender_id_ = senderId;
               trusted_credential_ = credential;
               consumed_session_id_ = sessionId;
@@ -485,64 +610,139 @@ bool ReceiverSession::AuthenticateConnection() {
           }
         }
         if (!error.empty()) {
-          return SendControl("{\"type\":\"error\",\"protocol\":4,\"code\":\"" + error + "\"}") &&
-                 false;
+          sendError(error);
+          return false;
         }
         std::ostringstream reply;
-        reply << "{\"type\":\"paired\",\"protocol\":4,\"deviceId\":\""
-              << protocol::EscapeJson(deviceId) << "\",\"credential\":\""
-              << protocol::EscapeJson(credential) << "\"}";
+        reply << "{\"type\":\"paired\",\"protocol\":5,\"deviceId\":\""
+              << pairChallenge.deviceId << "\",\"credential\":\""
+              << credential << "\"}";
         SendControl(reply.str());
         SetState("paired", "电脑连接成功，下次使用无需再次扫码", true, false);
         return false;
       }
-      if (type != "auth") {
-        SendControl(R"({"type":"error","protocol":4,"code":"not_paired"})");
-        return false;
-      }
-      const std::string senderId = protocol::JsonString(json, "senderId").value_or("");
-      const std::string deviceId = protocol::JsonString(json, "deviceId").value_or("");
-      const std::string credential = protocol::JsonString(json, "credential").value_or("");
-      const auto epoch = protocol::JsonInteger(json, "sourceEpoch");
-      bool trusted = false;
-      bool stale = false;
-      {
-        std::scoped_lock lock(state_mutex_);
-        trusted = !trusted_sender_id_.empty() && senderId == trusted_sender_id_ &&
-                  deviceId == device_id_ && credential == trusted_credential_;
-        stale = !epoch || *epoch <= 0 || *epoch > UINT32_MAX ||
-                !protocol::IsAcceptedSourceEpoch(static_cast<std::uint32_t>(*epoch),
-                                                 latest_source_epoch_);
-        if (trusted && !stale) {
-          const auto accepted = static_cast<std::uint32_t>(*epoch);
-          latest_source_epoch_ = accepted;
-          active_source_epoch_ = accepted;
+      if (stage == ChallengeStage::kInitial && type == "auth_challenge") {
+        const std::string senderId =
+            protocol::JsonString(json, "senderId").value_or("");
+        const std::string deviceId =
+            protocol::JsonString(json, "deviceId").value_or("");
+        const std::string nonce =
+            protocol::JsonString(json, "nonce").value_or("");
+        const auto epoch = protocol::JsonInteger(json, "sourceEpoch");
+        const bool codecValid =
+            protocol::JsonString(json, "mode") == "auth" &&
+            protocol::JsonString(json, "codec") == "video/avc" &&
+            protocol::JsonString(json, "avcFormat") == "annexb" &&
+            protocol::JsonInteger(json, "width") == 1280 &&
+            protocol::JsonInteger(json, "height") == 720 &&
+            protocol::JsonInteger(json, "fps") == 60;
+        if (!SenderIdValid(senderId) || !Hex(deviceId, 32) ||
+            !Hex(nonce, 64) || !epoch || *epoch <= 0 ||
+            *epoch > UINT32_MAX || !codecValid) {
+          sendError("challenge_invalid");
+          return false;
         }
+        std::string credential;
+        bool paired = false;
+        bool identityMatches = false;
+        bool stale = false;
+        {
+          std::scoped_lock lock(state_mutex_);
+          paired = !trusted_sender_id_.empty() && !trusted_credential_.empty();
+          identityMatches = paired && senderId == trusted_sender_id_ &&
+                            deviceId == device_id_;
+          stale = !protocol::IsAcceptedSourceEpoch(
+              static_cast<std::uint32_t>(*epoch), latest_source_epoch_);
+          if (identityMatches && !stale) credential = trusted_credential_;
+        }
+        if (!paired) {
+          sendError("not_paired");
+          return false;
+        }
+        if (!identityMatches) {
+          sendError("identity_mismatch");
+          return false;
+        }
+        if (stale) {
+          sendError("epoch_stale");
+          return false;
+        }
+        const auto acceptedEpoch = static_cast<std::uint32_t>(*epoch);
+        const std::string proof = protocol::ComputeAuthProof(
+            credential, senderId, deviceId, acceptedEpoch, nonce);
+        if (proof.empty()) {
+          sendError("challenge_invalid");
+          return false;
+        }
+        authChallenge = {senderId, deviceId, nonce, acceptedEpoch};
+        stage = ChallengeStage::kAuthFinal;
+        std::ostringstream reply;
+        reply << "{\"type\":\"auth_proof\",\"protocol\":5,\"mode\":\"auth\","
+              << "\"senderId\":\"" << senderId << "\",\"deviceId\":\""
+              << deviceId << "\",\"sourceEpoch\":" << acceptedEpoch
+              << ",\"nonce\":\"" << nonce << "\",\"proof\":\""
+              << proof << "\"}";
+        if (!SendControl(reply.str())) return false;
+        continue;
       }
-      if (!trusted) {
-        SendControl(R"({"type":"error","protocol":4,"code":"identity_mismatch"})");
-        return false;
+      if (stage == ChallengeStage::kAuthFinal) {
+        const std::string senderId =
+            protocol::JsonString(json, "senderId").value_or("");
+        const std::string deviceId =
+            protocol::JsonString(json, "deviceId").value_or("");
+        const std::string credential =
+            protocol::JsonString(json, "credential").value_or("");
+        const std::string nonce =
+            protocol::JsonString(json, "nonce").value_or("");
+        const auto epoch = protocol::JsonInteger(json, "sourceEpoch");
+        const bool codecValid =
+            protocol::JsonString(json, "mode") == "auth" &&
+            protocol::JsonString(json, "codec") == "video/avc" &&
+            protocol::JsonString(json, "avcFormat") == "annexb" &&
+            protocol::JsonInteger(json, "width") == 1280 &&
+            protocol::JsonInteger(json, "height") == 720 &&
+            protocol::JsonInteger(json, "fps") == 60;
+        if (type != "auth" || senderId != authChallenge.senderId ||
+            deviceId != authChallenge.deviceId ||
+            nonce != authChallenge.nonce || !epoch ||
+            *epoch != authChallenge.sourceEpoch || !codecValid ||
+            !Hex(credential, 64)) {
+          sendError("challenge_state_invalid");
+          return false;
+        }
+        bool trusted = false;
+        bool stale = false;
+        {
+          std::scoped_lock lock(state_mutex_);
+          trusted = senderId == trusted_sender_id_ &&
+                    deviceId == device_id_ &&
+                    protocol::ConstantTimeEqual(
+                        credential, trusted_credential_);
+          stale = !protocol::IsAcceptedSourceEpoch(
+              authChallenge.sourceEpoch, latest_source_epoch_);
+          if (trusted && !stale) {
+            latest_source_epoch_ = authChallenge.sourceEpoch;
+            active_source_epoch_ = authChallenge.sourceEpoch;
+          }
+        }
+        if (!trusted) {
+          sendError("identity_mismatch");
+          return false;
+        }
+        if (stale) {
+          sendError("epoch_stale");
+          return false;
+        }
+        FlushDecoder();
+        std::ostringstream reply;
+        reply << "{\"type\":\"ready\",\"protocol\":5,\"sourceEpoch\":"
+              << authChallenge.sourceEpoch << "}";
+        if (!SendControl(reply.str())) return false;
+        SetState("connected", "电脑已连接，正在准备播放画面", true, true);
+        return true;
       }
-      if (stale) {
-        SendControl(R"({"type":"error","protocol":4,"code":"epoch_stale"})");
-        return false;
-      }
-      const bool codecValid =
-          protocol::JsonString(json, "codec") == "video/avc" &&
-          protocol::JsonString(json, "avcFormat") == "annexb" &&
-          protocol::JsonInteger(json, "width") == 1280 &&
-          protocol::JsonInteger(json, "height") == 720 &&
-          protocol::JsonInteger(json, "fps") == 60;
-      if (!codecValid) {
-        SendControl(R"({"type":"error","protocol":4,"code":"codec_unsupported"})");
-        return false;
-      }
-      FlushDecoder();
-      std::ostringstream reply;
-      reply << "{\"type\":\"ready\",\"protocol\":4,\"sourceEpoch\":" << *epoch << "}";
-      if (!SendControl(reply.str())) return false;
-      SetState("connected", "电脑已连接，正在准备播放画面", true, true);
-      return true;
+      sendError("challenge_required");
+      return false;
     }
   }
   return false;
@@ -600,7 +800,7 @@ bool ReceiverSession::RunConnectedSession() {
       }
     }
     if (decoder_recovery_.ConsumeKeyFrameRequest()) {
-      if (!SendControl(R"({"type":"keyframe","protocol":4,"reason":"loss_flush_or_session_start","requireCodecConfig":true})")) {
+      if (!SendControl(R"({"type":"keyframe","protocol":5,"reason":"loss_flush_or_session_start","requireCodecConfig":true})")) {
         OH_LOG_Print(LOG_APP, LOG_WARN, kLogDomain, kLogTag,
                      "Receiver WebSocket keyframe request send failed");
         return false;
@@ -676,7 +876,7 @@ bool ReceiverSession::HandleControl(std::string_view json) {
     const auto at = protocol::JsonInteger(json, "at");
     if (!at) return false;
     std::ostringstream pong;
-    pong << "{\"type\":\"pong\",\"protocol\":4,\"at\":" << *at << "}";
+    pong << "{\"type\":\"pong\",\"protocol\":5,\"at\":" << *at << "}";
     return SendControl(pong.str());
   }
   return type != "close";
@@ -1000,7 +1200,7 @@ void ReceiverSession::DecoderOutput(OH_AVCodec* decoder, std::uint32_t index,
         SetState("displaying", "正在播放电脑发送的画面", true, true);
       }
       std::ostringstream telemetry;
-      telemetry << "{\"type\":\"telemetry\",\"protocol\":4,\"captureUs\":" << attributes.pts
+      telemetry << "{\"type\":\"telemetry\",\"protocol\":5,\"captureUs\":" << attributes.pts
                 << ",\"displayUs\":" << ClockMicroseconds()
                 << ",\"receivedFrames\":" << received_frames_.load()
                 << ",\"receivedBytes\":" << received_bytes_.load()

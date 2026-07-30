@@ -19,11 +19,11 @@ try {
   $manifest = Get-Content -Raw -Encoding UTF8 extension\manifest.json | ConvertFrom-Json
   if ($manifest.manifest_version -ne 3) { throw 'Edge extension must use Manifest V3.' }
   $permissions = @($manifest.permissions)
-  foreach ($required in @('activeTab', 'offscreen', 'storage', 'tabCapture', 'webRequest')) {
+  foreach ($required in @('activeTab', 'offscreen', 'storage', 'tabCapture')) {
     if ($permissions -notcontains $required) { throw "Extension is missing permission: $required" }
   }
   foreach ($forbidden in @('nativeMessaging', '<all_urls>', 'cookies', 'history', 'scripting',
-                            'webRequestBlocking')) {
+                            'webRequest', 'webRequestBlocking')) {
     if ($permissions -contains $forbidden) { throw "Extension requests forbidden permission: $forbidden" }
   }
   if (@($manifest.host_permissions).Count -ne 1 -or
@@ -49,20 +49,13 @@ try {
   }
   if ($LASTEXITCODE -ne 1) { throw "Extension privacy scan failed: $LASTEXITCODE" }
 
-  $diagnosticPersistence = & rg -n 'console\.|chrome\.storage|storage\.(local|session|sync)' `
-    extension\direct-network-diagnostics.js 2>$null
-  if ($LASTEXITCODE -eq 0) {
-    throw "Automatic-address diagnostics must remain attempt-local and user-visible only:`n$diagnosticPersistence"
-  }
-  if ($LASTEXITCODE -ne 1) { throw "Diagnostic persistence scan failed: $LASTEXITCODE" }
-
-  $diagnosticScopeViolation = & rg -n 'AD1|diagnosticCode' `
+  $proofPersistence = & rg -n 'nonce|proof' `
     extension\offscreen.js extension\service-worker.js extension\monitor.js `
     extension\pairing-store.js extension\pending-pairing-store.js 2>$null
   if ($LASTEXITCODE -eq 0) {
-    throw "AD1 diagnostics must remain inside direct diagnostics and the current setup popup:`n$diagnosticScopeViolation"
+    throw "Challenge nonce/proof must remain connection-local and must not enter state or export:`n$proofPersistence"
   }
-  if ($LASTEXITCODE -ne 1) { throw "Diagnostic scope scan failed: $LASTEXITCODE" }
+  if ($LASTEXITCODE -ne 1) { throw "Challenge persistence scan failed: $LASTEXITCODE" }
 
   $setupDiagnosticSink = & rg -n 'console\.|chrome\.storage|storage\.(local|session|sync)' `
     extension\setup.js 2>$null
@@ -85,7 +78,7 @@ try {
     @{ Path = 'extension\direct-resync-policy.js'; Pattern = 'canDeliverEncodedChunk' },
     @{ Path = 'extension\direct-delivery-orchestrator.js'; Pattern = 'deliver(chunk, connection, sourceEpoch, telemetry)' },
     @{ Path = 'extension\offscreen.js'; Pattern = 'directDelivery.deliver' },
-    @{ Path = 'extension\tests\direct-websocket.integration.test.js'; Pattern = 'recovers an abnormal drop without replacing the capture source' },
+    @{ Path = 'extension\tests\direct-websocket.integration.test.js'; Pattern = 'reconnect repeats the proof gate and keeps the same source epoch' },
     @{ Path = 'extension\direct-protocol.js'; Pattern = 'PAIRING_TTL_MS = 60_000' },
     @{ Path = 'extension\direct-protocol.js'; Pattern = 'sourceEpoch' },
     @{ Path = 'extension\pending-pairing-store.js'; Pattern = 'chrome.storage.session' },
@@ -94,26 +87,19 @@ try {
     @{ Path = 'extension\host-permissions.js'; Pattern = 'const granted = await api.getAll()' },
     @{ Path = 'extension\host-permissions.js'; Pattern = 'if (!removed)' },
     @{ Path = 'extension\setup.js'; Pattern = 'cleanupUnusedManualHostPermissions([])' },
-    @{ Path = 'extension\direct-network-diagnostics.js'; Pattern = 'createDirectObservationContext' },
-    @{ Path = 'extension\direct-network-diagnostics.js'; Pattern = 'new URL(runtimeApi.getURL(""))' },
-    @{ Path = 'extension\direct-network-diagnostics.js'; Pattern = 'terminalObserved' },
-    @{ Path = 'extension\direct-network-diagnostics.js'; Pattern = 'classifyInitialEventContext' },
-    @{ Path = 'extension\direct-network-diagnostics.js'; Pattern = 'hasExtensionDocumentRequestShape' },
-    @{ Path = 'extension\direct-network-diagnostics.js'; Pattern = 'DIAGNOSTIC_CODE_PATTERN' },
-    @{ Path = 'extension\direct-network-diagnostics.js'; Pattern = 'isDirectObservationDiagnosticCode' },
-    @{ Path = 'extension\direct-network-diagnostics.js'; Pattern = 'onCompleted.addListener' },
-    @{ Path = 'extension\direct-network-diagnostics.js'; Pattern = 'if (!globalThis.chrome?.runtime?.sendMessage)' },
-    @{ Path = 'extension\service-worker.js'; Pattern = 'handleDirectObservationMessage' },
-    @{ Path = 'extension\setup.js'; Pattern = 'attemptedHost === DEFAULT_RECEIVER_HOST' },
-    @{ Path = 'extension\setup.js'; Pattern = 'error instanceof DirectTransportError' },
-    @{ Path = 'extension\setup.js'; Pattern = 'isDirectObservationDiagnosticCode(error.diagnosticCode)' },
-    @{ Path = 'extension\tests\service-worker-observation.test.js'; Pattern = 'without optional origin or documentId' },
-    @{ Path = 'extension\tests\direct-websocket.integration.test.js'; Pattern = 'missing runtime observation sends neither pairing nor auth credentials' },
-    @{ Path = 'extension\tests\direct-websocket.integration.test.js'; Pattern = 'sends no token or credential without a private IP' },
-    @{ Path = 'extension\tests\direct-network-diagnostics.test.js'; Pattern = 'diagnostic codes are stable enums and never echo supplied values' },
-    @{ Path = 'extension\tests\direct-network-diagnostics.test.js'; Pattern = 'diagnoses every initial request-shape and explicit-context rejection' },
-    @{ Path = 'extension\tests\setup-smoke.test.js'; Pattern = 'automatic pairing shows AD1 only in the current setup popup' },
-    @{ Path = 'extension\tests\setup-smoke.test.js'; Pattern = 'ordinary, forged, manual and successful pairing paths show no AD1' },
+    @{ Path = 'extension\direct-client.js'; Pattern = 'type: "pair_challenge"' },
+    @{ Path = 'extension\direct-client.js'; Pattern = 'type: "pair_manual_ipv4"' },
+    @{ Path = 'extension\direct-client.js'; Pattern = 'proof.proofMode !== "qr"' },
+    @{ Path = 'extension\direct-client.js'; Pattern = 'type: "auth_challenge"' },
+    @{ Path = 'extension\direct-client.js'; Pattern = 'constantTimeEqualProof' },
+    @{ Path = 'extension\direct-protocol.js'; Pattern = 'HWC5-PAIR-PROOF' },
+    @{ Path = 'extension\direct-protocol.js'; Pattern = 'HWC5-AUTH-PROOF' },
+    @{ Path = 'extension\direct-protocol.js'; Pattern = 'subtle.sign' },
+    @{ Path = 'extension\tests\direct-websocket.integration.test.js'; Pattern = 'release zero token' },
+    @{ Path = 'extension\tests\direct-websocket.integration.test.js'; Pattern = 'release zero credential' },
+    @{ Path = 'extension\tests\direct-websocket.integration.test.js'; Pattern = 'automatic address refuses short-code proof mode and releases zero token' },
+    @{ Path = 'extension\tests\direct-websocket.integration.test.js'; Pattern = 'manual private IPv4 preserves short-code pairing without a low-entropy proof' },
+    @{ Path = 'extension\tests\direct-protocol.test.js'; Pattern = 'HWC5 proof vectors match the native Receiver contract' },
     @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'IsCurrentWifiIpv4' },
     @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'tcpAddress.sin_addr = address' },
     @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'std::strncmp(item->ifa_name, "wlan", 4)' },
@@ -132,6 +118,16 @@ try {
     @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'authorization_replayed' },
     @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'identity_mismatch' },
     @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'IsAcceptedSourceEpoch' },
+    @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'pair_proof' },
+    @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'auth_proof' },
+    @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'challenge_state_invalid' },
+    @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'short_code_requires_manual_ipv4' },
+    @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'pair_manual_ipv4' },
+    @{ Path = 'receiver\entry\src\main\ets\pages\Index.ets'; Pattern = 'DIRECT_PROTOCOL_VERSION: number = 5' },
+    @{ Path = 'receiver\entry\src\main\cpp\native_protocol.cpp'; Pattern = 'ComputePairProof' },
+    @{ Path = 'receiver\entry\src\main\cpp\native_protocol.cpp'; Pattern = 'ComputeAuthProof' },
+    @{ Path = 'receiver\entry\src\main\cpp\native_protocol.cpp'; Pattern = 'ConstantTimeEqual' },
+    @{ Path = 'receiver\tests\direct_protocol_tests.cpp'; Pattern = 'Hwc5ProofVectorTest' },
     @{ Path = 'receiver\entry\src\main\cpp\decoder_orchestration.h'; Pattern = 'BeginFlush' },
     @{ Path = 'receiver\entry\src\main\cpp\decoder_orchestration.h'; Pattern = 'DecoderRecoveryCoordinator' },
     @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'decoder_callback_gate_.BeginFlush' },
@@ -153,7 +149,7 @@ try {
     @{ Path = 'receiver\tests\receiver_lifecycle_tests.cpp'; Pattern = 'TestSameEpochAuthenticationRequiresCompleteRecovery' },
     @{ Path = 'receiver\tests\receiver_lifecycle_tests.cpp'; Pattern = 'TestFlushClosesNeedInputGateBeforeClearingQueues' },
     @{ Path = 'receiver\tests\receiver_lifecycle_tests.cpp'; Pattern = 'TestDecodeQueueOverflowInvalidatesDependencies' },
-    @{ Path = 'docs\PROTOCOL.md'; Pattern = 'HWC4' },
+    @{ Path = 'docs\PROTOCOL.md'; Pattern = 'HWC5' },
     @{ Path = 'docs\PROTOCOL.md'; Pattern = 'sourceEpoch' }
   )) {
     $found = Select-String -LiteralPath $check.Path -SimpleMatch -Quiet -Pattern $check.Pattern

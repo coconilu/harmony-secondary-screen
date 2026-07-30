@@ -2,12 +2,6 @@ import {
   allocateSourceEpoch,
   getTrustedReceiver
 } from "./pairing-store.js";
-import {
-  DirectRequestObserver,
-  handleDirectObservationMessage,
-  installDirectRequestObserver
-} from "./direct-network-diagnostics.js";
-
 const STATE_KEY = "captureProbeState";
 const SETUP_PAGE = "setup.html";
 const MONITOR_PAGE = "monitor.html";
@@ -15,10 +9,6 @@ const CAPTURABLE_SCHEMES = new Set(["http:", "https:"]);
 
 let updateQueue = Promise.resolve();
 let startInFlight = false;
-const directRequestObserver = new DirectRequestObserver();
-
-installDirectRequestObserver(directRequestObserver, chrome.webRequest);
-
 chrome.runtime.onInstalled.addListener(() => {
   void resetProbe();
 });
@@ -84,23 +74,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     void failProbe(message.error, message.telemetry);
     sendResponse({ ok: true });
     return false;
-  }
-
-  const observationMessage = handleDirectObservationMessage(
-    message,
-    sender,
-    {
-      observer: directRequestObserver,
-      runtimeApi: chrome.runtime
-    }
-  );
-  if (observationMessage.handled) {
-    if (observationMessage.responsePromise) {
-      void observationMessage.responsePromise.then(sendResponse);
-    } else {
-      sendResponse(observationMessage.response);
-    }
-    return observationMessage.keepChannelOpen;
   }
 
   return false;

@@ -24,13 +24,13 @@ Edge 扩展
   → 显示 60 秒、单次使用二维码
 平板扫描二维码
   → Edge 解析固定 harmony-web-companion.local
-  → 确认解析结果属于允许的私网后直连 Receiver WebSocket
+  → Receiver 用二维码高熵 token 完成 HWC5 挑战证明
   → 两端保存与 IP 无关的 deviceId / 设备凭据
 
 后续：打开 Receiver → 在目标标签页点击“发送当前标签页”
 ```
 
-- 摄像头不可用：在平板输入扩展显示的六位一次性短码。
+- 摄像头不可用：在平板输入六位一次性短码，并在扩展填写平板显示的数字私网 IPv4。
 - `.local` 解析失败：在扩展输入 Receiver 显示的私网 IPv4。
 - IP 变化只更新连接地址，不清除配对身份。
 - 两端均可“忘记设备”。
@@ -98,7 +98,7 @@ Receiver 仓库配置不包含证书、私钥、口令或本机绝对签名路�
 ## 文档
 
 - [系统架构](docs/ARCHITECTURE.md)
-- [HWC4 直连协议](docs/PROTOCOL.md)
+- [HWC5 直连协议](docs/PROTOCOL.md)
 - [真实设备测试](docs/REAL_DEVICE_TEST.md)
 - [兼容性策略](docs/COMPATIBILITY.md)
 - [Edge 扩展说明](extension/README.md)

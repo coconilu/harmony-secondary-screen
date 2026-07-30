@@ -1,15 +1,14 @@
 {
   "manifest_version": 3,
   "name": "网页伴随屏",
-  "version": "0.5.6",
+  "version": "0.6.0",
   "description": "把用户选择的 Edge 标签页画面发送到 HarmonyOS 原生接收端；不采集音频。",
   "minimum_chrome_version": "116",
   "permissions": [
     "activeTab",
     "offscreen",
     "storage",
-    "tabCapture",
-    "webRequest"
+    "tabCapture"
   ],
   "host_permissions": [
     "http://harmony-web-companion.local/*"

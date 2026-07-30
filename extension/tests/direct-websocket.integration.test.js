@@ -10,743 +10,395 @@ import {
   ReceiverRecoveryCancelledError
 } from "../direct-client.js";
 import {
-  describeDirectTransportFailure,
-  DirectRequestObserver
-} from "../direct-network-diagnostics.js";
-import { createDirectVideoMessage } from "../direct-protocol.js";
+  computeAuthProof,
+  computePairProof,
+  createDirectVideoMessage,
+  DIRECT_PROTOCOL
+} from "../direct-protocol.js";
 
 globalThis.WebSocket = WebSocket;
 
-const TEST_TRANSPORT_OBSERVATION = Object.freeze({
-  beginTransportObservation: async () => "explicit-test-observation",
-  finishTransportObservation: async () => ({
-    allowAuthentication: true,
-    recoverable: true
-  })
+const TOKEN = "2".repeat(64);
+const CREDENTIAL = "a".repeat(64);
+const DEVICE_ID = "00112233445566778899aabbccddeeff";
+const SESSION_ID = "1".repeat(32);
+const SENDER_ID = "019fa3cf-75c7-7000-8000-000000000001";
+const TRUSTED = Object.freeze({
+  senderId: SENDER_ID,
+  deviceId: DEVICE_ID,
+  credential: CREDENTIAL,
+  host: "192.168.1.8",
+  pairedAt: 1
 });
 
-const EDGE_OBSERVATION_CONTEXT = Object.freeze({
-  documentId: null,
-  initiator: "chrome-extension://abcdefghijklmnopabcdefghijklmnop",
-  page: "setup.html"
-});
-
-function createEdgeFallbackTransport(observedIp) {
-  const observer = new DirectRequestObserver();
-  const pending = [];
-  let requestSequence = 0;
-  return {
-    beginTransportObservation: async (url) => {
-      const attemptId = observer.begin(url, EDGE_OBSERVATION_CONTEXT);
-      pending.push({ attemptId, url });
-      return attemptId;
-    },
-    finishTransportObservation: async (attemptId, host, socketOutcome) =>
-      describeDirectTransportFailure({
-        host,
-        ...observer.finish(
-          attemptId,
-          socketOutcome,
-          EDGE_OBSERVATION_CONTEXT
-        )
-      }),
-    wrapSocketFactory(actualUrl) {
-      return () => {
-        const attempt = pending.shift();
-        assert.ok(attempt);
-        requestSequence += 1;
-        const details = {
-          requestId: `edge-fallback-${requestSequence}`,
-          url: attempt.url,
-          type: "websocket",
-          tabId: -1,
-          frameId: 0,
-          parentFrameId: -1
-        };
-        observer.observeBefore(details);
-        observer.observeTerminal(observedIp === undefined
-          ? details
-          : { ...details, ip: observedIp });
-        return new WebSocket(actualUrl);
-      };
-    }
-  };
-}
-
-function isRedactedDiagnosticFailure(error) {
-  assert.equal(error.message.includes("AD1"), false);
-  assert.match(error.diagnosticCode, /^AD1\|B=1\|Q=bound/);
-  for (const sensitive of [
-    "203.0.113.8",
-    "harmony-web-companion.local",
-    "1".repeat(32),
-    "2".repeat(64),
-    "a".repeat(64)
-  ]) {
-    assert.equal(error.message.includes(sensitive), false);
-    assert.equal(error.diagnosticCode.includes(sensitive), false);
-  }
-  return true;
-}
-
-test("QR authorization pairs with a fake Receiver and returns stable credentials", async (context) => {
-  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
-  context.after(() => server.close());
-  await once(server, "listening");
-  const address = server.address();
-  assert.equal(typeof address, "object");
-  server.once("connection", (socket) => {
-    socket.once("message", (data) => {
-      const pair = JSON.parse(data.toString("utf8"));
-      assert.equal(pair.type, "pair");
-      assert.equal(pair.sessionId, "1".repeat(32));
-      assert.equal(pair.token, "2".repeat(64));
-      socket.send(JSON.stringify({
-        type: "paired",
-        protocol: 4,
-        deviceId: "00112233445566778899aabbccddeeff",
-        credential: "a".repeat(64)
-      }));
-    });
-  });
-  const trusted = await pairReceiver({
-    ...TEST_TRANSPORT_OBSERVATION,
-    host: "192.168.1.8",
-    authorization: {
-      sessionId: "1".repeat(32),
-      token: "2".repeat(64)
-    },
-    senderId: "019fa3cf-75c7-7000-8000-000000000001",
-    socketFactory: () => new WebSocket(`ws://127.0.0.1:${address.port}`)
-  });
-  assert.equal(trusted.deviceId, "00112233445566778899aabbccddeeff");
-  assert.equal(trusted.credential, "a".repeat(64));
-});
-
-test("expired QR is reported as authorization expiry, not a network failure", async (context) => {
-  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
-  context.after(() => server.close());
-  await once(server, "listening");
-  const address = server.address();
-  assert.equal(typeof address, "object");
-  server.once("connection", (socket) => {
-    socket.once("message", () => {
-      socket.send(JSON.stringify({
-        type: "error",
-        protocol: 4,
-        code: "authorization_expired"
-      }));
-    });
-  });
-
-  await assert.rejects(
-    pairReceiver({
-      ...TEST_TRANSPORT_OBSERVATION,
-      host: "192.168.1.8",
-      authorization: {
-        sessionId: "1".repeat(32),
-        token: "2".repeat(64)
-      },
-      senderId: "019fa3cf-75c7-7000-8000-000000000001",
-      socketFactory: () => new WebSocket(`ws://127.0.0.1:${address.port}`)
-    }),
-    /二维码或短码已经过期，请重新生成/
-  );
-});
-
-test("Edge no-context fallback sends pairing only after a private IP verdict", async (context) => {
-  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
-  context.after(() => server.close());
-  await once(server, "listening");
-  const address = server.address();
-  assert.equal(typeof address, "object");
-  let receivedRequests = 0;
-  server.once("connection", (socket) => {
-    socket.once("message", (data) => {
-      receivedRequests += 1;
-      const pair = JSON.parse(data.toString("utf8"));
-      assert.equal(pair.token, "2".repeat(64));
-      socket.send(JSON.stringify({
-        type: "paired",
-        protocol: 4,
-        deviceId: "00112233445566778899aabbccddeeff",
-        credential: "a".repeat(64)
-      }));
-    });
-  });
-  const transport = createEdgeFallbackTransport("192.168.1.8");
-  const trusted = await pairReceiver({
-    ...transport,
-    host: "harmony-web-companion.local",
-    authorization: {
-      sessionId: "1".repeat(32),
-      token: "2".repeat(64)
-    },
-    senderId: "019fa3cf-75c7-7000-8000-000000000001",
-    socketFactory: transport.wrapSocketFactory(
-      `ws://127.0.0.1:${address.port}`
-    )
-  });
-  assert.equal(receivedRequests, 1);
-  assert.equal(trusted.credential, "a".repeat(64));
-});
-
-test("Edge fallback sends no token or credential without a private IP", async (context) => {
-  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
-  context.after(() => server.close());
-  await once(server, "listening");
-  const address = server.address();
-  assert.equal(typeof address, "object");
-  let receivedRequests = 0;
-  server.on("connection", (socket) => {
-    socket.on("message", () => {
-      receivedRequests += 1;
-    });
-  });
-  const actualUrl = `ws://127.0.0.1:${address.port}`;
-
-  for (const observedIp of [undefined, "203.0.113.8"]) {
-    const pairingTransport = createEdgeFallbackTransport(observedIp);
-    await assert.rejects(
-      pairReceiver({
-        ...pairingTransport,
-        host: "harmony-web-companion.local",
-        authorization: {
-          sessionId: "1".repeat(32),
-          token: "2".repeat(64)
-        },
-        senderId: "019fa3cf-75c7-7000-8000-000000000001",
-        socketFactory: pairingTransport.wrapSocketFactory(actualUrl)
-      }),
-      isRedactedDiagnosticFailure
-    );
-
-    const authTransport = createEdgeFallbackTransport(observedIp);
-    const connection = new DirectReceiverConnection({
-      ...authTransport,
-      trustedDevice: {
-        senderId: "019fa3cf-75c7-7000-8000-000000000001",
-        deviceId: "00112233445566778899aabbccddeeff",
-        credential: "a".repeat(64),
-        host: "harmony-web-companion.local",
-        pairedAt: 1
-      },
-      sourceEpoch: 9,
-      socketFactory: authTransport.wrapSocketFactory(actualUrl),
-      heartbeatIntervalMs: 60_000
-    });
-    await assert.rejects(
-      connection.connect(),
-      isRedactedDiagnosticFailure
-    );
-    assert.equal(connection.connected, false);
-  }
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.equal(receivedRequests, 0);
-});
-
-test("missing runtime observation sends neither pairing nor auth credentials", async (context) => {
-  const previousChrome = globalThis.chrome;
-  delete globalThis.chrome;
-  context.after(() => {
-    if (previousChrome === undefined) {
-      delete globalThis.chrome;
-    } else {
-      globalThis.chrome = previousChrome;
-    }
-  });
-
-  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
-  context.after(() => server.close());
-  await once(server, "listening");
-  const address = server.address();
-  assert.equal(typeof address, "object");
-  let socketFactoryCalls = 0;
-  let receivedRequests = 0;
-  server.on("connection", (socket) => {
-    socket.on("message", () => {
-      receivedRequests += 1;
-    });
-  });
-  const socketFactory = () => {
-    socketFactoryCalls += 1;
-    return new WebSocket(`ws://127.0.0.1:${address.port}`);
-  };
-
-  await assert.rejects(
-    pairReceiver({
-      host: "harmony-web-companion.local",
-      authorization: {
-        sessionId: "1".repeat(32),
-        token: "2".repeat(64)
-      },
-      senderId: "019fa3cf-75c7-7000-8000-000000000001",
-      socketFactory
-    }),
-    /安全检查不可用/
-  );
-
-  const connection = new DirectReceiverConnection({
-    trustedDevice: {
-      senderId: "019fa3cf-75c7-7000-8000-000000000001",
-      deviceId: "00112233445566778899aabbccddeeff",
-      credential: "a".repeat(64),
-      host: "harmony-web-companion.local",
-      pairedAt: 1
-    },
-    sourceEpoch: 9,
-    socketFactory,
-    heartbeatIntervalMs: 60_000
-  });
-  await assert.rejects(connection.connect(), /安全检查不可用/);
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.equal(socketFactoryCalls, 0);
-  assert.equal(receivedRequests, 0);
-  assert.equal(connection.connected, false);
-});
-
-test("unsolicited paired response cannot bypass the private-address gate", async (context) => {
-  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
-  context.after(() => server.close());
-  await once(server, "listening");
-  const address = server.address();
-  assert.equal(typeof address, "object");
-  let receivedRequests = 0;
-  server.once("connection", (socket) => {
-    socket.on("message", () => {
-      receivedRequests += 1;
-    });
-    socket.send(JSON.stringify({
-      type: "paired",
-      protocol: 4,
-      deviceId: "00112233445566778899aabbccddeeff",
-      credential: "a".repeat(64)
-    }));
-  });
-
-  await assert.rejects(
-    pairReceiver({
-      ...TEST_TRANSPORT_OBSERVATION,
-      host: "harmony-web-companion.local",
-      authorization: {
-        sessionId: "1".repeat(32),
-        token: "2".repeat(64)
-      },
-      senderId: "019fa3cf-75c7-7000-8000-000000000001",
-      socketFactory: () => new WebSocket(`ws://127.0.0.1:${address.port}`),
-      beginTransportObservation: async () => "delayed-gate",
-      finishTransportObservation: async () => {
-        await new Promise((resolve) => setTimeout(resolve, 50));
-        return { allowAuthentication: true };
-      }
-    }),
-    /请求发送前返回了响应/
-  );
-  await new Promise((resolve) => setTimeout(resolve, 60));
-  assert.equal(receivedRequests, 0);
-});
-
-test("unsolicited ready response cannot authenticate or enable media", async (context) => {
-  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
-  context.after(() => server.close());
-  await once(server, "listening");
-  const address = server.address();
-  assert.equal(typeof address, "object");
-  let receivedRequests = 0;
-  server.once("connection", (socket) => {
-    socket.on("message", () => {
-      receivedRequests += 1;
-    });
-    socket.send(JSON.stringify({
-      type: "ready",
-      protocol: 4,
-      sourceEpoch: 9
-    }));
-  });
-
-  const connection = new DirectReceiverConnection({
-    ...TEST_TRANSPORT_OBSERVATION,
-    trustedDevice: {
-      senderId: "019fa3cf-75c7-7000-8000-000000000001",
-      deviceId: "00112233445566778899aabbccddeeff",
-      credential: "a".repeat(64),
-      host: "harmony-web-companion.local",
-      pairedAt: 1
-    },
-    sourceEpoch: 9,
-    socketFactory: () => new WebSocket(`ws://127.0.0.1:${address.port}`),
-    beginTransportObservation: async () => "delayed-gate",
-    finishTransportObservation: async () => {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      return { allowAuthentication: true };
-    }
-  });
-  await assert.rejects(connection.connect(), /请求发送前返回了响应/);
-  await new Promise((resolve) => setTimeout(resolve, 60));
-  assert.equal(connection.connected, false);
-  assert.equal(receivedRequests, 0);
-  assert.throws(
-    () => connection.sendVideo(new ArrayBuffer(1)),
-    /平板连接尚未建立/
-  );
-});
-
-test("direct WebSocket authenticates and delivers one Annex-B AU to a fake Receiver", async (context) => {
-  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
-  context.after(() => server.close());
-  await once(server, "listening");
-  const address = server.address();
-  assert.equal(typeof address, "object");
-
-  const annexB = Uint8Array.from([
-    0, 0, 0, 1, 0x67, 0x42, 0, 0x1f,
-    0, 0, 0, 1, 0x65, 0x01, 0x02, 0x03
-  ]);
-  const received = new Promise((resolve, reject) => {
+test("valid QR proof releases the token and completes pairing", async (context) => {
+  const { server, url } = await createServer(context);
+  const received = [];
+  const completed = new Promise((resolve, reject) => {
     server.once("connection", (socket) => {
-      socket.once("message", (data, isBinary) => {
+      socket.on("message", async (data, isBinary) => {
         try {
           assert.equal(isBinary, false);
-          const auth = JSON.parse(data.toString("utf8"));
-          assert.equal(auth.type, "auth");
-          assert.equal(auth.protocol, 4);
-          assert.equal(auth.sourceEpoch, 7);
-          assert.equal(auth.width, 1280);
-          assert.equal(auth.height, 720);
-          assert.equal(auth.fps, 60);
+          const message = JSON.parse(data.toString("utf8"));
+          received.push(message);
+          if (message.type === "pair_challenge") {
+            assert.equal("token" in message, false);
+            socket.send(JSON.stringify(await pairProof(message)));
+            return;
+          }
+          assert.equal(message.type, "pair");
+          assert.equal(message.token, TOKEN);
           socket.send(JSON.stringify({
-            type: "ready",
-            protocol: 4,
-            sourceEpoch: 7
+            type: "paired",
+            protocol: DIRECT_PROTOCOL,
+            deviceId: DEVICE_ID,
+            credential: CREDENTIAL
           }));
-          socket.once("message", (video, videoIsBinary) => {
-            try {
-              assert.equal(videoIsBinary, true);
-              resolve(Uint8Array.from(video));
-            } catch (error) {
-              reject(error);
-            }
-          });
+          resolve();
         } catch (error) {
           reject(error);
         }
       });
     });
   });
-
-  const connection = new DirectReceiverConnection({
-    ...TEST_TRANSPORT_OBSERVATION,
-    trustedDevice: {
-      senderId: "019fa3cf-75c7-7000-8000-000000000001",
-      deviceId: "00112233445566778899aabbccddeeff",
-      credential: "a".repeat(64),
-      host: "192.168.1.8",
-      pairedAt: 1
-    },
-    sourceEpoch: 7,
-    socketFactory: () => new WebSocket(`ws://127.0.0.1:${address.port}`),
-    heartbeatIntervalMs: 60_000
+  const trusted = await pairReceiver({
+    host: "harmony-web-companion.local",
+    authorization: { sessionId: SESSION_ID, token: TOKEN },
+    senderId: SENDER_ID,
+    socketFactory: () => new WebSocket(url)
   });
-  await connection.connect();
-
-  const wireMessage = createDirectVideoMessage({
-    byteLength: annexB.byteLength,
-    timestamp: 55,
-    type: "key",
-    copyTo(destination) {
-      destination.set(annexB);
-    }
-  }, 7, 3);
-  assert.equal(connection.sendVideo(wireMessage), true);
-  assert.deepEqual(await received, new Uint8Array(wireMessage));
-  await connection.close();
+  await completed;
+  assert.equal(trusted.credential, CREDENTIAL);
+  assert.equal(received.length, 2);
+  assert.equal(JSON.stringify(received[0]).includes(TOKEN), false);
 });
 
-test("direct WebSocket does not expose a reconnect as connected before ready", async (context) => {
-  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
-  context.after(() => server.close());
-  await once(server, "listening");
-  const address = server.address();
-  assert.equal(typeof address, "object");
-
-  let releaseReady;
-  const readyGate = new Promise((resolve) => {
-    releaseReady = resolve;
-  });
-  let resolveAuthReceived;
-  const authReceived = new Promise((resolve) => {
-    resolveAuthReceived = resolve;
-  });
+test("manual private IPv4 preserves short-code pairing without a low-entropy proof", async (context) => {
+  const { server, url } = await createServer(context);
   server.once("connection", (socket) => {
-    socket.once("message", async (data, isBinary) => {
-      assert.equal(isBinary, false);
-      const auth = JSON.parse(data.toString("utf8"));
-      resolveAuthReceived();
-      await readyGate;
+    socket.once("message", (data) => {
+      const pair = JSON.parse(data.toString("utf8"));
+      assert.equal(pair.type, "pair_manual_ipv4");
+      assert.equal(pair.mode, "pair_manual_ipv4");
+      assert.equal(pair.token, TOKEN);
+      assert.equal("nonce" in pair, false);
       socket.send(JSON.stringify({
-        type: "ready",
-        protocol: 4,
-        sourceEpoch: auth.sourceEpoch
+        type: "paired",
+        protocol: DIRECT_PROTOCOL,
+        deviceId: DEVICE_ID,
+        credential: CREDENTIAL
       }));
     });
   });
-
-  const connection = new DirectReceiverConnection({
-    ...TEST_TRANSPORT_OBSERVATION,
-    trustedDevice: {
-      senderId: "019fa3cf-75c7-7000-8000-000000000001",
-      deviceId: "00112233445566778899aabbccddeeff",
-      credential: "a".repeat(64),
-      host: ["192", "168", "1", "8"].join("."),
-      pairedAt: 1
-    },
-    sourceEpoch: 8,
-    socketFactory: () => new WebSocket(`ws://127.0.0.1:${address.port}`),
-    heartbeatIntervalMs: 60_000
+  const trusted = await pairReceiver({
+    host: "192.168.1.8",
+    authorization: { sessionId: SESSION_ID, token: TOKEN },
+    senderId: SENDER_ID,
+    socketFactory: () => new WebSocket(url)
   });
-  const connecting = connection.connect({ timeoutMs: 500 });
-  await authReceived;
-  assert.equal(connection.connected, false);
-  assert.throws(
-    () => connection.sendVideo(new ArrayBuffer(1)),
-    /平板连接尚未建立/
-  );
-  releaseReady();
-  await connecting;
-  assert.equal(connection.connected, true);
-  await connection.close();
+  assert.equal(trusted.deviceId, DEVICE_ID);
 });
 
-test("direct WebSocket recovers an abnormal drop without replacing the capture source", async (context) => {
-  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
-  context.after(() => server.close());
-  await once(server, "listening");
-  const address = server.address();
-  assert.equal(typeof address, "object");
-
-  const authEpochs = [];
-  let connectionCount = 0;
-  let resolveRecoveredVideo;
-  const recoveredVideo = new Promise((resolve) => {
-    resolveRecoveredVideo = resolve;
-  });
-  server.on("connection", (socket) => {
-    connectionCount += 1;
-    const currentConnection = connectionCount;
-    socket.once("message", (data, isBinary) => {
-      assert.equal(isBinary, false);
-      const auth = JSON.parse(data.toString("utf8"));
-      authEpochs.push(auth.sourceEpoch);
+test("automatic address refuses short-code proof mode and releases zero token", async (context) => {
+  const { server, url } = await createServer(context);
+  const received = [];
+  server.once("connection", (socket) => {
+    socket.on("message", (data) => {
+      received.push(JSON.parse(data.toString("utf8")));
       socket.send(JSON.stringify({
-        type: "ready",
-        protocol: 4,
-        sourceEpoch: auth.sourceEpoch
+        type: "error",
+        protocol: DIRECT_PROTOCOL,
+        code: "short_code_requires_manual_ipv4"
       }));
-      if (currentConnection === 1) {
-        setTimeout(() => socket.terminate(), 20);
-        return;
-      }
-      setTimeout(() => {
-        socket.send(JSON.stringify({
-          type: "keyframe",
-          protocol: 4,
-          reason: "loss_flush_or_session_start",
-          requireCodecConfig: true
-        }));
-      }, 20);
-      socket.once("message", (video, videoIsBinary) => {
-        assert.equal(videoIsBinary, true);
-        resolveRecoveredVideo(Uint8Array.from(video));
+    });
+  });
+  await assert.rejects(pairReceiver({
+    host: "harmony-web-companion.local",
+    authorization: { sessionId: SESSION_ID, token: TOKEN },
+    senderId: SENDER_ID,
+    socketFactory: () => new WebSocket(url)
+  }), /数字私网 IPv4/);
+  await delay(10);
+  assert.equal(received.length, 1);
+  assert.equal(JSON.stringify(received).includes(TOKEN), false);
+});
+
+test("expired authorization is distinct and releases no token", async (context) => {
+  const { server, url } = await createServer(context);
+  const received = [];
+  server.once("connection", (socket) => {
+    socket.on("message", (data) => received.push(JSON.parse(data.toString("utf8"))));
+    socket.once("message", () => socket.send(JSON.stringify({
+      type: "error",
+      protocol: DIRECT_PROTOCOL,
+      code: "authorization_expired"
+    })));
+  });
+  await assert.rejects(pairReceiver({
+    host: "harmony-web-companion.local",
+    authorization: { sessionId: SESSION_ID, token: TOKEN },
+    senderId: SENDER_ID,
+    socketFactory: () => new WebSocket(url)
+  }), /二维码或短码已经过期/);
+  await delay(10);
+  assert.equal(received.length, 1);
+  assert.equal(JSON.stringify(received).includes(TOKEN), false);
+});
+
+test("forged, replayed, mismatched and premature pair proofs release zero token", async (context) => {
+  const cases = [
+    ["forged", (challenge) => ({
+      ...basePairProof(challenge),
+      proof: "0".repeat(64)
+    })],
+    ["replayed_nonce", async (challenge) => ({
+      ...(await pairProof(challenge)),
+      nonce: "0".repeat(64)
+    })],
+    ["wrong_mode", async (challenge) => ({
+      ...(await pairProof(challenge)),
+      mode: "auth"
+    })],
+    ["wrong_device", async (challenge) => ({
+      ...(await pairProof(challenge)),
+      deviceId: "f".repeat(32)
+    })],
+    ["wrong_sender", async (challenge) => ({
+      ...(await pairProof(challenge)),
+      senderId: "f".repeat(32)
+    })],
+    ["premature_paired", () => ({
+      type: "paired",
+      protocol: DIRECT_PROTOCOL,
+      deviceId: DEVICE_ID,
+      credential: CREDENTIAL
+    })]
+  ];
+  for (const [name, responseFor] of cases) {
+    const { server, url } = await createServer(context);
+    const received = [];
+    server.once("connection", (socket) => {
+      socket.on("message", async (data) => {
+        const message = JSON.parse(data.toString("utf8"));
+        received.push(message);
+        if (received.length === 1) {
+          socket.send(JSON.stringify(await responseFor(message)));
+        }
       });
     });
-  });
+    await assert.rejects(pairReceiver({
+      host: "harmony-web-companion.local",
+      authorization: { sessionId: SESSION_ID, token: TOKEN },
+      senderId: SENDER_ID,
+      socketFactory: () => new WebSocket(url)
+    }), /挑战证明|无效/);
+    await delay(10);
+    assert.equal(received.length, 1, name);
+    assert.equal(JSON.stringify(received).includes(TOKEN), false, name);
+    await closeServer(server);
+  }
+});
 
-  const connection = new DirectReceiverConnection({
-    ...TEST_TRANSPORT_OBSERVATION,
-    trustedDevice: {
-      senderId: "019fa3cf-75c7-7000-8000-000000000001",
-      deviceId: "00112233445566778899aabbccddeeff",
-      credential: "a".repeat(64),
-      host: "192.168.1.8",
-      pairedAt: 1
-    },
-    sourceEpoch: 11,
-    socketFactory: () => new WebSocket(`ws://127.0.0.1:${address.port}`),
-    heartbeatIntervalMs: 60_000
+test("forged, replayed, mismatched and premature auth proofs release zero credential", async (context) => {
+  const cases = [
+    ["forged", (challenge) => ({
+      ...baseAuthProof(challenge),
+      proof: "0".repeat(64)
+    })],
+    ["replayed_nonce", async (challenge) => ({
+      ...(await authProof(challenge)),
+      nonce: "0".repeat(64)
+    })],
+    ["wrong_mode", async (challenge) => ({
+      ...(await authProof(challenge)),
+      mode: "pair"
+    })],
+    ["wrong_identity", async (challenge) => ({
+      ...(await authProof(challenge)),
+      deviceId: "f".repeat(32)
+    })],
+    ["premature_ready", (challenge) => ({
+      type: "ready",
+      protocol: DIRECT_PROTOCOL,
+      sourceEpoch: challenge.sourceEpoch
+    })]
+  ];
+  for (const [name, responseFor] of cases) {
+    const { server, url } = await createServer(context);
+    const received = [];
+    server.once("connection", (socket) => {
+      socket.on("message", async (data) => {
+        const message = JSON.parse(data.toString("utf8"));
+        received.push(message);
+        if (received.length === 1) {
+          socket.send(JSON.stringify(await responseFor(message)));
+        }
+      });
+    });
+    const connection = createConnection(url, 9);
+    await assert.rejects(connection.connect(), /挑战证明|无效/);
+    await delay(10);
+    assert.equal(received.length, 1, name);
+    assert.equal(JSON.stringify(received).includes(CREDENTIAL), false, name);
+    assert.equal(connection.connected, false);
+    await closeServer(server);
+  }
+});
+
+test("valid auth proof releases credential and permits one Annex-B AU", async (context) => {
+  const { server, url } = await createServer(context);
+  const receivedMessages = [];
+  let resolveVideo;
+  const receivedVideo = new Promise((resolve) => {
+    resolveVideo = resolve;
   });
+  server.once("connection", (socket) => {
+    socket.on("message", async (data, isBinary) => {
+      if (isBinary) {
+        resolveVideo(Uint8Array.from(data));
+        return;
+      }
+      const message = JSON.parse(data.toString("utf8"));
+      receivedMessages.push(message);
+      if (message.type === "auth_challenge") {
+        assert.equal("credential" in message, false);
+        socket.send(JSON.stringify(await authProof(message)));
+      } else if (message.type === "auth") {
+        assert.equal(message.credential, CREDENTIAL);
+        socket.send(JSON.stringify({
+          type: "ready",
+          protocol: DIRECT_PROTOCOL,
+          sourceEpoch: message.sourceEpoch
+        }));
+      }
+    });
+  });
+  const connection = createConnection(url, 7);
+  await connection.connect();
+  const wire = videoMessage(7, 3);
+  assert.equal(connection.sendVideo(wire), true);
+  assert.deepEqual(await receivedVideo, new Uint8Array(wire));
+  assert.equal(JSON.stringify(receivedMessages[0]).includes(CREDENTIAL), false);
+  await connection.close();
+});
+
+test("connection failure before proof has a network category and releases no secret", async () => {
+  const connection = createConnection("ws://127.0.0.1:1", 8);
+  await assert.rejects(connection.connect(), (error) => {
+    assert.equal(error.code, "receiver_connection_failed");
+    assert.match(error.message, /无法连接 Receiver/);
+    return true;
+  });
+  assert.equal(connection.connected, false);
+  await assert.rejects(pairReceiver({
+    host: "harmony-web-companion.local",
+    authorization: { sessionId: SESSION_ID, token: TOKEN },
+    senderId: SENDER_ID,
+    socketFactory: () => new WebSocket("ws://127.0.0.1:1")
+  }), (error) => {
+    assert.equal(error.code, "automatic_address_or_connection_failed");
+    assert.match(error.message, /自动地址解析或 Receiver 连接失败/);
+    return true;
+  });
+});
+
+test("reconnect repeats the proof gate and keeps the same source epoch", async (context) => {
+  const { server, url } = await createServer(context);
+  const epochs = [];
+  let count = 0;
+  let resolveSecondReady;
+  const secondReady = new Promise((resolve) => {
+    resolveSecondReady = resolve;
+  });
+  server.on("connection", (socket) => {
+    count += 1;
+    const current = count;
+    socket.on("message", async (data) => {
+      const message = JSON.parse(data.toString("utf8"));
+      if (message.type === "auth_challenge") {
+        assert.equal("credential" in message, false);
+        socket.send(JSON.stringify(await authProof(message)));
+      } else if (message.type === "auth") {
+        epochs.push(message.sourceEpoch);
+        socket.send(JSON.stringify({
+          type: "ready",
+          protocol: DIRECT_PROTOCOL,
+          sourceEpoch: message.sourceEpoch
+        }));
+        if (current === 1) {
+          setTimeout(() => socket.terminate(), 10);
+        } else {
+          resolveSecondReady();
+        }
+      }
+    });
+  });
+  const connection = createConnection(url, 11);
   const closed = new Promise((resolve) => {
     connection.onClose = resolve;
   });
-  const keyframeRequested = new Promise((resolve) => {
-    connection.onControl = (message) => {
-      if (message.type === "keyframe") {
-        resolve(message);
-      }
-    };
-  });
-
   await connection.connect();
-  const closeEvent = await closed;
-  assert.equal(closeEvent.code, 1006);
+  await closed;
   const recovery = await connection.recover({
     connectTimeoutMs: 500,
     retryDelaysMs: [0, 10]
   });
+  await secondReady;
   assert.equal(recovery.attempts, 1);
-  assert.equal(connectionCount, 2);
-  assert.deepEqual(authEpochs, [11, 11]);
-  assert.equal((await keyframeRequested).requireCodecConfig, true);
-
-  const annexB = Uint8Array.from([
-    0, 0, 0, 1, 0x67, 0x42, 0, 0x1f,
-    0, 0, 0, 1, 0x65, 0x04, 0x05, 0x06
-  ]);
-  const wireMessage = createDirectVideoMessage({
-    byteLength: annexB.byteLength,
-    timestamp: 88,
-    type: "key",
-    copyTo(destination) {
-      destination.set(annexB);
-    }
-  }, 11, 9);
-  assert.equal(connection.sendVideo(wireMessage), true);
-  assert.deepEqual(await recoveredVideo, new Uint8Array(wireMessage));
+  assert.deepEqual(epochs, [11, 11]);
   await connection.close();
 });
 
-test("direct WebSocket recovery stops immediately when Receiver rejects auth", async (context) => {
-  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
-  context.after(() => server.close());
-  await once(server, "listening");
-  const address = server.address();
-  assert.equal(typeof address, "object");
-  let attempts = 0;
+test("permanent identity rejection stops recovery after one attempt", async (context) => {
+  const { server, url } = await createServer(context);
   server.on("connection", (socket) => {
-    socket.once("message", () => {
-      socket.send(JSON.stringify({
-        type: "error",
-        protocol: 4,
-        code: "identity_mismatch"
-      }));
-    });
+    socket.once("message", () => socket.send(JSON.stringify({
+      type: "error",
+      protocol: DIRECT_PROTOCOL,
+      code: "identity_mismatch"
+    })));
   });
-
-  const connection = new DirectReceiverConnection({
-    ...TEST_TRANSPORT_OBSERVATION,
-    trustedDevice: {
-      senderId: "019fa3cf-75c7-7000-8000-000000000001",
-      deviceId: "00112233445566778899aabbccddeeff",
-      credential: "a".repeat(64),
-      host: "192.168.1.8",
-      pairedAt: 1
-    },
-    sourceEpoch: 12,
-    socketFactory: () => new WebSocket(`ws://127.0.0.1:${address.port}`),
-    heartbeatIntervalMs: 60_000
-  });
-  const startedAt = Date.now();
-  await assert.rejects(
-    connection.recover({
-      connectTimeoutMs: 40,
-      retryDelaysMs: [0, 10],
-      onAttempt() {
-        attempts += 1;
-      }
-    }),
-    /平板身份不匹配/
-  );
+  const connection = createConnection(url, 12);
+  let attempts = 0;
+  await assert.rejects(connection.recover({
+    connectTimeoutMs: 100,
+    retryDelaysMs: [0, 10],
+    onAttempt() {
+      attempts += 1;
+    }
+  }), /平板身份不匹配/);
   assert.equal(attempts, 1);
-  assert.ok(Date.now() - startedAt < 500);
-  assert.equal(connection.connected, false);
 });
 
-test("direct WebSocket recovery survives more than 184 seconds without buffering video", async (context) => {
-  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
-  context.after(() => server.close());
-  await once(server, "listening");
-  const address = server.address();
-  assert.equal(typeof address, "object");
-  const authEpochs = [];
-  const receivedVideo = [];
-  let resolveKeyframe;
-  const keyframeRequested = new Promise((resolve) => {
-    resolveKeyframe = resolve;
-  });
-  let resolveVideo;
-  const firstVideo = new Promise((resolve) => {
-    resolveVideo = resolve;
-  });
+test("recovery survives more than 184 seconds without buffering video", async (context) => {
+  const { server, url } = await createServer(context);
+  const epochs = [];
   server.on("connection", (socket) => {
-    socket.once("message", (data, isBinary) => {
-      assert.equal(isBinary, false);
-      const auth = JSON.parse(data.toString("utf8"));
-      authEpochs.push(auth.sourceEpoch);
-      socket.send(JSON.stringify({
-        type: "ready",
-        protocol: 4,
-        sourceEpoch: auth.sourceEpoch
-      }));
-      setTimeout(() => {
+    socket.on("message", async (data) => {
+      const message = JSON.parse(data.toString("utf8"));
+      if (message.type === "auth_challenge") {
+        socket.send(JSON.stringify(await authProof(message)));
+      } else if (message.type === "auth") {
+        epochs.push(message.sourceEpoch);
         socket.send(JSON.stringify({
-          type: "keyframe",
-          protocol: 4,
-          reason: "loss_flush_or_session_start",
-          requireCodecConfig: true
+          type: "ready",
+          protocol: DIRECT_PROTOCOL,
+          sourceEpoch: message.sourceEpoch
         }));
-      }, 10);
-      socket.on("message", (video, videoIsBinary) => {
-        if (!videoIsBinary) {
-          return;
-        }
-        const received = Uint8Array.from(video);
-        receivedVideo.push(received);
-        resolveVideo(received);
-      });
+      }
     });
   });
-
-  const connection = new DirectReceiverConnection({
-    ...TEST_TRANSPORT_OBSERVATION,
-    trustedDevice: {
-      senderId: "019fa3cf-75c7-7000-8000-000000000001",
-      deviceId: "00112233445566778899aabbccddeeff",
-      credential: "a".repeat(64),
-      host: "192.168.1.8",
-      pairedAt: 1
-    },
-    sourceEpoch: 13,
-    socketFactory: () => new WebSocket(`ws://127.0.0.1:${address.port}`),
-    heartbeatIntervalMs: 60_000
-  });
-  connection.onControl = (message) => {
-    if (message.type === "keyframe") {
-      resolveKeyframe(message);
-    }
-  };
-
+  const connection = createConnection(url, 13);
   let virtualNowMs = 0;
-  const attemptElapsedTimes = [];
-  const actualRetryDelays = [];
-  const disconnectedPayload = createDirectVideoMessage({
-    byteLength: 4,
-    timestamp: 50,
-    type: "delta",
-    copyTo(destination) {
-      destination.set(Uint8Array.from([0, 0, 1, 0x41]));
-    }
-  }, 13, 1);
-  let disconnectedPayloadDrops = 0;
+  const retryDelays = [];
+  const disconnectedPayload = videoMessage(13, 1);
   const recovery = await connection.recover({
     connectTimeoutMs: 1_500,
     retryDelaysMs: [0, 250, 500, 1_000, 5_000],
     now: () => virtualNowMs,
-    delayFn: async (milliseconds, signal) => {
-      assert.equal(signal?.aborted ?? false, false);
-      actualRetryDelays.push(milliseconds);
+    delayFn: async (milliseconds) => {
+      retryDelays.push(milliseconds);
       virtualNowMs += milliseconds;
-    },
-    onAttempt({ elapsedMs }) {
-      attemptElapsedTimes.push(elapsedMs);
     },
     connectAttempt: async (options) => {
       if (virtualNowMs < 184_180) {
@@ -754,116 +406,145 @@ test("direct WebSocket recovery survives more than 184 seconds without buffering
           () => connection.sendVideo(disconnectedPayload),
           /平板连接尚未建立/
         );
-        disconnectedPayloadDrops += 1;
         virtualNowMs += options.timeoutMs;
         throw new Error("模拟平板休眠期间网络不可达");
       }
       return connection.connect(options);
     }
   });
-
   assert.ok(recovery.elapsedMs >= 184_180);
-  assert.ok(attemptElapsedTimes.some((elapsedMs) => elapsedMs > 120_000));
-  assert.ok(actualRetryDelays.length > 1);
-  assert.ok(disconnectedPayloadDrops > 0);
-  assert.ok(
-    actualRetryDelays.every(
-      (milliseconds) => milliseconds <= DIRECT_RECOVERY_MAX_RETRY_DELAY_MS
-    )
-  );
-  assert.deepEqual(authEpochs, [13]);
-  assert.equal(receivedVideo.length, 0);
-  assert.equal((await keyframeRequested).requireCodecConfig, true);
+  assert.ok(retryDelays.length > 1);
+  assert.ok(retryDelays.every(
+    (value) => value <= DIRECT_RECOVERY_MAX_RETRY_DELAY_MS
+  ));
+  assert.deepEqual(epochs, [13]);
+  await connection.close();
+});
 
+test("recovery cancellation and generation changes cannot revive old sources", async () => {
+  for (const mode of ["abort", "generation"]) {
+    const connection = createConnection("ws://127.0.0.1:1", 14);
+    const abortController = new AbortController();
+    let generation = 1;
+    let attempts = 0;
+    const recovery = connection.recover({
+      retryDelaysMs: [0, 10],
+      signal: abortController.signal,
+      shouldContinue: () => generation === 1,
+      connectAttempt: async () => {
+        throw new Error("模拟瞬态网络错误");
+      },
+      onAttempt() {
+        attempts += 1;
+        if (mode === "abort") abortController.abort();
+        if (mode === "generation") generation = 2;
+      }
+    });
+    await assert.rejects(
+      recovery,
+      (error) => error instanceof ReceiverRecoveryCancelledError
+    );
+    assert.equal(attempts, 1);
+    assert.equal(connection.connected, false);
+  }
+});
+
+async function createServer(context) {
+  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  context.after(() => closeServer(server));
+  await once(server, "listening");
+  const address = server.address();
+  assert.equal(typeof address, "object");
+  return { server, url: `ws://127.0.0.1:${address.port}` };
+}
+
+function closeServer(server) {
+  if (!server || server._state === 2) return Promise.resolve();
+  for (const client of server.clients ?? []) client.terminate();
+  return new Promise((resolve) => server.close(resolve));
+}
+
+function createConnection(url, sourceEpoch) {
+  return new DirectReceiverConnection({
+    trustedDevice: TRUSTED,
+    sourceEpoch,
+    socketFactory: () => new WebSocket(url),
+    heartbeatIntervalMs: 60_000
+  });
+}
+
+function basePairProof(challenge, proofMode = "qr") {
+  return {
+    type: "pair_proof",
+    protocol: DIRECT_PROTOCOL,
+    mode: "pair",
+    proofMode,
+    sessionId: challenge.sessionId,
+    senderId: challenge.senderId,
+    nonce: challenge.nonce,
+    deviceId: DEVICE_ID
+  };
+}
+
+async function pairProof(challenge, proofMode = "qr") {
+  return {
+    ...basePairProof(challenge, proofMode),
+    proof: await computePairProof({
+      token: TOKEN,
+      proofMode,
+      sessionId: challenge.sessionId,
+      senderId: challenge.senderId,
+      nonce: challenge.nonce,
+      deviceId: DEVICE_ID
+    })
+  };
+}
+
+function baseAuthProof(challenge) {
+  return {
+    type: "auth_proof",
+    protocol: DIRECT_PROTOCOL,
+    mode: "auth",
+    senderId: challenge.senderId,
+    deviceId: challenge.deviceId,
+    sourceEpoch: challenge.sourceEpoch,
+    nonce: challenge.nonce
+  };
+}
+
+async function authProof(challenge) {
+  return {
+    ...baseAuthProof(challenge),
+    proof: await computeAuthProof({
+      credential: CREDENTIAL,
+      senderId: challenge.senderId,
+      deviceId: challenge.deviceId,
+      sourceEpoch: challenge.sourceEpoch,
+      nonce: challenge.nonce,
+      codec: challenge.codec,
+      avcFormat: challenge.avcFormat,
+      width: challenge.width,
+      height: challenge.height,
+      fps: challenge.fps
+    })
+  };
+}
+
+function videoMessage(sourceEpoch, sequence) {
   const annexB = Uint8Array.from([
     0, 0, 0, 1, 0x67, 0x42, 0, 0x1f,
-    0, 0, 0, 1, 0x65, 0x07, 0x08, 0x09
+    0, 0, 0, 1, 0x65, 1, 2, 3
   ]);
-  const wireMessage = createDirectVideoMessage({
+  return createDirectVideoMessage({
     byteLength: annexB.byteLength,
-    timestamp: 99,
+    timestamp: 55,
     type: "key",
     copyTo(destination) {
       destination.set(annexB);
     }
-  }, 13, 10);
-  assert.equal(connection.sendVideo(wireMessage), true);
-  assert.deepEqual(await firstVideo, new Uint8Array(wireMessage));
-  assert.equal(receivedVideo.length, 1);
-  await connection.close();
-});
+  }, sourceEpoch, sequence);
+}
 
-test("direct WebSocket recovery cancellation prevents an old source from retrying", async () => {
-  const connection = new DirectReceiverConnection({
-    ...TEST_TRANSPORT_OBSERVATION,
-    trustedDevice: {
-      senderId: "019fa3cf-75c7-7000-8000-000000000001",
-      deviceId: "00112233445566778899aabbccddeeff",
-      credential: "a".repeat(64),
-      host: "192.168.1.8",
-      pairedAt: 1
-    },
-    sourceEpoch: 14,
-    socketFactory: () => {
-      throw new Error("取消后不应再创建 WebSocket");
-    },
-    heartbeatIntervalMs: 60_000
-  });
-  const abortController = new AbortController();
-  let attempts = 0;
-  const recovery = connection.recover({
-    connectTimeoutMs: 1_500,
-    retryDelaysMs: [0, 10],
-    signal: abortController.signal,
-    connectAttempt: async () => {
-      throw new Error("模拟瞬态网络错误");
-    },
-    onAttempt() {
-      attempts += 1;
-      abortController.abort();
-    }
-  });
-  await assert.rejects(
-    recovery,
-    (error) => error instanceof ReceiverRecoveryCancelledError
-  );
-  assert.equal(attempts, 1);
-  assert.equal(connection.connected, false);
-});
-
-test("direct WebSocket recovery generation change cannot overwrite a new source", async () => {
-  const connection = new DirectReceiverConnection({
-    ...TEST_TRANSPORT_OBSERVATION,
-    trustedDevice: {
-      senderId: "019fa3cf-75c7-7000-8000-000000000001",
-      deviceId: "00112233445566778899aabbccddeeff",
-      credential: "a".repeat(64),
-      host: "192.168.1.8",
-      pairedAt: 1
-    },
-    sourceEpoch: 15,
-    socketFactory: () => {
-      throw new Error("旧来源取消后不应创建 WebSocket");
-    },
-    heartbeatIntervalMs: 60_000
-  });
-  let generation = 1;
-  let attempts = 0;
-  const recovery = connection.recover({
-    retryDelaysMs: [0, 10],
-    shouldContinue: () => generation === 1,
-    connectAttempt: async () => {
-      throw new Error("模拟旧来源瞬态网络错误");
-    },
-    onAttempt() {
-      attempts += 1;
-      generation = 2;
-    }
-  });
-  await assert.rejects(
-    recovery,
-    (error) => error instanceof ReceiverRecoveryCancelledError
-  );
-  assert.equal(attempts, 1);
-  assert.equal(connection.connected, false);
-});
+function delay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}

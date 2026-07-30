@@ -8,9 +8,9 @@ Windows 11 与 HarmonyOS 平板处于同一可信 Wi-Fi 时，用户首次由平
 ## Scope
 
 - Edge MV3 `tabCapture` + offscreen + WebCodecs H.264 Annex-B；
-- Edge 直连 HarmonyOS Receiver HWC4 WebSocket；
+- Edge 直连 HarmonyOS Receiver HWC5 WebSocket；
 - HarmonyOS 原生 ArkTS + C++ AVCodec + XComponent；
-- 60 秒一次性 QR，短码和手动私网 IPv4 回退；
+- 60 秒一次性 QR；短码仅配合手动数字私网 IPv4 回退；
 - deviceId/credential 持久信任，IP 与身份分离；
 - 单个活动标签页、编码器和媒体流；
 - 可信局域网，不传音频。
@@ -23,7 +23,7 @@ Windows 11 与 HarmonyOS 平板处于同一可信 Wi-Fi 时，用户首次由平
 - [x] Annex-B binary message 到假 Receiver 逐字节自动化验证。
 - [x] Receiver 绑定和入站策略拒绝通配、回环、VPN、蜂窝和公网。
 - [x] 60 秒一次性授权、身份校验、持久凭据与两端忘记设备实现。
-- [x] 手动私网 IP、短码和 source epoch 回退/竞态测试实现。
+- [x] 自动 `.local` 拒绝低熵短码 proof；手动私网 IP 短码和 source epoch 回退/竞态测试实现。
 - [x] Relay 不属于正常构建、安装或运行路径。
 - [x] 仓库签名配置移除口令和本机路径。
 - [x] 扩展测试、Receiver 协议测试、静态检查与 targetSdk 24 构建通过。

@@ -1,12 +1,12 @@
-# HWC4 直连协议
+# HWC5 直连协议
 
-协议版本：`4`，magic：`0x48574334`（`HWC4`）。
+协议版本：`5`，magic：`0x48574335`（`HWC5`）。
 
-HWC4 将固定媒体合同从 1280×720 @ 30 fps / 4 Mbps 升级为 1280×720 @ 60 fps / 8 Mbps，
-属于不兼容升级。Edge 扩展和平板应用必须同时更新；新旧版本混用时返回
-`protocol_mismatch`，不会误报为平板编解码能力不足。
-已有 `deviceId`、senderId 和 credential 不因版本升级而删除，双端更新后无需重新配对；
-未完成的一次性二维码或短码需要刷新。
+HWC5 保持 1280×720 @ 60 fps / 8 Mbps 媒体合同，但把配对和长期鉴权升级为“挑战证明通过后
+才发送秘密”的两阶段协议。Edge 扩展和平板应用必须同时更新；HWC4 与 HWC5 混用返回
+`protocol_mismatch`。目标真机验收需要卸载旧 Receiver、安装 HWC5 HAP 并重新配对；这属于本次
+不兼容升级的预期步骤。若未来由正式应用升级保留了两端沙箱中的同一 credential，HWC5 proof
+可以继续使用，但本版本不把它作为验收前提。
 
 状态：自动化协议测试与 targetSdk 24 构建通过；真实 Edge + HarmonyOS 平板直连尚未验证。
 
@@ -18,8 +18,10 @@ ws://harmony-web-companion.local:44000/direct
 
 `.local` 失败时，用户可把 host 改为 Receiver 显示的私网 IPv4。Receiver 只在用户确认的具体
 `wlan*` 私网/link-local IPv4 上监听 TCP 44000；拒绝 `0.0.0.0`、回环、VPN、蜂窝、公网地址和
-公网来源。扩展不扫描网络。固定 `.local` 自动路径在发送 `pair` 或 `auth` 前，只读观察
-WebSocket 握手的实际目标地址类别；只有 RFC1918 或 IPv4 link-local 才允许发送凭据。
+公网来源。扩展不扫描网络。Edge 在真实目标平台不会向扩展可靠暴露 WebSocket 的 remote IP，
+因此 HWC5 不再依赖 `webRequest` 或地址观测判定身份。默认 `.local` 必须通过下面的高熵
+challenge-response；用户手抄数字 IPv4 的短码例外在后文单独定义。Receiver 的具体 Wi-Fi 私网
+绑定仍是网络边界，QR/长期 credential proof 是自动路径的秘密释放边界。
 
 所有控制消息是 UTF-8 JSON text message；H.264 是 binary message。客户端 frame 必须 mask，
 Receiver 支持合法 continuation frame，单消息上限为 8 MiB + 32 字节头。
@@ -32,7 +34,7 @@ Receiver 随后继续接受下一条连接，避免单个客户端长期占用�
 
 ```json
 {
-  "v": 4,
+  "v": 5,
   "sid": "32-lowercase-hex",
   "token": "64-lowercase-hex",
   "exp": 1784952000000
@@ -42,50 +44,123 @@ Receiver 随后继续接受下一条连接，避免单个客户端长期占用�
 - `sid` 和 `token` 来自 Web Crypto CSPRNG；
 - `exp` 最多为生成后 60 秒；
 - 二维码不包含 IP、长期凭据、URL、标题、Cookie、正文或视频；
-- 扩展不把 sid、token 或短码写入 `chrome.storage`；
+- 扩展只在 `chrome.storage.session` 暂存 sid、token 与短码 60 秒，不写 `storage.local`；
 - Receiver 只在用户点击扫码后调用 ScanKit；
-- 摄像头不可用时，平板可输入由 token 派生的六位短码，仍只有效 60 秒。
+- 摄像头不可用时，平板可输入由 token 派生的六位短码，仍只有效 60 秒；该模式必须在扩展填写
+  Receiver 显示的数字私网 IPv4，不能使用默认 `.local`。
 
-扫码或短码授权后，扩展发送：
+二维码扫码授权后，扩展先生成 32 字节 Web Crypto CSPRNG nonce，只发送非秘密 challenge：
+
+```json
+{
+  "type": "pair_challenge",
+  "protocol": 5,
+  "mode": "pair",
+  "sessionId": "32-lowercase-hex",
+  "senderId": "stable-extension-uuid",
+  "nonce": "64-lowercase-hex"
+}
+```
+
+Receiver 只在扫码 token 仍有效、未使用且 challenge 格式正确时返回：
+
+```json
+{
+  "type": "pair_proof",
+  "protocol": 5,
+  "mode": "pair",
+  "proofMode": "qr",
+  "sessionId": "32-lowercase-hex",
+  "senderId": "stable-extension-uuid",
+  "nonce": "64-lowercase-hex",
+  "deviceId": "32-lowercase-hex",
+  "proof": "64-lowercase-hex"
+}
+```
+
+`proofMode` 在 HWC5 自动路径固定为 `qr`，HMAC key 是 token 的 32 个原始字节。proof 为
+HMAC-SHA256，canonical message 是以下 UTF-8 字节（字段间为单个 LF，末尾无 LF）：
+
+```text
+HWC5-PAIR-PROOF
+<proofMode>
+<sessionId>
+<senderId>
+<nonce>
+<deviceId>
+```
+
+扩展用本地 token 计算期望 proof，并用固定 64 字符循环进行常数时间
+比较。只有 proof、mode、sessionId、senderId、nonce、deviceId 全部匹配后才发送：
 
 ```json
 {
   "type": "pair",
-  "protocol": 4,
+  "protocol": 5,
+  "mode": "pair",
+  "sessionId": "32-lowercase-hex",
+  "token": "64-lowercase-hex",
+  "senderId": "stable-extension-uuid",
+  "nonce": "64-lowercase-hex"
+}
+```
+
+Receiver 要求 final message 与本连接 challenge 完全一致，再执行 60 秒、一次性 QR token 匹配，
+销毁授权并生成 credential：
+
+```json
+{
+  "type": "paired",
+  "protocol": 5,
+  "deviceId": "32-lowercase-hex",
+  "credential": "64-lowercase-hex"
+}
+```
+
+两端只在应用沙箱中保存 `deviceId`、senderId 和 credential。nonce、proof 和 challenge 状态只在
+当前 WebSocket 内存中存在，不进入 console、storage、事件、监控或导出。IP 变化不改变身份。
+
+### 六位短码的数字 IPv4 分流
+
+六位短码不能作为 HMAC key：任何对外返回的短码 proof 都会成为可在离线枚举 100 万种取值的
+oracle。因此 Receiver 只有短码授权时，对默认 `.local` 的 `pair_challenge` 返回固定
+`short_code_requires_manual_ipv4`，不生成 proof，也不接收 token。扩展提示用户把“平板地址”
+改为 Receiver 屏幕显示的数字私网 IPv4。
+
+扩展只接受 RFC1918 / IPv4 link-local 字面量，并在用户确认后请求该精确 origin 权限；随后首个
+控制消息是：
+
+```json
+{
+  "type": "pair_manual_ipv4",
+  "protocol": 5,
+  "mode": "pair_manual_ipv4",
   "sessionId": "32-lowercase-hex",
   "token": "64-lowercase-hex",
   "senderId": "stable-extension-uuid"
 }
 ```
 
-Receiver 校验授权未过期、未使用且内容匹配，随后销毁一次性授权，保存 senderId，并返回：
-
-```json
-{
-  "type": "paired",
-  "protocol": 4,
-  "deviceId": "32-lowercase-hex",
-  "credential": "64-lowercase-hex"
-}
-```
-
-两端只在应用沙箱中保存 `deviceId`、senderId 和 credential。IP 变化不改变身份。过期、重放、
-未授权或身份不匹配分别返回固定错误码，不回显秘密。
+Receiver 按 60 秒、一次性短码授权校验 token 派生结果并返回同一 `paired`。这一手动路径把用户
+抄写 Receiver 精确数字 IPv4 定义为 out-of-band endpoint authentication，首包会携一次性 token；
+它不宣称满足自动 `.local` 的“proof 前零秘密”不变量。公开 HMAC 短码 proof 在 HWC5 中不存在。
+若未来要让短码安全使用自动 `.local`，必须引入真正抗离线猜测的 PAKE，而不是限速或更换 nonce。
 
 v0.1 运行于用户确认的可信局域网，使用明文 `ws://`；它不支持公网或对抗同网段主动抓包攻击。
 
 ## 已配对鉴权
 
-每次媒体连接首条消息：
+每次媒体连接先发送不含 credential 的 challenge：
 
 ```json
 {
-  "type": "auth",
-  "protocol": 4,
+  "type": "auth_challenge",
+  "protocol": 5,
+  "mode": "auth",
   "senderId": "stable-extension-uuid",
   "deviceId": "32-lowercase-hex",
-  "credential": "64-lowercase-hex",
   "sourceEpoch": 12,
+  "nonce": "64-lowercase-hex",
   "codec": "video/avc",
   "avcFormat": "annexb",
   "width": 1280,
@@ -94,13 +169,69 @@ v0.1 运行于用户确认的可信局域网，使用明文 `ws://`；它不支�
 }
 ```
 
-Receiver 只接受已保存身份、固定编码参数以及不小于历史最新值的 `sourceEpoch`：
+Receiver 只对已保存的 senderId/deviceId、固定编码参数以及不小于历史最新值的 `sourceEpoch`
+计算 proof。HMAC key 是 credential 的 32 个原始字节，canonical UTF-8 message 为：
+
+```text
+HWC5-AUTH-PROOF
+<senderId>
+<deviceId>
+<sourceEpoch十进制>
+<nonce>
+video/avc
+annexb
+1280
+720
+60
+```
+
+返回：
+
+```json
+{
+  "type": "auth_proof",
+  "protocol": 5,
+  "mode": "auth",
+  "senderId": "stable-extension-uuid",
+  "deviceId": "32-lowercase-hex",
+  "sourceEpoch": 12,
+  "nonce": "64-lowercase-hex",
+  "proof": "64-lowercase-hex"
+}
+```
+
+扩展常数时间验证 proof 和全部绑定字段后，才发送含 credential 的 final `auth`；Receiver 再次
+要求字段与本连接 challenge 一致，并常数时间比较 credential：
+
+```json
+{
+  "type": "auth",
+  "protocol": 5,
+  "mode": "auth",
+  "senderId": "stable-extension-uuid",
+  "deviceId": "32-lowercase-hex",
+  "credential": "64-lowercase-hex",
+  "sourceEpoch": 12,
+  "nonce": "64-lowercase-hex",
+  "codec": "video/avc",
+  "avcFormat": "annexb",
+  "width": 1280,
+  "height": 720,
+  "fps": 60
+}
+```
+
 发送端请求并配置 60 fps，但不复制帧；若源视频、Edge 合成或设备刷新率不足 60 Hz，监控页显示的
 实际捕获/编码帧率会低于 60。
 
 ```json
-{"type":"ready","protocol":4,"sourceEpoch":12}
+{"type":"ready","protocol":5,"sourceEpoch":12}
 ```
+
+旧/错 nonce、错 mode、错 identity、重放 proof、并发第二条消息、伪造 proof，以及 proof 前提前
+发送 `paired` / `ready` 都立即失败关闭；扩展在这些路径发送 token/credential 的数量必须为 0。
+Receiver 每条连接最多接受一个 challenge 和一个对应 final message，控制消息上限 2048 字节，
+整个 challenge + final 必须在 10 秒内完成。
 
 用户在任一端忘记设备后，本地长期凭据立即删除；Receiver 同时关闭当前连接。
 
@@ -110,8 +241,8 @@ Receiver 只接受已保存身份、固定编码参数以及不小于历史最�
 
 | 偏移 | 字段 | 类型 | 说明 |
 | ---: | --- | --- | --- |
-| 0 | magic | u32 | `0x48574334` |
-| 4 | version | u8 | `4` |
+| 0 | magic | u32 | `0x48574335` |
+| 4 | version | u8 | `5` |
 | 5 | flags | u8 | bit0 keyframe；其他位必须为 0 |
 | 6 | headerSize | u16 | 固定 `32` |
 | 8 | sourceEpoch | u32 | 当前唯一来源的 epoch |
@@ -130,43 +261,44 @@ Receiver 只接受已保存身份、固定编码参数以及不小于历史最�
 扩展每 5 秒发送：
 
 ```json
-{"type":"ping","protocol":4,"at":1784952000000}
+{"type":"ping","protocol":5,"at":1784952000000}
 ```
 
 Receiver 回应：
 
 ```json
-{"type":"pong","protocol":4,"at":1784952000000}
+{"type":"pong","protocol":5,"at":1784952000000}
 ```
 
 Receiver 在会话开始、解码 Flush 或丢失恢复时发送：
 
 ```json
-{"type":"keyframe","protocol":4,"reason":"loss_flush_or_session_start","requireCodecConfig":true}
+{"type":"keyframe","protocol":5,"reason":"loss_flush_or_session_start","requireCodecConfig":true}
 ```
 
-Receiver 从后台返回前台或取得新的有效 Surface 时，仍使用上述 HWC4 `keyframe` 消息请求
+Receiver 从后台返回前台或取得新的有效 Surface 时，仍使用上述 HWC5 `keyframe` 消息请求
 SPS/PPS + IDR；本地 Ability、Surface 和 AVCodec 生命周期修复不新增控制消息，也不改变端口、
 字段、二进制帧格式或兼容性边界。
 
 若 HarmonyOS 息屏期间由系统中断底层 TCP，Edge 扩展不得把一次 WebSocket `close` 立即升级为
 捕获失败。只要用户没有停止或切换来源，且未收到明确的协议、身份、认证、epoch 或 codec
 永久错误，扩展就保留同一条用户授权的标签页 capture、同一个 VideoEncoder、可信凭据和
-`sourceEpoch`，持续以最长 2 秒退避重建 WebSocket，并重新发送既有 `auth`；每次连接尝试仍有
+`sourceEpoch`，持续以最长 2 秒退避重建 WebSocket，并重新执行 challenge/proof 门禁后发送
+既有 `auth`；每次连接尝试仍有
 独立超时，避免单次握手无限挂起。断线期间编码输出直接丢弃，不缓存视频 payload；重连成功后
 强制生成关键帧。任一 AU 因未连接或 WebSocket 背压被丢弃时，发送端也把下一次可编码帧强制为
 关键帧。Receiver 允许与最新值相等的 `sourceEpoch` 重新认证；每次可信认证（包括相同 epoch
 重连）都 Flush 或重建解码器并进入 `NeedsCodecData`，在收到同一个 AU 内完整的 SPS + PPS + IDR
 前丢弃普通 P 帧。解码输入队列溢出、输入 buffer 不足或提交失败时同样清空待解码依赖链、进入
 `NeedsCodecData` 并按既有 `keyframe` 合同请求 SPS/PPS + IDR。STOP 或新来源会立即取消旧恢复
-任务，旧任务不得覆盖新来源状态。该行为不增加消息类型，不改变 HWC4 版本或二进制帧格式。
+任务，旧任务不得覆盖新来源状态。该行为不增加消息类型，不改变 HWC5 版本或二进制帧格式。
 
 Receiver 遥测：
 
 ```json
 {
   "type": "telemetry",
-  "protocol": 4,
+  "protocol": 5,
   "captureUs": 8101000,
   "displayUs": 8161200,
   "receivedFrames": 3600,
@@ -182,17 +314,21 @@ Receiver 遥测：
 `receiverKeyframeRequests` 统计成功发出的 SPS/PPS + IDR 请求。扩展另记录本地 AU 丢弃触发的
 `directResyncEvents`。这些字段只包含聚合计数。
 
-正常停止使用 `{"type":"close","protocol":4}`。遥测、日志和导出不得包含秘密、网页 URL/标题、
+正常停止使用 `{"type":"close","protocol":5}`。遥测、日志和导出不得包含秘密、网页 URL/标题、
 Cookie、正文或视频 payload。
 
 ## 错误码
 
 | code | 含义 |
 | --- | --- |
-| `protocol_mismatch` | 不是 HWC4；扩展与平板应用需要同时更新 |
+| `protocol_mismatch` | 不是 HWC5；扩展与平板应用需要同时更新 |
+| `challenge_invalid` | challenge 字段、模式、编码参数或身份无效 |
+| `challenge_state_invalid` | 同一连接收到重复、乱序或超量控制消息 |
+| `challenge_required` | 未在时限内完成 challenge + final |
 | `authorization_expired` | 一次性授权过期 |
 | `authorization_replayed` | sid 已成功使用 |
 | `pairing_failed` | QR/短码内容不匹配 |
+| `short_code_requires_manual_ipv4` | 短码不能用于自动 `.local` proof；需填写 Receiver 数字私网 IPv4 |
 | `not_paired` | 未配对连接 |
 | `identity_mismatch` | deviceId/senderId/credential 不匹配 |
 | `codec_unsupported` | 编码参数不支持 |
@@ -246,9 +382,9 @@ adapter。生产状态机测试通过注入 socket/clock/interface seam 覆盖�
 并发、频率预算和一次 goodbye。以上仍不能证明修复后的目标设备运行时 multicast 或
 Windows/Edge 解析成功，必须重新真机验证。
 
-公开 DNS-SD 注册、固定 A 可解析和 HWC4 身份鉴权必须分别记录；前两者都不授予身份信任。
+公开 DNS-SD 注册、固定 A 可解析和 HWC5 challenge/proof 身份鉴权必须分别记录；前两者都不授予身份信任。
 
 ## 不存在的能力
 
-HWC4 不传输 audio、pointer、keyboard、scroll、URL、Cookie、正文、桌面枚举，也没有 UDP 媒体、
+HWC5 不传输 audio、pointer、keyboard、scroll、URL、Cookie、正文、桌面枚举，也没有 UDP 媒体、
 公网、云中继、设备浏览或多路标签页媒体流；唯一 UDP 输入面是上述固定名称的受限 mDNS A 响应器。

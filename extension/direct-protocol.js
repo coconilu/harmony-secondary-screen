@@ -1,7 +1,7 @@
-export const DIRECT_PROTOCOL = 4;
+export const DIRECT_PROTOCOL = 5;
 export const DIRECT_PORT = 44000;
 export const DEFAULT_RECEIVER_HOST = "harmony-web-companion.local";
-export const DIRECT_VIDEO_MAGIC = 0x48574334;
+export const DIRECT_VIDEO_MAGIC = 0x48574335;
 export const DIRECT_VIDEO_HEADER_SIZE = 32;
 export const DIRECT_VIDEO_MAX_PAYLOAD_BYTES = 8 * 1024 * 1024;
 export const DIRECT_MAX_BUFFERED_BYTES = 4 * 1024 * 1024;
@@ -11,6 +11,7 @@ export const DIRECT_VIDEO_HEIGHT = 720;
 export const DIRECT_VIDEO_FRAMERATE = 60;
 export const DIRECT_VIDEO_BITRATE = 8_000_000;
 export const PAIRING_TTL_MS = 60_000;
+export const DIRECT_PROOF_NONCE_BYTES = 32;
 
 const PRIVATE_IPV4_ERROR = "v0.1 只允许可信局域网 IPv4 地址";
 
@@ -90,6 +91,146 @@ export function shortCodeFromToken(token) {
   return String(value).padStart(6, "0");
 }
 
+export function createProofNonce(
+  randomBytes = crypto.getRandomValues.bind(crypto)
+) {
+  return randomHex(DIRECT_PROOF_NONCE_BYTES, randomBytes);
+}
+
+export function createPairProofMessage({
+  proofMode,
+  sessionId,
+  senderId,
+  nonce,
+  deviceId
+}) {
+  if (
+    proofMode !== "qr" ||
+    !/^[0-9a-f]{32}$/.test(sessionId ?? "") ||
+    !/^[0-9a-f-]{16,64}$/.test(senderId ?? "") ||
+    !isProofNonce(nonce) ||
+    !/^[0-9a-f]{32}$/.test(deviceId ?? "")
+  ) {
+    throw new Error("配对挑战字段无效");
+  }
+  return [
+    "HWC5-PAIR-PROOF",
+    proofMode,
+    sessionId,
+    senderId,
+    nonce,
+    deviceId
+  ].join("\n");
+}
+
+export function createAuthProofMessage({
+  senderId,
+  deviceId,
+  sourceEpoch,
+  nonce,
+  codec = "video/avc",
+  avcFormat = "annexb",
+  width = DIRECT_VIDEO_WIDTH,
+  height = DIRECT_VIDEO_HEIGHT,
+  fps = DIRECT_VIDEO_FRAMERATE
+}) {
+  if (
+    !/^[0-9a-f-]{16,64}$/.test(senderId ?? "") ||
+    !/^[0-9a-f]{32}$/.test(deviceId ?? "") ||
+    !Number.isInteger(sourceEpoch) ||
+    sourceEpoch <= 0 ||
+    sourceEpoch > 0xffffffff ||
+    !isProofNonce(nonce) ||
+    codec !== "video/avc" ||
+    avcFormat !== "annexb" ||
+    width !== DIRECT_VIDEO_WIDTH ||
+    height !== DIRECT_VIDEO_HEIGHT ||
+    fps !== DIRECT_VIDEO_FRAMERATE
+  ) {
+    throw new Error("鉴权挑战字段无效");
+  }
+  return [
+    "HWC5-AUTH-PROOF",
+    senderId,
+    deviceId,
+    String(sourceEpoch),
+    nonce,
+    codec,
+    avcFormat,
+    String(width),
+    String(height),
+    String(fps)
+  ].join("\n");
+}
+
+export async function computePairProof({
+  token,
+  proofMode,
+  sessionId,
+  senderId,
+  nonce,
+  deviceId
+}, subtle = crypto.subtle) {
+  const keyBytes = hexToBytes(token, 32, "配对令牌格式无效");
+  return hmacSha256Hex(
+    keyBytes,
+    createPairProofMessage({
+      proofMode,
+      sessionId,
+      senderId,
+      nonce,
+      deviceId
+    }),
+    subtle
+  );
+}
+
+export async function computeAuthProof({
+  credential,
+  senderId,
+  deviceId,
+  sourceEpoch,
+  nonce,
+  codec = "video/avc",
+  avcFormat = "annexb",
+  width = DIRECT_VIDEO_WIDTH,
+  height = DIRECT_VIDEO_HEIGHT,
+  fps = DIRECT_VIDEO_FRAMERATE
+}, subtle = crypto.subtle) {
+  return hmacSha256Hex(
+    hexToBytes(credential, 32, "长期凭据格式无效"),
+    createAuthProofMessage({
+      senderId,
+      deviceId,
+      sourceEpoch,
+      nonce,
+      codec,
+      avcFormat,
+      width,
+      height,
+      fps
+    }),
+    subtle
+  );
+}
+
+export function constantTimeEqualProof(left, right) {
+  const first = String(left ?? "");
+  const second = String(right ?? "");
+  let difference = first.length ^ second.length;
+  for (let index = 0; index < 64; index += 1) {
+    difference |= (first.charCodeAt(index) || 0) ^
+      (second.charCodeAt(index) || 0);
+  }
+  return difference === 0 && /^[0-9a-f]{64}$/.test(first);
+}
+
+export function isProofNonce(value) {
+  return new RegExp(
+    `^[0-9a-f]{${DIRECT_PROOF_NONCE_BYTES * 2}}$`
+  ).test(value ?? "");
+}
+
 export function createDirectVideoMessage(chunk, sourceEpoch, sequence) {
   if (
     !chunk ||
@@ -162,4 +303,40 @@ function randomHex(byteCount, randomBytes) {
   const bytes = new Uint8Array(byteCount);
   randomBytes(bytes);
   return [...bytes].map((value) => value.toString(16).padStart(2, "0")).join("");
+}
+
+function hexToBytes(value, byteCount, message) {
+  const text = String(value ?? "");
+  if (!new RegExp(`^[0-9a-f]{${byteCount * 2}}$`).test(text)) {
+    throw new Error(message);
+  }
+  return Uint8Array.from(
+    { length: byteCount },
+    (_, index) => Number.parseInt(text.slice(index * 2, index * 2 + 2), 16)
+  );
+}
+
+async function hmacSha256Hex(keyBytes, message, subtle) {
+  if (
+    !subtle ||
+    typeof subtle.importKey !== "function" ||
+    typeof subtle.sign !== "function"
+  ) {
+    throw new Error("当前 Edge 不支持挑战证明所需的 Web Crypto");
+  }
+  const key = await subtle.importKey(
+    "raw",
+    keyBytes,
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const signature = await subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode(message)
+  );
+  return [...new Uint8Array(signature)]
+    .map((value) => value.toString(16).padStart(2, "0"))
+    .join("");
 }
