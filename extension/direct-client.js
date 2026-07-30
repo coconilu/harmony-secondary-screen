@@ -16,6 +16,8 @@ import {
 } from "./direct-protocol.js";
 
 const CONNECT_TIMEOUT_MS = 5_000;
+const DIRECT_MAX_CONTROL_TEXT_BYTES = 2_048;
+const controlTextEncoder = new TextEncoder();
 export const DIRECT_RECOVERY_CONNECT_TIMEOUT_MS = 1_500;
 export const DIRECT_RECOVERY_MAX_RETRY_DELAY_MS = 2_000;
 export const DIRECT_RECOVERY_RETRY_DELAYS_MS = Object.freeze([
@@ -431,6 +433,11 @@ function openProofExchange(socket, {
         finish(new ReceiverProtocolError("invalid_response"));
         return;
       }
+      if (controlMessageExceedsLimit(event.data)) {
+        finish(new ReceiverProtocolError("control_message_too_large"));
+        closeSocket(socket);
+        return;
+      }
       let message;
       try {
         message = JSON.parse(event.data);
@@ -512,6 +519,14 @@ function openProofExchange(socket, {
     socket.addEventListener("error", handleError, { once: true });
     socket.addEventListener("close", handleClose, { once: true });
   });
+}
+
+function controlMessageExceedsLimit(value) {
+  if (value.length > DIRECT_MAX_CONTROL_TEXT_BYTES) {
+    return true;
+  }
+  return controlTextEncoder.encode(value).byteLength >
+    DIRECT_MAX_CONTROL_TEXT_BYTES;
 }
 
 function connectionErrorForHost(host) {
@@ -617,6 +632,7 @@ function describeReceiverError(code) {
     challenge_invalid: "Receiver 拒绝了无效挑战，未发送任何凭据",
     challenge_state_invalid: "Receiver 拒绝了乱序或不匹配的挑战消息",
     challenge_required: "Receiver 未在时限内完成挑战证明",
+    control_message_too_large: "Receiver 控制消息超过 2048 字节，已拒绝连接",
     challenge_response_invalid: "Receiver 返回了无效的挑战证明，未发送任何凭据",
     challenge_proof_invalid: "Receiver 挑战证明校验失败，未发送任何凭据",
     handshake_timeout: "WebSocket 已建立，但 Receiver 鉴权响应超时"

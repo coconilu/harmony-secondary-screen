@@ -123,6 +123,32 @@ test("automatic address refuses short-code proof mode and releases zero token", 
   assert.equal(JSON.stringify(received).includes(TOKEN), false);
 });
 
+test("oversized pair proof is rejected before JSON parsing or HMAC and releases zero token", async (context) => {
+  const { server, url } = await createServer(context);
+  const received = [];
+  server.once("connection", (socket) => {
+    socket.on("message", async (data) => {
+      const message = JSON.parse(data.toString("utf8"));
+      received.push(message);
+      if (received.length === 1) {
+        socket.send(JSON.stringify({
+          ...(await pairProof(message)),
+          padding: "x".repeat(2_000_000)
+        }));
+      }
+    });
+  });
+  await assert.rejects(pairReceiver({
+    host: "harmony-web-companion.local",
+    authorization: { sessionId: SESSION_ID, token: TOKEN },
+    senderId: SENDER_ID,
+    socketFactory: () => new WebSocket(url)
+  }), /超过 2048 字节/);
+  await delay(10);
+  assert.equal(received.length, 1);
+  assert.equal(JSON.stringify(received).includes(TOKEN), false);
+});
+
 test("expired authorization is distinct and releases no token", async (context) => {
   const { server, url } = await createServer(context);
   const received = [];
@@ -243,6 +269,29 @@ test("forged, replayed, mismatched and premature auth proofs release zero creden
     assert.equal(connection.connected, false);
     await closeServer(server);
   }
+});
+
+test("oversized auth proof is rejected before JSON parsing or HMAC and releases zero credential", async (context) => {
+  const { server, url } = await createServer(context);
+  const received = [];
+  server.once("connection", (socket) => {
+    socket.on("message", async (data) => {
+      const message = JSON.parse(data.toString("utf8"));
+      received.push(message);
+      if (received.length === 1) {
+        socket.send(JSON.stringify({
+          ...(await authProof(message)),
+          padding: "界".repeat(700)
+        }));
+      }
+    });
+  });
+  const connection = createConnection(url, 9);
+  await assert.rejects(connection.connect(), /超过 2048 字节/);
+  await delay(10);
+  assert.equal(received.length, 1);
+  assert.equal(JSON.stringify(received).includes(CREDENTIAL), false);
+  assert.equal(connection.connected, false);
 });
 
 test("valid auth proof releases credential and permits one Annex-B AU", async (context) => {
