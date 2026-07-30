@@ -9,8 +9,8 @@
 
 namespace hss::receiver::protocol {
 
-constexpr std::uint32_t kVideoMagic = 0x48574334U;
-constexpr std::uint8_t kVersion = 4;
+constexpr std::uint32_t kVideoMagic = 0x48574335U;
+constexpr std::uint8_t kVersion = 5;
 constexpr std::size_t kHeaderSize = 32;
 constexpr std::uint32_t kMaxControlPayload = 64U * 1024U;
 constexpr std::size_t kMaxFrameBytes = 8U * 1024U * 1024U;
@@ -41,6 +41,27 @@ constexpr bool IsAcceptedSourceEpoch(std::uint32_t candidate, std::uint32_t late
 }
 
 std::string PairingShortCode(std::string_view token);
+std::string PairProofMessage(std::string_view proofMode,
+                             std::string_view sessionId,
+                             std::string_view senderId,
+                             std::string_view nonce,
+                             std::string_view deviceId);
+std::string AuthProofMessage(std::string_view senderId,
+                             std::string_view deviceId,
+                             std::uint32_t sourceEpoch,
+                             std::string_view nonce);
+std::string ComputePairProof(std::string_view secret,
+                             std::string_view proofMode,
+                             std::string_view sessionId,
+                             std::string_view senderId,
+                             std::string_view nonce,
+                             std::string_view deviceId);
+std::string ComputeAuthProof(std::string_view credential,
+                             std::string_view senderId,
+                             std::string_view deviceId,
+                             std::uint32_t sourceEpoch,
+                             std::string_view nonce);
+bool ConstantTimeEqual(std::string_view first, std::string_view second);
 PairingAuthorizationResult EvaluatePairingAuthorization(
     std::string_view sessionId, std::string_view token,
     std::string_view pendingSessionId, std::string_view pendingToken,

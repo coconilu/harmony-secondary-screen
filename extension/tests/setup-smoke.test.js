@@ -170,7 +170,7 @@ test("fresh install renders the pairing form and initializes a QR code", async (
   );
   assert.match(
     environment.elements.get("#short-code").textContent,
-    /在平板输入 6 位连接码 \d{6}/
+    /连接码 \d{6}.*数字 IPv4/
   );
   assert.equal(environment.elements.get("#error-message").hidden, true);
 });
@@ -224,6 +224,28 @@ test("forget keeps permissions.remove false visible while returning to pairing",
   assert.match(
     environment.elements.get("#error-message").textContent,
     /无法撤销/
+  );
+});
+
+test("pair challenge failure is visible but never persisted", async (context) => {
+  const environment = createPopupEnvironment();
+  const setup = await loadSetupModule(context, environment);
+  await setup.completePairing({
+    async pair() {
+      throw new Error("Receiver 挑战证明校验失败，未发送任何凭据");
+    }
+  });
+  assert.equal(
+    environment.elements.get("#error-message").textContent,
+    "Receiver 挑战证明校验失败，未发送任何凭据"
+  );
+  assert.equal(
+    JSON.stringify([...environment.sessionValues.entries()]).includes("proof"),
+    false
+  );
+  assert.equal(
+    JSON.stringify([...environment.values.entries()]).includes("proof"),
+    false
   );
 });
 

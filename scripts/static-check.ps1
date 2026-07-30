@@ -49,6 +49,21 @@ try {
   }
   if ($LASTEXITCODE -ne 1) { throw "Extension privacy scan failed: $LASTEXITCODE" }
 
+  $proofPersistence = & rg -n 'nonce|proof' `
+    extension\offscreen.js extension\service-worker.js extension\monitor.js `
+    extension\pairing-store.js extension\pending-pairing-store.js 2>$null
+  if ($LASTEXITCODE -eq 0) {
+    throw "Challenge nonce/proof must remain connection-local and must not enter state or export:`n$proofPersistence"
+  }
+  if ($LASTEXITCODE -ne 1) { throw "Challenge persistence scan failed: $LASTEXITCODE" }
+
+  $setupDiagnosticSink = & rg -n 'console\.|chrome\.storage|storage\.(local|session|sync)' `
+    extension\setup.js 2>$null
+  if ($LASTEXITCODE -eq 0) {
+    throw "Setup diagnostics must remain DOM-only and must not use console or storage directly:`n$setupDiagnosticSink"
+  }
+  if ($LASTEXITCODE -ne 1) { throw "Setup diagnostic sink scan failed: $LASTEXITCODE" }
+
   foreach ($check in @(
     @{ Path = 'extension\offscreen.js'; Pattern = 'audio: false' },
     @{ Path = 'extension\offscreen.js'; Pattern = 'new DirectReceiverConnection' },
@@ -63,7 +78,7 @@ try {
     @{ Path = 'extension\direct-resync-policy.js'; Pattern = 'canDeliverEncodedChunk' },
     @{ Path = 'extension\direct-delivery-orchestrator.js'; Pattern = 'deliver(chunk, connection, sourceEpoch, telemetry)' },
     @{ Path = 'extension\offscreen.js'; Pattern = 'directDelivery.deliver' },
-    @{ Path = 'extension\tests\direct-websocket.integration.test.js'; Pattern = 'recovers an abnormal drop without replacing the capture source' },
+    @{ Path = 'extension\tests\direct-websocket.integration.test.js'; Pattern = 'reconnect repeats the proof gate and keeps the same source epoch' },
     @{ Path = 'extension\direct-protocol.js'; Pattern = 'PAIRING_TTL_MS = 60_000' },
     @{ Path = 'extension\direct-protocol.js'; Pattern = 'sourceEpoch' },
     @{ Path = 'extension\pending-pairing-store.js'; Pattern = 'chrome.storage.session' },
@@ -72,12 +87,47 @@ try {
     @{ Path = 'extension\host-permissions.js'; Pattern = 'const granted = await api.getAll()' },
     @{ Path = 'extension\host-permissions.js'; Pattern = 'if (!removed)' },
     @{ Path = 'extension\setup.js'; Pattern = 'cleanupUnusedManualHostPermissions([])' },
+    @{ Path = 'extension\direct-client.js'; Pattern = 'type: "pair_challenge"' },
+    @{ Path = 'extension\direct-client.js'; Pattern = 'type: "pair_manual_ipv4"' },
+    @{ Path = 'extension\direct-client.js'; Pattern = 'proof.proofMode !== "qr"' },
+    @{ Path = 'extension\direct-client.js'; Pattern = 'type: "auth_challenge"' },
+    @{ Path = 'extension\direct-client.js'; Pattern = 'constantTimeEqualProof' },
+    @{ Path = 'extension\direct-protocol.js'; Pattern = 'HWC5-PAIR-PROOF' },
+    @{ Path = 'extension\direct-protocol.js'; Pattern = 'HWC5-AUTH-PROOF' },
+    @{ Path = 'extension\direct-protocol.js'; Pattern = 'subtle.sign' },
+    @{ Path = 'extension\tests\direct-websocket.integration.test.js'; Pattern = 'release zero token' },
+    @{ Path = 'extension\tests\direct-websocket.integration.test.js'; Pattern = 'release zero credential' },
+    @{ Path = 'extension\tests\direct-websocket.integration.test.js'; Pattern = 'automatic address refuses short-code proof mode and releases zero token' },
+    @{ Path = 'extension\tests\direct-websocket.integration.test.js'; Pattern = 'manual private IPv4 preserves short-code pairing without a low-entropy proof' },
+    @{ Path = 'extension\tests\direct-protocol.test.js'; Pattern = 'HWC5 proof vectors match the native Receiver contract' },
     @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'IsCurrentWifiIpv4' },
     @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'tcpAddress.sin_addr = address' },
     @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'std::strncmp(item->ifa_name, "wlan", 4)' },
+    @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'if_nametoindex' },
+    @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'address_responder_.Stop()' },
+    @{ Path = 'receiver\entry\src\main\cpp\mdns_posix_transport.cpp'; Pattern = 'IP_PKTINFO' },
+    @{ Path = 'receiver\entry\src\main\cpp\mdns_posix_transport.cpp'; Pattern = 'IP_RECVTTL' },
+    @{ Path = 'receiver\entry\src\main\cpp\mdns_posix_transport.cpp'; Pattern = 'IP_MULTICAST_ALL' },
+    @{ Path = 'receiver\entry\src\main\cpp\mdns_posix_transport.cpp'; Pattern = 'recvmsg' },
+    @{ Path = 'receiver\entry\src\main\cpp\mdns_responder.cpp'; Pattern = 'SendGoodbyeLocked' },
+    @{ Path = 'receiver\tests\mdns_protocol_tests.cpp'; Pattern = 'AddressChangeAndStopRevokeTheOldRecord' },
+    @{ Path = 'receiver\tests\mdns_responder_tests.cpp'; Pattern = 'EstablishedOwnerDefeatsALaterStarter' },
+    @{ Path = 'receiver\tests\mdns_responder_tests.cpp'; Pattern = 'SimultaneousProbesUseDeterministicTieBreak' },
+    @{ Path = 'receiver\tests\mdns_responder_tests.cpp'; Pattern = 'WrongInterfacePortHopAndDestinationAreIgnored' },
+    @{ Path = 'receiver\tests\mdns_responder_tests.cpp'; Pattern = 'AddressInvalidationSendsExactlyOneGoodbye' },
     @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'authorization_replayed' },
     @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'identity_mismatch' },
     @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'IsAcceptedSourceEpoch' },
+    @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'pair_proof' },
+    @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'auth_proof' },
+    @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'challenge_state_invalid' },
+    @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'short_code_requires_manual_ipv4' },
+    @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'pair_manual_ipv4' },
+    @{ Path = 'receiver\entry\src\main\ets\pages\Index.ets'; Pattern = 'DIRECT_PROTOCOL_VERSION: number = 5' },
+    @{ Path = 'receiver\entry\src\main\cpp\native_protocol.cpp'; Pattern = 'ComputePairProof' },
+    @{ Path = 'receiver\entry\src\main\cpp\native_protocol.cpp'; Pattern = 'ComputeAuthProof' },
+    @{ Path = 'receiver\entry\src\main\cpp\native_protocol.cpp'; Pattern = 'ConstantTimeEqual' },
+    @{ Path = 'receiver\tests\direct_protocol_tests.cpp'; Pattern = 'Hwc5ProofVectorTest' },
     @{ Path = 'receiver\entry\src\main\cpp\decoder_orchestration.h'; Pattern = 'BeginFlush' },
     @{ Path = 'receiver\entry\src\main\cpp\decoder_orchestration.h'; Pattern = 'DecoderRecoveryCoordinator' },
     @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'decoder_callback_gate_.BeginFlush' },
@@ -99,7 +149,7 @@ try {
     @{ Path = 'receiver\tests\receiver_lifecycle_tests.cpp'; Pattern = 'TestSameEpochAuthenticationRequiresCompleteRecovery' },
     @{ Path = 'receiver\tests\receiver_lifecycle_tests.cpp'; Pattern = 'TestFlushClosesNeedInputGateBeforeClearingQueues' },
     @{ Path = 'receiver\tests\receiver_lifecycle_tests.cpp'; Pattern = 'TestDecodeQueueOverflowInvalidatesDependencies' },
-    @{ Path = 'docs\PROTOCOL.md'; Pattern = 'HWC4' },
+    @{ Path = 'docs\PROTOCOL.md'; Pattern = 'HWC5' },
     @{ Path = 'docs\PROTOCOL.md'; Pattern = 'sourceEpoch' }
   )) {
     $found = Select-String -LiteralPath $check.Path -SimpleMatch -Quiet -Pattern $check.Pattern

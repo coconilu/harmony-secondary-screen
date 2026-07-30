@@ -7,6 +7,9 @@ export interface ReceiverStatus {
   listening: boolean;
   connected: boolean;
   paired: boolean;
+  automaticAddressPublished: boolean;
+  automaticAddressConflict: boolean;
+  automaticAddressFailed: boolean;
   framesDecoded: number;
   framesDropped: number;
   receivedFrames: number;

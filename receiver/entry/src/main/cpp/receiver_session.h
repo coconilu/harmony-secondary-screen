@@ -3,6 +3,7 @@
 #include "bounded_control_queue.h"
 #include "decoder_orchestration.h"
 #include "decoder_state.h"
+#include "mdns_responder.h"
 #include "native_protocol.h"
 #include "receiver_lifecycle_state.h"
 #include "websocket_protocol.h"
@@ -30,6 +31,9 @@ struct StatusSnapshot {
   bool listening = false;
   bool connected = false;
   bool paired = false;
+  bool automaticAddressPublished = false;
+  bool automaticAddressConflict = false;
+  bool automaticAddressFailed = false;
   std::uint64_t framesDecoded = 0;
   std::uint64_t framesDropped = 0;
   std::uint64_t receivedFrames = 0;
@@ -87,6 +91,7 @@ class ReceiverSession final {
   bool SendControl(std::string_view json);
   bool HandleControl(std::string_view json);
   void HandleVideo(const std::byte* data, std::size_t size);
+  bool ContinueWithCurrentAddress();
   void RequestKeyframe();
   void CloseControlSocket();
   void CloseSockets();
@@ -116,6 +121,7 @@ class ReceiverSession final {
   std::string state_ = "idle";
   std::string detail_ = "正在检查当前 Wi-Fi";
   std::string listen_address_;
+  std::uint32_t listen_interface_index_ = 0;
   std::string paired_address_;
   bool listening_ = false;
   bool connected_ = false;
@@ -134,6 +140,7 @@ class ReceiverSession final {
   std::thread worker_;
   std::atomic<int> listener_socket_{-1};
   std::atomic<int> control_socket_{-1};
+  MdnsResponder address_responder_;
   std::timed_mutex send_mutex_;
   BoundedControlQueue telemetry_queue_{8};
   websocket::Decoder websocket_decoder_;

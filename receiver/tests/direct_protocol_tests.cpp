@@ -184,6 +184,43 @@ void PairingAuthorizationNegativeTest() {
             session, std::string(64, '3'), session, token, "", "",
             120'000, 61'000) ==
         PairingAuthorizationResult::kMismatch);
+  CHECK(EvaluatePairingAuthorization(
+            session, token, "", "", PairingShortCode(token), "",
+            120'000, 61'000) ==
+        PairingAuthorizationResult::kAccepted);
+  CHECK(EvaluatePairingAuthorization(
+            session, token, "", "", "999999", "",
+            120'000, 61'000) ==
+        PairingAuthorizationResult::kMismatch);
+}
+
+void Hwc5ProofVectorTest() {
+  using namespace hss::receiver::protocol;
+  const std::string token(64, '0');
+  const std::string credential(64, '1');
+  const std::string session = "00112233445566778899aabbccddeeff";
+  const std::string nonce =
+      "0123456789abcdef0123456789abcdef"
+      "0123456789abcdef0123456789abcdef";
+  const std::string device = "ffeeddccbbaa99887766554433221100";
+  const std::string sender = "019fa3cf-75c7-7000-8000-000000000001";
+  CHECK(ComputePairProof(token, "qr", session, sender, nonce, device) ==
+        "e4da9d38094ddbee44ba4c26bac44afb"
+        "562fdd22df65f25245a103441475bdc5");
+  CHECK(ComputePairProof("000000", "short", session, sender, nonce, device)
+            .empty());
+  CHECK(ComputePairProof(token, "qr", session, std::string(32, 'f'),
+                         nonce, device) !=
+        ComputePairProof(token, "qr", session, sender, nonce, device));
+  CHECK(ComputeAuthProof(credential, sender, device, 9U, nonce) ==
+        "7453800320a532c293b9678cf1641fd5"
+        "03c92d005f8fe63e136e5d367e50997a");
+  CHECK(ConstantTimeEqual(std::string(64, 'a'), std::string(64, 'a')));
+  CHECK(!ConstantTimeEqual(std::string(64, 'a'), std::string(64, 'b')));
+  CHECK(!ConstantTimeEqual(std::string(63, 'a'), std::string(63, 'a')));
+  CHECK(ComputePairProof(token, "qr", session, sender,
+                         std::string(64, 'x'), device).empty());
+  CHECK(ComputeAuthProof(credential, sender, device, 0U, nonce).empty());
 }
 
 #ifdef _WIN32
@@ -341,6 +378,7 @@ int main(int argc, char** argv) {
   WebSocketDecoderTest();
   WebSocketHandshakeTest();
   PairingAuthorizationNegativeTest();
+  Hwc5ProofVectorTest();
   SilentUpgradeDeadlineTest();
   if (failures != 0) {
     std::cerr << failures << " receiver protocol check(s) failed\n";

@@ -1,14 +1,23 @@
 import {
   createDirectWebSocketUrl,
+  computeAuthProof,
+  computePairProof,
+  constantTimeEqualProof,
+  createProofNonce,
+  DEFAULT_RECEIVER_HOST,
   DIRECT_MAX_BUFFERED_BYTES,
   DIRECT_PROTOCOL,
   DIRECT_VIDEO_FRAMERATE,
   DIRECT_VIDEO_HEIGHT,
   DIRECT_VIDEO_WIDTH,
+  isProofNonce,
+  normalizeReceiverHost,
   validateTrustedDevice
 } from "./direct-protocol.js";
 
 const CONNECT_TIMEOUT_MS = 5_000;
+const DIRECT_MAX_CONTROL_TEXT_BYTES = 2_048;
+const controlTextEncoder = new TextEncoder();
 export const DIRECT_RECOVERY_CONNECT_TIMEOUT_MS = 1_500;
 export const DIRECT_RECOVERY_MAX_RETRY_DELAY_MS = 2_000;
 export const DIRECT_RECOVERY_RETRY_DELAYS_MS = Object.freeze([
@@ -23,25 +32,92 @@ export async function pairReceiver({
   host,
   authorization,
   senderId,
-  socketFactory = (url) => new WebSocket(url)
+  socketFactory = (url) => new WebSocket(url),
+  randomBytes = crypto.getRandomValues.bind(crypto)
 }) {
-  const socket = socketFactory(createDirectWebSocketUrl(host));
-  const response = await openAndExchange(socket, {
-    type: "pair",
-    protocol: DIRECT_PROTOCOL,
-    sessionId: authorization.sessionId,
-    token: authorization.token,
-    senderId
-  }, "paired");
-  const trusted = validateTrustedDevice({
-    senderId,
-    deviceId: response.deviceId,
-    credential: response.credential,
-    host,
-    pairedAt: Date.now()
-  });
-  socket.close(1000, "pairing_complete");
-  return trusted;
+  const normalizedHost = normalizeReceiverHost(host);
+  const url = createDirectWebSocketUrl(normalizedHost);
+  const automaticAddress = normalizedHost === DEFAULT_RECEIVER_HOST;
+  const nonce = automaticAddress ? createProofNonce(randomBytes) : null;
+  const socket = socketFactory(url);
+  try {
+    const common = {
+      expectedType: "paired",
+      connectionError: connectionErrorForHost(normalizedHost)
+    };
+    const response = automaticAddress
+      ? await openProofExchange(socket, {
+        ...common,
+        challenge: {
+          type: "pair_challenge",
+          protocol: DIRECT_PROTOCOL,
+          mode: "pair",
+          sessionId: authorization.sessionId,
+          senderId,
+          nonce
+        },
+        proofType: "pair_proof",
+        async buildSecretRequest(proof) {
+          if (
+            proof.mode !== "pair" ||
+            proof.proofMode !== "qr" ||
+            proof.sessionId !== authorization.sessionId ||
+            proof.senderId !== senderId ||
+            proof.nonce !== nonce ||
+            !/^[0-9a-f]{32}$/.test(proof.deviceId ?? "") ||
+            !/^[0-9a-f]{64}$/.test(proof.proof ?? "")
+          ) {
+            throw new ReceiverProtocolError("challenge_response_invalid");
+          }
+          const expectedProof = await computePairProof({
+            token: authorization.token,
+            proofMode: "qr",
+            sessionId: authorization.sessionId,
+            senderId,
+            nonce,
+            deviceId: proof.deviceId
+          });
+          if (!constantTimeEqualProof(proof.proof, expectedProof)) {
+            throw new ReceiverProtocolError("challenge_proof_invalid");
+          }
+          return {
+            type: "pair",
+            protocol: DIRECT_PROTOCOL,
+            mode: "pair",
+            sessionId: authorization.sessionId,
+            token: authorization.token,
+            senderId,
+            nonce
+          };
+        },
+        validateFinal(responseValue, proof) {
+          if (responseValue.deviceId !== proof.deviceId) {
+            throw new ReceiverProtocolError("challenge_response_invalid");
+          }
+        }
+      })
+      : await openProofExchange(socket, {
+        ...common,
+        challenge: {
+          type: "pair_manual_ipv4",
+          protocol: DIRECT_PROTOCOL,
+          mode: "pair_manual_ipv4",
+          sessionId: authorization.sessionId,
+          token: authorization.token,
+          senderId
+        },
+        skipProof: true
+      });
+    return validateTrustedDevice({
+      senderId,
+      deviceId: response.deviceId,
+      credential: response.credential,
+      host: normalizedHost,
+      pairedAt: Date.now()
+    });
+  } finally {
+    closeSocket(socket);
+  }
 }
 
 export class DirectReceiverConnection {
@@ -50,13 +126,15 @@ export class DirectReceiverConnection {
     sourceEpoch,
     socketFactory = (url) => new WebSocket(url),
     heartbeatIntervalMs = 5_000,
-    connectTimeoutMs = CONNECT_TIMEOUT_MS
+    connectTimeoutMs = CONNECT_TIMEOUT_MS,
+    randomBytes = crypto.getRandomValues.bind(crypto)
   }) {
     this.trustedDevice = validateTrustedDevice(trustedDevice);
     this.sourceEpoch = sourceEpoch;
     this.socketFactory = socketFactory;
     this.heartbeatIntervalMs = heartbeatIntervalMs;
     this.connectTimeoutMs = connectTimeoutMs;
+    this.randomBytes = randomBytes;
     this.socket = null;
     this.authenticated = false;
     this.onControl = () => {};
@@ -69,26 +147,71 @@ export class DirectReceiverConnection {
     if (this.socket !== null) {
       throw new Error("平板连接已存在");
     }
-    const socket = this.socketFactory(
-      createDirectWebSocketUrl(this.trustedDevice.host)
-    );
+    const url = createDirectWebSocketUrl(this.trustedDevice.host);
+    const nonce = createProofNonce(this.randomBytes);
+    const trustedDevice = this.trustedDevice;
+    const socket = this.socketFactory(url);
     this.socket = socket;
     this.authenticated = false;
     let response;
     try {
-      response = await openAndExchange(socket, {
-        type: "auth",
+      const challenge = {
+        type: "auth_challenge",
         protocol: DIRECT_PROTOCOL,
+        mode: "auth",
         senderId: this.trustedDevice.senderId,
         deviceId: this.trustedDevice.deviceId,
-        credential: this.trustedDevice.credential,
         sourceEpoch: this.sourceEpoch,
+        nonce,
         codec: "video/avc",
         avcFormat: "annexb",
         width: DIRECT_VIDEO_WIDTH,
         height: DIRECT_VIDEO_HEIGHT,
         fps: DIRECT_VIDEO_FRAMERATE
-      }, "ready", timeoutMs, signal);
+      };
+      response = await openProofExchange(socket, {
+        challenge,
+        proofType: "auth_proof",
+        expectedType: "ready",
+        connectionError: connectionErrorForHost(this.trustedDevice.host),
+        timeoutMs,
+        signal,
+        async buildSecretRequest(proof) {
+          if (
+            proof.mode !== "auth" ||
+            proof.senderId !== challenge.senderId ||
+            proof.deviceId !== challenge.deviceId ||
+            proof.sourceEpoch !== challenge.sourceEpoch ||
+            proof.nonce !== nonce ||
+            !isProofNonce(proof.nonce) ||
+            !/^[0-9a-f]{64}$/.test(proof.proof ?? "")
+          ) {
+            throw new ReceiverProtocolError("challenge_response_invalid");
+          }
+          const expectedProof = await computeAuthProof({
+            credential: trustedDevice.credential,
+            ...challenge
+          });
+          if (!constantTimeEqualProof(proof.proof, expectedProof)) {
+            throw new ReceiverProtocolError("challenge_proof_invalid");
+          }
+          return {
+            type: "auth",
+            protocol: DIRECT_PROTOCOL,
+            mode: "auth",
+            senderId: challenge.senderId,
+            deviceId: challenge.deviceId,
+            credential: trustedDevice.credential,
+            sourceEpoch: challenge.sourceEpoch,
+            nonce,
+            codec: challenge.codec,
+            avcFormat: challenge.avcFormat,
+            width: challenge.width,
+            height: challenge.height,
+            fps: challenge.fps
+          };
+        }
+      });
     } catch (error) {
       if (this.socket === socket) {
         this.socket = null;
@@ -246,16 +369,25 @@ export class DirectReceiverConnection {
   }
 }
 
-function openAndExchange(
-  socket,
-  request,
+function openProofExchange(socket, {
+  challenge,
+  proofType,
   expectedType,
+  buildSecretRequest,
+  skipProof = false,
+  validateFinal = () => {},
+  connectionError = {
+    code: "receiver_connection_failed",
+    message: "无法连接 Receiver，请确认平板已开始接收"
+  },
   timeoutMs = CONNECT_TIMEOUT_MS,
   signal
-) {
+}) {
   return new Promise((resolve, reject) => {
     let settled = false;
     let timeout = null;
+    let stage = "opening";
+    let proofMessage = null;
     const cleanup = () => {
       if (timeout !== null) {
         clearTimeout(timeout);
@@ -280,11 +412,30 @@ function openAndExchange(
       }
     };
     const handleOpen = () => {
-      socket.send(JSON.stringify(request));
+      try {
+        stage = skipProof ? "awaiting_result" : "awaiting_proof";
+        socket.send(JSON.stringify(challenge));
+      } catch (error) {
+        finish(error);
+        closeSocket(socket);
+      }
     };
-    const handleMessage = (event) => {
+    const handleMessage = async (event) => {
+      if (settled) {
+        return;
+      }
+      if (!["awaiting_proof", "awaiting_result"].includes(stage)) {
+        finish(new ReceiverProtocolError("unsolicited_response"));
+        closeSocket(socket);
+        return;
+      }
       if (typeof event.data !== "string") {
         finish(new ReceiverProtocolError("invalid_response"));
+        return;
+      }
+      if (controlMessageExceedsLimit(event.data)) {
+        finish(new ReceiverProtocolError("control_message_too_large"));
+        closeSocket(socket);
         return;
       }
       let message;
@@ -298,20 +449,51 @@ function openAndExchange(
         finish(new ReceiverProtocolError(message.code));
         return;
       }
-      if (
-        message?.type !== expectedType ||
-        message.protocol !== DIRECT_PROTOCOL
-      ) {
+      if (message?.protocol !== DIRECT_PROTOCOL) {
         finish(new ReceiverProtocolError("protocol_mismatch"));
         return;
       }
-      finish(null, message);
+      if (stage === "awaiting_proof") {
+        if (message.type !== proofType) {
+          finish(new ReceiverProtocolError("challenge_response_invalid"));
+          closeSocket(socket);
+          return;
+        }
+        stage = "verifying_proof";
+        try {
+          proofMessage = message;
+          const secretRequest = await buildSecretRequest(message);
+          if (settled) return;
+          socket.send(JSON.stringify(secretRequest));
+          stage = "awaiting_result";
+        } catch (error) {
+          finish(error);
+          closeSocket(socket);
+        }
+        return;
+      }
+      if (message.type !== expectedType) {
+        finish(new ReceiverProtocolError("protocol_mismatch"));
+        return;
+      }
+      try {
+        validateFinal(message, proofMessage);
+        finish(null, message);
+      } catch (error) {
+        finish(error);
+      }
     };
     const handleError = () => {
-      finish(new Error("无法连接平板，请检查电脑和平板是否在同一 Wi-Fi，以及平板地址是否正确"));
+      finish(new DirectConnectionError(
+        connectionError.code,
+        connectionError.message
+      ));
     };
     const handleClose = () => {
-      finish(new Error("平板在连接完成前断开"));
+      finish(new DirectConnectionError(
+        "receiver_closed",
+        "Receiver 在挑战证明或鉴权完成前断开"
+      ));
     };
     const handleAbort = () => {
       finish(new ReceiverRecoveryCancelledError());
@@ -319,7 +501,11 @@ function openAndExchange(
     };
 
     timeout = setTimeout(() => {
-      finish(new Error("连接平板超时"));
+      finish(new ReceiverProtocolError(
+        stage === "awaiting_result"
+          ? "handshake_timeout"
+          : "challenge_timeout"
+      ));
       closeSocket(socket);
     }, timeoutMs);
     if (signal?.aborted) {
@@ -333,6 +519,26 @@ function openAndExchange(
     socket.addEventListener("error", handleError, { once: true });
     socket.addEventListener("close", handleClose, { once: true });
   });
+}
+
+function controlMessageExceedsLimit(value) {
+  if (value.length > DIRECT_MAX_CONTROL_TEXT_BYTES) {
+    return true;
+  }
+  return controlTextEncoder.encode(value).byteLength >
+    DIRECT_MAX_CONTROL_TEXT_BYTES;
+}
+
+function connectionErrorForHost(host) {
+  return normalizeReceiverHost(host) === DEFAULT_RECEIVER_HOST
+    ? {
+        code: "automatic_address_or_connection_failed",
+        message: "自动地址解析或 Receiver 连接失败，请改用平板显示的数字 IPv4"
+      }
+    : {
+        code: "receiver_connection_failed",
+        message: "无法连接 Receiver，请确认平板已开始接收且数字 IPv4 正确"
+      };
 }
 
 function closeSocket(socket) {
@@ -390,6 +596,15 @@ export class ReceiverRecoveryCancelledError extends Error {
   }
 }
 
+class DirectConnectionError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.name = "DirectConnectionError";
+    this.code = code;
+    this.recoverable = true;
+  }
+}
+
 class ReceiverProtocolError extends Error {
   constructor(code) {
     super(describeReceiverError(code));
@@ -406,9 +621,20 @@ function describeReceiverError(code) {
     identity_mismatch: "平板身份不匹配，请忘记设备后重新配对",
     not_paired: "该电脑尚未获得平板授权",
     pairing_failed: "一次性授权不匹配",
+    short_code_requires_manual_ipv4:
+      "短码连接需在“平板地址”填写平板显示的数字私网 IPv4",
     protocol_mismatch: "电脑扩展与平板应用版本不兼容，请同时更新后重试",
     codec_unsupported: "当前平板无法播放这组视频参数",
     epoch_stale: "平板已切换到更新的页面来源",
-    invalid_response: "平板返回了无效的连接响应"
+    invalid_response: "平板返回了无效的连接响应",
+    unsolicited_response: "Receiver 在请求发送前返回了响应，已拒绝该连接",
+    challenge_timeout: "Receiver 挑战证明超时，未发送任何凭据",
+    challenge_invalid: "Receiver 拒绝了无效挑战，未发送任何凭据",
+    challenge_state_invalid: "Receiver 拒绝了乱序或不匹配的挑战消息",
+    challenge_required: "Receiver 未在时限内完成挑战证明",
+    control_message_too_large: "Receiver 控制消息超过 2048 字节，已拒绝连接",
+    challenge_response_invalid: "Receiver 返回了无效的挑战证明，未发送任何凭据",
+    challenge_proof_invalid: "Receiver 挑战证明校验失败，未发送任何凭据",
+    handshake_timeout: "WebSocket 已建立，但 Receiver 鉴权响应超时"
   }[code] ?? `平板拒绝连接（${String(code ?? "unknown").slice(0, 64)}）`;
 }

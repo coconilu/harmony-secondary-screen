@@ -1,4 +1,4 @@
-# HWC4 真实设备验收
+# HWC5 真实设备验收
 
 本文同时包含待执行步骤与按 exact-head 记录的历史结果；只有明确写为 PASS 的单项才代表对应真机门禁通过。
 
@@ -8,7 +8,7 @@
 | --- | --- |
 | 日期 / 操作者 / commit | 待填写 |
 | Windows / Edge 版本 | 待填写 |
-| 扩展版本 | `0.5.1` |
+| 扩展版本 | `0.6.0` |
 | HarmonyOS / API / Receiver 构建 | 待填写 |
 | 平板型号（只作证据） | 待填写 |
 | Wi-Fi / AP / VPN 状态 | 待填写 |
@@ -51,12 +51,91 @@ credential、URL、标题、Cookie、正文或视频内容。
 4. 点击“更新地址（不重新配对）”，再次发送页面。
 5. 必须连接成功且 deviceId 不变；公网、回环和通配地址必须被扩展与 Receiver 拒绝。
 
+## 自动地址发现验收
+
+以下各项必须使用同一个 exact-head 的真实 Edge 与本分支原生 Receiver；“Receiver 已发布”、
+DNS-SD 注册成功、单元测试或 TCP 端口可达均不能替代 Windows 解析结果。
+
+| 场景 | 操作与记录 | 通过条件 |
+| --- | --- | --- |
+| 默认扫码 | 开始接收，记录 Receiver 显示地址；刷新并扫描一轮 QR | Windows 将固定 `.local` 解析为该地址，Edge 无需输入 IP 即完成配对 |
+| 自动地址 proof 门禁 | 在隔离环境主动先发 `paired` / `ready`，以及伪造、旧 nonce、错 mode/identity proof | 默认 `.local` 的所有场景均在发送 token/credential 前被拒绝；不保存身份、不进入 authenticated |
+| 自动地址 + 短码 | 平板只授权六位短码，扩展保留默认 `.local` 后点击连接 | 返回“短码连接需填写数字私网 IPv4”；不生成低熵 proof，扩展只发送一条无 token 的 challenge |
+| Receiver 重启 | 停止后重新开始接收 | 停止期间旧记录不继续回答；重启后同一地址恢复且 deviceId 不变 |
+| Wi-Fi 地址变化 | 切换到另一个可信 Wi-Fi 后重新确认新地址 | 旧 A 被 TTL 0 撤销；新地址只有重新确认并开始接收后发布 |
+| 名称冲突 | 在隔离测试网引入同名不同 A | Receiver 明确显示冲突；扩展不随机连接，提示输入本机数字 IPv4 |
+| 不可解析 | 阻断/隔离 multicast 后尝试默认连接 | 显示“自动地址解析失败/超时”，唯一下一步为数字 IPv4 回退 |
+| 手动回退 | 输入 Receiver 显示的数字 IPv4 | 仅请求精确 origin；扫码或短码配对成功；明确记录 `pair_manual_ipv4` 首包含一次性 token |
+
+自动 `.local` 失败时，记录用户可见错误属于“自动地址解析或连接失败”；手动数字 IPv4 失败时记录为
+“Receiver 连接失败”。Edge WebSocket API 不公开足够信息，无法进一步可靠区分 DNS、TCP 拒绝或
+防火墙丢弃，不得根据错误字符串伪造更细分类。challenge 超时、proof 格式错误、proof 校验失败、
+最终 QR/短码授权失败和长期鉴权失败必须分别保留稳定错误码，但不得包含 nonce、proof、token、
+短码、credential、网页标题/URL、原始 IP 或精确时间。
+
+每次记录：Receiver 与扩展 exact commit、Windows/Edge/HarmonyOS 版本、DNS-SD 注册状态、固定 A
+发布/冲突状态、Windows 解析到的地址类别、WebSocket 连接耗时和用户可见结果。不得保存私网地址
+原值、token、短码、credential、网页 URL/标题或视频帧到仓库。
+
+### 2026-07-28 Issue #19 当前分支验证边界
+
+| 证据层 | 结果 |
+| --- | --- |
+| 开发基线 | `main@2e530dd9b7ba460a9db0de5956810399fa5b7c4d` |
+| 自动化 | 扩展真实 ws 测试覆盖默认 `.local` QR/长期鉴权 challenge、自动地址短码拒绝且零 token、主动 `paired` / `ready`、伪造/旧 nonce/错 mode/identity，以及手动数字 IPv4 的短码单阶段配对；固定 A responder seam 继续覆盖接口、TTL、冲突、频率和停止边界 |
+| 权限 | 已移除 `webRequest`；固定与可选 host 范围未扩大；无 `<all_urls>` 或 `webRequestBlocking` |
+| HarmonyOS 构建 | unsigned Release 已编译 `recvmsg`、`IP_PKTINFO`、`IP_RECVTTL`、`IP_MULTICAST_ALL=0` 生产 adapter；不代表目标设备运行时 multicast socket 与 Edge 解析成功 |
+| 真实 Edge + Receiver | `9f5bcd272823b9db60c9a051a632b66b2963dee7` 已安装：Receiver 显示两层发布成功，但 Windows/Edge `.local` 解析失败。实机抓包确认 Windows 在 WLAN 23 向 `224.0.0.251:5353` 发出源端口 5353、A/IN、IP TTL 1 的查询；旧门禁未响应。同查询改为 TTL 255 后收到一个正确 A response。TTL 1 修复仍须安装新的 exact-head 复验，当前不得标记 PASS。 |
+| 真实 Edge HWC5 | **待验证**：必须加载 0.6.0 exact-head 扩展、卸载旧 Receiver 并安装同一 exact-head HWC5 HAP，重新配对后验证 `.local` 和数字 IPv4；旧 0.5.x/HWC4 结果不能标记 PASS。 |
+
+在上述真机行补齐 exact-head 证据前，Issue #19 的首两项端到端验收不得标记为 PASS。
+
+### 2026-07-30 HWC5 exact-head 真机验收
+
+本节代码验收对象固定为
+`8eb2aed3c723ddffd1d5d1d3628210739a7f9635`；后续仅追加本节记录的文档提交不改变该代码验收对象。
+
+| 环境项 | exact-head 验收环境 |
+| --- | --- |
+| Windows / Edge | Windows 11 Pro 10.0.26200（build 26200）/ Edge 150.0.4078.99 |
+| 扩展 | `0.6.0` |
+| 平板系统 | HarmonyOS 6.1.0.117，API 23 |
+| Receiver | `io.github.coconilu.harmonysecondaryscreen`，versionName `0.1.0`，versionCode `1000000` |
+
+| 场景 | 真机结果 | 判定 |
+| --- | --- | --- |
+| 默认自动地址 | Receiver 开始接收后，Windows 将固定 `.local` 解析为且仅解析为 1 个私网 IPv4；媒体连接建立前，TCP 44000 可达 | PASS |
+| 清除数据后首次配对 | 安装 HWC5 exact-head Receiver，扩展保留默认 `.local`；只扫描一轮新二维码，未输入数字 IPv4，完成配对 | PASS |
+| 默认 `.local` + 六位短码 | 使用 `harmony-web-companion.local`，在平板输入六位短码；扩展按设计拒绝并显示 `短码连接需在“平板地址”填写平板显示的数字私网 IPv4` | PASS（真实 UI 证明安全分流） |
+| 数字 IPv4 + 六位短码 | 随后填写 Receiver 显示的数字私网 IPv4，使用新鲜六位短码并授权精确 origin；配对成功且动态播放正常 | PASS |
+| 默认 `.local` + 新二维码 | 再次使用默认 `.local` 和一轮新二维码完成配对；用户可见界面几乎立即完成，人工估计小于 0.1 秒，但低于手工计时的可信分辨率 | PASS（功能结果，不作性能指标） |
+| 动态画面 | 播放画面正常，未观察到花屏 | PASS |
+| Receiver 重启 | 停止并重新开始接收后，无需重新扫码，播放恢复 | PASS |
+| 数字 IPv4 回退 | 扩展忘记设备后，输入 Receiver 显示的数字私网 IPv4，重新扫码并授权该精确 origin；配对与播放成功 | PASS |
+| 已配对地址切回默认值 | 将数字私网 IPv4 改回固定 `.local`，无需重新扫码，播放成功 | PASS |
+| 非默认 `.local` | 使用“非默认 `.local`”脱敏测试输入；扩展在连接前拒绝，且未覆盖已信任配置 | PASS |
+| Receiver 不可达与恢复 | Receiver 停止时扩展明确显示“自动地址解析或 Receiver 连接失败，请改用平板显示的数字 IPv4”；重新开始接收后，无需重新扫码，播放恢复 | PASS |
+| Wi-Fi 短时中断与恢复 | 平板关闭 Wi-Fi 约 10 秒后重新打开；用户确认无需重新扫码即恢复播放 | PASS |
+
+仓库外的脱敏监控共记录 162 个解析状态样本，观察到
+`resolved → unresolved → resolved`，其中 24 个为 `unresolved`；监控未保存实际 IPv4。
+
+| 证据边界 | 记录 |
+| --- | --- |
+| TCP 探测 | 只用于证明媒体连接建立前的初始端口可达；媒体连接占用期间的 TCP 探测没有证据价值，也未用作恢复成功依据。恢复以用户可见动态画面为准。 |
+| 短码安全分流 | 真实 UI 只证明默认 `.local` + 六位短码被拒绝并给出数字 IPv4 下一步；“零 token”结论仅引用 exact-head 自动测试，不能声称由截图或真实 UI 直接观测。 |
+| 连接耗时 | 默认 `.local` + 新二维码的界面完成速度仅有用户“几乎立即、人工估计小于 0.1 秒”的主观记录；该估计低于手工计时的可信分辨率，不作为性能指标或时延门禁。 |
+| 后续网络场景 | 真实 Wi-Fi 地址变化与真实同名 mDNS 冲突均未执行，转交后续 Issue #22，不作为 Issue #19 / PR #20 的关闭门禁；本节约 10 秒的 Wi-Fi 断开只证明短时连接恢复，不代表地址发生变化。 |
+| 隐私 | 本节及仓库外脱敏监控均未记录实际 IP、token、短码、credential、事件时间戳、网页 URL/标题、视频帧、设备标识符或签名路径/秘密。 |
+
 ### 摄像头 → 六位短码
 
 1. 取消 ScanKit UI或在无相机环境测试。
 2. 在平板输入扩展当前显示的六位短码并授权。
-3. 60 秒内完成配对。
-4. 过期短码和另一轮二维码的短码必须失败。
+3. 保持默认 `.local` 点击连接，必须提示改用数字私网 IPv4，且 Receiver 不返回短码 proof、扩展不发送 token。
+4. 在扩展“平板地址”填写 Receiver 显示的数字私网 IPv4并授予精确 origin。
+5. 60 秒内通过 `pair_manual_ipv4` 完成配对。
+6. 过期短码和另一轮二维码的短码必须失败。
 
 ## 持久信任与忘记设备
 
@@ -72,7 +151,7 @@ credential、URL、标题、Cookie、正文或视频内容。
 
 1. 开始发送标签页 A。
 2. 停止后从标签页 B 开始新的捕获。
-3. 抓取 HWC4 binary header，B 的 `sourceEpoch` 必须大于 A。
+3. 抓取 HWC5 binary header，B 的 `sourceEpoch` 必须大于 A。
 4. 人工注入旧 epoch AU，Receiver dropped 增加且画面不回退。
 5. 确认同一时刻只有一个 video track、VideoEncoder、WebSocket 媒体流。
 
@@ -102,7 +181,7 @@ credential、URL、标题、Cookie、正文或视频内容。
 | 本分支真机安装 | 未执行；仓库只生成 unsigned HAP，不改写本机签名配置 |
 | 自动息屏回归 | **未验证** |
 | 30 秒息屏/解锁与 5 次循环 | **未验证** |
-| 协议 | 无变更；恢复沿用 HWC4 `keyframe` + `requireCodecConfig: true` |
+| 协议 | 当时无变更；当前 HWC5 恢复仍沿用 `keyframe` + `requireCodecConfig: true` |
 
 设备在线、构建通过或旧版本已安装都不能替代本分支的真实播放验收。只有把本分支构建安装到平板，
 同时保持 Edge 媒体会话并观察接收/解码计数重新增长后，才能填写通过结果。

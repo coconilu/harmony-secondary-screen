@@ -104,7 +104,8 @@ function renderAuthorization({
   clearError = true,
   permissionGranted = false
 } = {}) {
-  shortCode.textContent = `也可以在平板输入 6 位连接码 ${authorization.shortCode}`;
+  shortCode.textContent =
+    `连接码 ${authorization.shortCode}：使用时请先把“平板地址”改为平板显示的数字 IPv4`;
   renderQrCode(authorization.payload);
   pairButton.textContent = permissionGranted
     ? "继续连接平板"

@@ -23,21 +23,23 @@
 Edge 扩展
   → 显示 60 秒、单次使用二维码
 平板扫描二维码
-  → Edge 直连 Receiver WebSocket
+  → Edge 解析固定 harmony-web-companion.local
+  → Receiver 用二维码高熵 token 完成 HWC5 挑战证明
   → 两端保存与 IP 无关的 deviceId / 设备凭据
 
 后续：打开 Receiver → 在目标标签页点击“发送当前标签页”
 ```
 
-- 摄像头不可用：在平板输入扩展显示的六位一次性短码。
+- 摄像头不可用：在平板输入六位一次性短码，并在扩展填写平板显示的数字私网 IPv4。
 - `.local` 解析失败：在扩展输入 Receiver 显示的私网 IPv4。
 - IP 变化只更新连接地址，不清除配对身份。
 - 两端均可“忘记设备”。
 - 不扫描局域网，不连接公网。
 
-HarmonyOS 使用公共 DNS-SD API 注册 `_hwc._tcp` 服务实例。是否能在目标 Windows/Edge 环境中把它
-稳定解析为裸 `harmony-web-companion.local`，仍需真实设备验证；服务注册成功不等于裸主机名必然
-可解析，因此手动私网 IPv4 是正式回退路径。
+Receiver 在用户确认的当前 `wlan*` 地址上同时注册 `_hwc._tcp` DNS-SD 服务实例，并用受限
+mDNS A 响应器发布固定 `harmony-web-companion.local`。两者是不同层次：服务注册成功不等于
+裸主机名可解析。关闭接收或 Wi-Fi 地址失效时会停止响应并发送旧 A 记录的 TTL 0 goodbye；
+名称冲突时拒绝自动选择，统一回退到 Receiver 显示的数字 IPv4。
 
 ## 实现架构
 
@@ -60,10 +62,11 @@ Edge tabCapture（video only）
 | --- | --- |
 | 扩展直连协议与逐字节 Annex-B 假 Receiver 测试 | 自动化通过 |
 | Receiver WebSocket 握手、二进制头和 source epoch 单元测试 | 自动化通过 |
+| 固定 mDNS A 报文与生产响应器 seam（接口过滤、所有权、撤销、频率） | 自动化通过 |
 | HarmonyOS targetSdk 24 原生构建 | 通过 |
 | 无签名配置的可移植构建 | 通过；真机安装需开发者在本机配置签名 |
 | 扫码、直连、首帧、重启后信任、IP 变化重连 | **真实 Edge + 平板未验证** |
-| 裸 `.local` 在 Windows/Edge 的解析 | **未验证**；保留手动 IP |
+| 本实现裸 `.local` 在 Windows/Edge 的解析 | **未验证**；保留手动 IP |
 | 30 分钟、时延、丢包与恢复 | 由 #3 继续验收 |
 
 旧 `relay/`、`host/` 和相关脚本只保留为历史取证/开发对照，不属于构建、安装或运行依赖。
@@ -95,7 +98,7 @@ Receiver 仓库配置不包含证书、私钥、口令或本机绝对签名路�
 ## 文档
 
 - [系统架构](docs/ARCHITECTURE.md)
-- [HWC4 直连协议](docs/PROTOCOL.md)
+- [HWC5 直连协议](docs/PROTOCOL.md)
 - [真实设备测试](docs/REAL_DEVICE_TEST.md)
 - [兼容性策略](docs/COMPATIBILITY.md)
 - [Edge 扩展说明](extension/README.md)

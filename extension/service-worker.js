@@ -2,7 +2,6 @@ import {
   allocateSourceEpoch,
   getTrustedReceiver
 } from "./pairing-store.js";
-
 const STATE_KEY = "captureProbeState";
 const SETUP_PAGE = "setup.html";
 const MONITOR_PAGE = "monitor.html";
@@ -10,7 +9,6 @@ const CAPTURABLE_SCHEMES = new Set(["http:", "https:"]);
 
 let updateQueue = Promise.resolve();
 let startInFlight = false;
-
 chrome.runtime.onInstalled.addListener(() => {
   void resetProbe();
 });
@@ -19,7 +17,7 @@ chrome.runtime.onStartup.addListener(() => {
   void resetProbe();
 });
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.target !== "service-worker") {
     return false;
   }
