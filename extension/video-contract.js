@@ -238,12 +238,16 @@ export class MaxFrameRateGate {
     if (!Number.isFinite(timestampUs) || timestampUs < 0) {
       return true;
     }
-    if (
-      this.lastAcceptedTimestampUs === null ||
-      timestampUs <= this.lastAcceptedTimestampUs
-    ) {
+    if (this.lastAcceptedTimestampUs === null) {
       this.lastAcceptedTimestampUs = timestampUs;
       return true;
+    }
+    if (timestampUs < this.lastAcceptedTimestampUs) {
+      this.lastAcceptedTimestampUs = timestampUs;
+      return true;
+    }
+    if (timestampUs === this.lastAcceptedTimestampUs) {
+      return false;
     }
     const minimumIntervalUs = 1_000_000 / this.maxFps;
     if (

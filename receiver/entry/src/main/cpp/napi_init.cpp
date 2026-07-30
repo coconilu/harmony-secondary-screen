@@ -1,8 +1,10 @@
 #include "receiver_session.h"
+#include "video_surface_layout.h"
 
 #include <napi/native_api.h>
 
 #include <array>
+#include <cmath>
 #include <string>
 
 namespace {
@@ -155,6 +157,26 @@ napi_value GetWifiAddresses(napi_env env, napi_callback_info) {
   return result;
 }
 
+napi_value ShouldFitVideoByWidth(napi_env env, napi_callback_info info) {
+  std::array<napi_value, 4> arguments{};
+  std::size_t count = arguments.size();
+  napi_get_cb_info(env, info, &count, arguments.data(), nullptr, nullptr);
+  std::array<double, 4> dimensions{};
+  bool valid = count == arguments.size();
+  for (std::size_t index = 0; valid && index < dimensions.size(); ++index) {
+    valid = napi_get_value_double(env, arguments[index], &dimensions[index]) ==
+            napi_ok &&
+            std::isfinite(dimensions[index]) && dimensions[index] > 0;
+  }
+  const bool fitByWidth =
+      valid && hss::receiver::ShouldFitVideoByWidth(
+                   dimensions[0], dimensions[1],
+                   dimensions[2], dimensions[3]);
+  napi_value result;
+  napi_get_boolean(env, fitByWidth, &result);
+  return result;
+}
+
 napi_value OnAppForeground(napi_env env, napi_callback_info) {
   ReceiverSession::Instance().OnAppForeground();
   napi_value result;
@@ -182,7 +204,7 @@ void SurfaceDestroyed(OH_NativeXComponent* component, void* window) {
 }
 
 napi_value Init(napi_env env, napi_value exports) {
-  const std::array<napi_property_descriptor, 11> properties{{
+  const std::array<napi_property_descriptor, 12> properties{{
       {"startReceiver", nullptr, StartReceiver, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"stopReceiver", nullptr, StopReceiver, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"configureTrust", nullptr, ConfigureTrust, nullptr, nullptr, nullptr, napi_default, nullptr},
@@ -192,6 +214,7 @@ napi_value Init(napi_env env, napi_value exports) {
       {"getStatus", nullptr, GetStatus, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"getPairing", nullptr, GetPairing, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"getWifiAddresses", nullptr, GetWifiAddresses, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"shouldFitVideoByWidth", nullptr, ShouldFitVideoByWidth, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"onAppForeground", nullptr, OnAppForeground, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"onAppBackground", nullptr, OnAppBackground, nullptr, nullptr, nullptr, napi_default, nullptr},
   }};

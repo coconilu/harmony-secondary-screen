@@ -2,6 +2,7 @@
 #include "../entry/src/main/cpp/decoder_orchestration.h"
 #include "../entry/src/main/cpp/decoder_state.h"
 #include "../entry/src/main/cpp/receiver_lifecycle_state.h"
+#include "../entry/src/main/cpp/video_surface_layout.h"
 
 #include <cstddef>
 #include <cstdlib>
@@ -353,6 +354,26 @@ void TestNormalDecodeQueueAdmissionDoesNotRegressPlayback() {
          "normal continuous P frames must remain allowed");
 }
 
+void TestVideoContainAxisUsesActualContainerAspectRatio() {
+  using hss::receiver::ShouldFitVideoByWidth;
+  Expect(!ShouldFitVideoByWidth(4, 3, 1600, 1000),
+         "4:3 in a 16:10 fullscreen container must fit by height");
+  Expect(ShouldFitVideoByWidth(16, 9, 1600, 1000),
+         "16:9 in a 16:10 fullscreen container must fit by width");
+  Expect(!ShouldFitVideoByWidth(9, 16, 1600, 1000),
+         "portrait video in a landscape container must fit by height");
+  Expect(ShouldFitVideoByWidth(9, 16, 900, 2000),
+         "portrait video in a narrower portrait container must fit by width");
+  Expect(!ShouldFitVideoByWidth(4, 3, 16, 9),
+         "embedded 16:9 playback must keep 4:3 video height-bound");
+  Expect(!ShouldFitVideoByWidth(16, 10, 16, 9),
+         "embedded 16:9 playback must keep 16:10 video height-bound");
+  Expect(ShouldFitVideoByWidth(21, 9, 16, 9),
+         "embedded 16:9 playback must keep ultrawide video width-bound");
+  Expect(!ShouldFitVideoByWidth(0, 3, 16, 9),
+         "invalid dimensions must never select width-bound layout");
+}
+
 }  // namespace
 
 int main() {
@@ -366,6 +387,7 @@ int main() {
   TestAvcRecoveryRequiresSpsPpsAndIdrInOneAccessUnit();
   TestDecodeQueueOverflowInvalidatesDependencies();
   TestNormalDecodeQueueAdmissionDoesNotRegressPlayback();
+  TestVideoContainAxisUsesActualContainerAspectRatio();
   std::cout << "Receiver lifecycle state transition tests passed.\n";
   return 0;
 }

@@ -228,6 +228,19 @@ test("timestamp rollback resets the fps gate without inventing a frame", () => {
   assert.equal(gate.shouldSubmit(37_000), true);
 });
 
+test("one thousand duplicate timestamps cannot bypass the max fps gate", () => {
+  const gate = new MaxFrameRateGate(60);
+  assert.equal(gate.shouldSubmit(1_000_000), true);
+  let duplicatesSubmitted = 0;
+  for (let duplicate = 0; duplicate < 1_000; duplicate += 1) {
+    if (gate.shouldSubmit(1_000_000)) {
+      duplicatesSubmitted += 1;
+    }
+  }
+  assert.equal(duplicatesSubmitted, 0);
+  assert.equal(gate.shouldSubmit(1_016_667), true);
+});
+
 test("stable source size changes trigger once and transient changes do not", () => {
   const tracker = new StableFrameSizeTracker(1280, 720, 3);
   assert.equal(tracker.observe(1920, 1080), null);

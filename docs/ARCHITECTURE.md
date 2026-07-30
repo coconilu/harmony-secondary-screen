@@ -76,8 +76,9 @@ response 才进入冲突状态。停止接收、Wi-Fi 地址或 interface index 
 输出携不可变 generation/epoch/合同，迟到帧直接丢弃。新 epoch 先重建 encoder、重新鉴权并让
 Receiver 动态重建 AVCodec；首个可交付 AU 必须包含 SPS/PPS + IDR。
 
-Receiver 将协商宽高暴露给 ArkUI，两种播放 Surface 都按真实宽高比 contain；横屏和竖屏来源
-不会被固定 16:9 拉伸。
+Receiver 将协商宽高暴露给 ArkUI；普通页和全屏容器都读取自身实际布局尺寸，以媒体宽高比和
+容器宽高比的交叉乘积选择按宽或按高约束，从而实现 contain。4:3、16:10 和竖屏来源不会被
+固定 16:9 拉伸，也不会因只判断横/竖方向而溢出裁切。
 
 ## 权限
 

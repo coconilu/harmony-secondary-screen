@@ -35,6 +35,10 @@ struct Index {
   @State mediaHeight: number = 0;
   @State mediaMaxFps: number = 0;
   @State videoAspectRatio: number = 16 / 9;
+  @State fullscreenContainerWidth: number = 16;
+  @State fullscreenContainerHeight: number = 10;
+  @State embeddedContainerWidth: number = 16;
+  @State embeddedContainerHeight: number = 9;
   @State isFullscreen: boolean = false;
   @State fullscreenControlsVisible: boolean = false;
   @State themeMode: string = 'system';
@@ -56,6 +60,35 @@ struct Index {
       throw new Error('应用窗口上下文不可用');
     }
     return context as common.UIAbilityContext;
+  }
+
+  private fitVideoByWidth(containerWidth: number, containerHeight: number): boolean {
+    const mediaWidth: number = this.mediaWidth > 0 ? this.mediaWidth : 16;
+    const mediaHeight: number = this.mediaHeight > 0 ? this.mediaHeight : 9;
+    return hssReceiver.shouldFitVideoByWidth(
+      mediaWidth,
+      mediaHeight,
+      containerWidth,
+      containerHeight
+    );
+  }
+
+  private updateVideoContainerSize(
+    fullscreen: boolean,
+    width: number,
+    height: number
+  ): void {
+    if (!Number.isFinite(width) || !Number.isFinite(height) ||
+      width <= 0 || height <= 0) {
+      return;
+    }
+    if (fullscreen) {
+      this.fullscreenContainerWidth = width;
+      this.fullscreenContainerHeight = height;
+    } else {
+      this.embeddedContainerWidth = width;
+      this.embeddedContainerHeight = height;
+    }
   }
 
   async aboutToAppear(): Promise<void> {
@@ -421,7 +454,10 @@ struct Index {
   build() {
     if (this.isFullscreen) {
       Stack({ alignContent: Alignment.Center }) {
-        if (this.videoAspectRatio >= 1) {
+        if (this.fitVideoByWidth(
+          this.fullscreenContainerWidth,
+          this.fullscreenContainerHeight
+        )) {
           XComponent({
             id: 'hssVideoSurface',
             type: XComponentType.SURFACE,
@@ -479,6 +515,13 @@ struct Index {
       .width('100%')
       .height('100%')
       .backgroundColor('#000000')
+      .onAreaChange((_oldArea: Area, newArea: Area) => {
+        this.updateVideoContainerSize(
+          true,
+          Number(newArea.width),
+          Number(newArea.height)
+        );
+      })
     } else {
       Column({ space: 16 }) {
       Row() {
@@ -558,7 +601,10 @@ struct Index {
           .width('100%')
 
           Stack({ alignContent: Alignment.Center }) {
-            if (this.videoAspectRatio >= 16 / 9) {
+            if (this.fitVideoByWidth(
+              this.embeddedContainerWidth,
+              this.embeddedContainerHeight
+            )) {
               XComponent({
                 id: 'hssVideoSurface',
                 type: XComponentType.SURFACE,
@@ -598,6 +644,13 @@ struct Index {
           .backgroundColor(this.isConnected ? '#000000' :
             $r('sys.color.ohos_id_color_component_normal'))
           .borderRadius(16)
+          .onAreaChange((_oldArea: Area, newArea: Area) => {
+            this.updateVideoContainerSize(
+              false,
+              Number(newArea.width),
+              Number(newArea.height)
+            );
+          })
           .clip(true)
           .border({ width: 1, color: $r('sys.color.ohos_id_color_list_separator') })
 
