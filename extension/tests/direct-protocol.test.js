@@ -16,8 +16,8 @@ import {
 } from "../direct-protocol.js";
 
 test("serializes an Annex-B access unit byte-for-byte for the direct Receiver", () => {
-  assert.equal(DIRECT_PROTOCOL, 5);
-  assert.equal(DIRECT_VIDEO_MAGIC, 0x48574335);
+  assert.equal(DIRECT_PROTOCOL, 6);
+  assert.equal(DIRECT_VIDEO_MAGIC, 0x48574336);
   const annexB = Uint8Array.from([
     0, 0, 0, 1, 0x67, 0x42, 0, 0x1f,
     0, 0, 0, 1, 0x65, 0x88, 0x84
@@ -62,7 +62,7 @@ test("pairing authorization is valid once within sixty seconds", () => {
     return target;
   });
   assert.equal(authorization.expiresAt, 61_000);
-  assert.equal(JSON.parse(authorization.payload).v, 5);
+  assert.equal(JSON.parse(authorization.payload).v, 6);
   assert.deepEqual(parsePairingAuthorization(authorization.payload, 60_999), {
     sessionId: authorization.sessionId,
     token: authorization.token,
@@ -74,9 +74,17 @@ test("pairing authorization is valid once within sixty seconds", () => {
     /过期/
   );
   assert.equal(JSON.parse(authorization.payload).url, undefined);
+  const legacy = JSON.stringify({
+    ...JSON.parse(authorization.payload),
+    v: 5
+  });
+  assert.throws(
+    () => parsePairingAuthorization(legacy, 60_999),
+    /无效/
+  );
 });
 
-test("HWC5 proof vectors match the native Receiver contract", async () => {
+test("HWC6 proof vectors bind the dynamic media contract byte-for-byte", async () => {
   const vector = {
     token: "00".repeat(32),
     credential: "11".repeat(32),
@@ -88,15 +96,25 @@ test("HWC5 proof vectors match the native Receiver contract", async () => {
   assert.equal(await computePairProof({
     ...vector,
     proofMode: "qr"
-  }), "e4da9d38094ddbee44ba4c26bac44afb562fdd22df65f25245a103441475bdc5");
+  }), "255416f246c0c7a7a1d375dd8eab7487749063eaec6abd37c90e6b93ff38b28e");
   await assert.rejects(computePairProof({
     ...vector,
     proofMode: "short"
   }), /配对挑战字段无效/);
   assert.equal(await computeAuthProof({
     ...vector,
-    sourceEpoch: 9
-  }), "7453800320a532c293b9678cf1641fd503c92d005f8fe63e136e5d367e50997a");
+    sourceEpoch: 9,
+    width: 1920,
+    height: 1080,
+    maxFps: 60
+  }), "8a1f2c95db4b433f2107eda6f6bee3140a4e4f8f8a9a7714faadf23e93cf6b3d");
+  await assert.rejects(computeAuthProof({
+    ...vector,
+    sourceEpoch: 9,
+    width: 1920,
+    height: 1080,
+    maxFps: 61
+  }), /鉴权挑战字段无效/);
   assert.equal(constantTimeEqualProof("a".repeat(64), "a".repeat(64)), true);
   assert.equal(constantTimeEqualProof("a".repeat(64), "b".repeat(64)), false);
   assert.equal(constantTimeEqualProof("a".repeat(63), "a".repeat(63)), false);

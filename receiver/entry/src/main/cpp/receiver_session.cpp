@@ -275,7 +275,9 @@ StatusSnapshot ReceiverSession::Status() const {
           publisherState == MdnsPublisherState::kPublished,
           publisherState == MdnsPublisherState::kConflict,
           publisherState == MdnsPublisherState::kError, frames_decoded_.load(),
-          frames_dropped_.load(), received_frames_.load()};
+          frames_dropped_.load(), received_frames_.load(),
+          active_media_contract_.width, active_media_contract_.height,
+          active_media_contract_.maxFps};
 }
 
 PairingRecord ReceiverSession::Pairing() const {
@@ -431,14 +433,34 @@ bool ReceiverSession::AuthenticateConnection() {
     std::string deviceId;
     std::string nonce;
     std::uint32_t sourceEpoch = 0;
+    protocol::MediaContract mediaContract;
   };
   ChallengeStage stage = ChallengeStage::kInitial;
   PairChallengeState pairChallenge;
   AuthChallengeState authChallenge;
   const auto sendError = [this](std::string_view code) {
     return SendControl(
-        "{\"type\":\"error\",\"protocol\":5,\"code\":\"" +
+        "{\"type\":\"error\",\"protocol\":6,\"code\":\"" +
         protocol::EscapeJson(code) + "\"}");
+  };
+  const auto parseMediaContract =
+      [](std::string_view json) -> std::optional<protocol::MediaContract> {
+    const auto width = protocol::JsonInteger(json, "width");
+    const auto height = protocol::JsonInteger(json, "height");
+    const auto maxFps = protocol::JsonInteger(json, "maxFps");
+    if (!width || !height || !maxFps ||
+        *width <= 0 || *height <= 0 || *maxFps <= 0 ||
+        *width > UINT32_MAX || *height > UINT32_MAX ||
+        *maxFps > UINT32_MAX) {
+      return std::nullopt;
+    }
+    const protocol::MediaContract contract{
+        static_cast<std::uint32_t>(*width),
+        static_cast<std::uint32_t>(*height),
+        static_cast<std::uint32_t>(*maxFps)};
+    return protocol::IsValidMediaContract(contract)
+               ? std::optional<protocol::MediaContract>(contract)
+               : std::nullopt;
   };
   std::array<std::byte, 8192> buffer{};
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
@@ -538,7 +560,7 @@ bool ReceiverSession::AuthenticateConnection() {
         pairChallenge = {sessionId, senderId, nonce, deviceId, false};
         stage = ChallengeStage::kPairFinal;
         std::ostringstream reply;
-        reply << "{\"type\":\"pair_proof\",\"protocol\":5,\"mode\":\"pair\","
+        reply << "{\"type\":\"pair_proof\",\"protocol\":6,\"mode\":\"pair\","
               << "\"proofMode\":\"" << proofMode << "\",\"sessionId\":\""
               << sessionId << "\",\"senderId\":\"" << senderId
               << "\",\"nonce\":\"" << nonce
@@ -614,7 +636,7 @@ bool ReceiverSession::AuthenticateConnection() {
           return false;
         }
         std::ostringstream reply;
-        reply << "{\"type\":\"paired\",\"protocol\":5,\"deviceId\":\""
+        reply << "{\"type\":\"paired\",\"protocol\":6,\"deviceId\":\""
               << pairChallenge.deviceId << "\",\"credential\":\""
               << credential << "\"}";
         SendControl(reply.str());
@@ -629,31 +651,34 @@ bool ReceiverSession::AuthenticateConnection() {
         const std::string nonce =
             protocol::JsonString(json, "nonce").value_or("");
         const auto epoch = protocol::JsonInteger(json, "sourceEpoch");
+        const auto mediaContract = parseMediaContract(json);
         const bool codecValid =
             protocol::JsonString(json, "mode") == "auth" &&
             protocol::JsonString(json, "codec") == "video/avc" &&
-            protocol::JsonString(json, "avcFormat") == "annexb" &&
-            protocol::JsonInteger(json, "width") == 1280 &&
-            protocol::JsonInteger(json, "height") == 720 &&
-            protocol::JsonInteger(json, "fps") == 60;
+            protocol::JsonString(json, "avcFormat") == "annexb";
         if (!SenderIdValid(senderId) || !Hex(deviceId, 32) ||
             !Hex(nonce, 64) || !epoch || *epoch <= 0 ||
-            *epoch > UINT32_MAX || !codecValid) {
+            *epoch > UINT32_MAX || !codecValid || !mediaContract) {
           sendError("challenge_invalid");
           return false;
         }
         std::string credential;
         bool paired = false;
         bool identityMatches = false;
-        bool stale = false;
+        protocol::SourceContractDecision sourceDecision =
+            protocol::SourceContractDecision::kAccepted;
         {
           std::scoped_lock lock(state_mutex_);
           paired = !trusted_sender_id_.empty() && !trusted_credential_.empty();
           identityMatches = paired && senderId == trusted_sender_id_ &&
                             deviceId == device_id_;
-          stale = !protocol::IsAcceptedSourceEpoch(
-              static_cast<std::uint32_t>(*epoch), latest_source_epoch_);
-          if (identityMatches && !stale) credential = trusted_credential_;
+          sourceDecision = protocol::EvaluateSourceContract(
+              static_cast<std::uint32_t>(*epoch), *mediaContract,
+              latest_source_epoch_, active_media_contract_);
+          if (identityMatches &&
+              sourceDecision == protocol::SourceContractDecision::kAccepted) {
+            credential = trusted_credential_;
+          }
         }
         if (!paired) {
           sendError("not_paired");
@@ -663,21 +688,29 @@ bool ReceiverSession::AuthenticateConnection() {
           sendError("identity_mismatch");
           return false;
         }
-        if (stale) {
+        if (sourceDecision ==
+            protocol::SourceContractDecision::kEpochStale) {
           sendError("epoch_stale");
+          return false;
+        }
+        if (sourceDecision ==
+            protocol::SourceContractDecision::kEpochContractMismatch) {
+          sendError("epoch_contract_mismatch");
           return false;
         }
         const auto acceptedEpoch = static_cast<std::uint32_t>(*epoch);
         const std::string proof = protocol::ComputeAuthProof(
-            credential, senderId, deviceId, acceptedEpoch, nonce);
+            credential, senderId, deviceId, acceptedEpoch, nonce,
+            *mediaContract);
         if (proof.empty()) {
           sendError("challenge_invalid");
           return false;
         }
-        authChallenge = {senderId, deviceId, nonce, acceptedEpoch};
+        authChallenge = {
+            senderId, deviceId, nonce, acceptedEpoch, *mediaContract};
         stage = ChallengeStage::kAuthFinal;
         std::ostringstream reply;
-        reply << "{\"type\":\"auth_proof\",\"protocol\":5,\"mode\":\"auth\","
+        reply << "{\"type\":\"auth_proof\",\"protocol\":6,\"mode\":\"auth\","
               << "\"senderId\":\"" << senderId << "\",\"deviceId\":\""
               << deviceId << "\",\"sourceEpoch\":" << acceptedEpoch
               << ",\"nonce\":\"" << nonce << "\",\"proof\":\""
@@ -695,48 +728,81 @@ bool ReceiverSession::AuthenticateConnection() {
         const std::string nonce =
             protocol::JsonString(json, "nonce").value_or("");
         const auto epoch = protocol::JsonInteger(json, "sourceEpoch");
+        const auto mediaContract = parseMediaContract(json);
         const bool codecValid =
             protocol::JsonString(json, "mode") == "auth" &&
             protocol::JsonString(json, "codec") == "video/avc" &&
-            protocol::JsonString(json, "avcFormat") == "annexb" &&
-            protocol::JsonInteger(json, "width") == 1280 &&
-            protocol::JsonInteger(json, "height") == 720 &&
-            protocol::JsonInteger(json, "fps") == 60;
+            protocol::JsonString(json, "avcFormat") == "annexb";
         if (type != "auth" || senderId != authChallenge.senderId ||
             deviceId != authChallenge.deviceId ||
             nonce != authChallenge.nonce || !epoch ||
             *epoch != authChallenge.sourceEpoch || !codecValid ||
+            !mediaContract ||
+            *mediaContract != authChallenge.mediaContract ||
             !Hex(credential, 64)) {
           sendError("challenge_state_invalid");
           return false;
         }
         bool trusted = false;
-        bool stale = false;
+        protocol::SourceContractDecision sourceDecision =
+            protocol::SourceContractDecision::kAccepted;
+        std::uint32_t previousEpoch = 0;
+        protocol::MediaContract previousContract;
         {
           std::scoped_lock lock(state_mutex_);
           trusted = senderId == trusted_sender_id_ &&
                     deviceId == device_id_ &&
                     protocol::ConstantTimeEqual(
                         credential, trusted_credential_);
-          stale = !protocol::IsAcceptedSourceEpoch(
-              authChallenge.sourceEpoch, latest_source_epoch_);
-          if (trusted && !stale) {
+          sourceDecision = protocol::EvaluateSourceContract(
+              authChallenge.sourceEpoch, authChallenge.mediaContract,
+              latest_source_epoch_, active_media_contract_);
+          if (trusted &&
+              sourceDecision == protocol::SourceContractDecision::kAccepted) {
+            previousEpoch = latest_source_epoch_;
+            previousContract = active_media_contract_;
             latest_source_epoch_ = authChallenge.sourceEpoch;
             active_source_epoch_ = authChallenge.sourceEpoch;
+            active_media_contract_ = authChallenge.mediaContract;
           }
         }
         if (!trusted) {
           sendError("identity_mismatch");
           return false;
         }
-        if (stale) {
+        if (sourceDecision ==
+            protocol::SourceContractDecision::kEpochStale) {
           sendError("epoch_stale");
           return false;
         }
-        FlushDecoder();
+        if (sourceDecision ==
+            protocol::SourceContractDecision::kEpochContractMismatch) {
+          sendError("epoch_contract_mismatch");
+          return false;
+        }
+        const bool decoderPrepared =
+            previousContract == authChallenge.mediaContract
+                ? FlushDecoder()
+                : ReconfigureDecoder(authChallenge.mediaContract);
+        if (!decoderPrepared) {
+          {
+            std::scoped_lock lock(state_mutex_);
+            if (active_source_epoch_ == authChallenge.sourceEpoch &&
+                active_media_contract_ == authChallenge.mediaContract) {
+              latest_source_epoch_ = previousEpoch;
+              active_source_epoch_ = previousEpoch;
+              active_media_contract_ = previousContract;
+            }
+          }
+          sendError("decoder_configuration_failed");
+          return false;
+        }
         std::ostringstream reply;
-        reply << "{\"type\":\"ready\",\"protocol\":5,\"sourceEpoch\":"
-              << authChallenge.sourceEpoch << "}";
+        reply << "{\"type\":\"ready\",\"protocol\":6,\"sourceEpoch\":"
+              << authChallenge.sourceEpoch << ",\"width\":"
+              << authChallenge.mediaContract.width << ",\"height\":"
+              << authChallenge.mediaContract.height << ",\"maxFps\":"
+              << authChallenge.mediaContract.maxFps << "}";
         if (!SendControl(reply.str())) return false;
         SetState("connected", "电脑已连接，正在准备播放画面", true, true);
         return true;
@@ -800,7 +866,7 @@ bool ReceiverSession::RunConnectedSession() {
       }
     }
     if (decoder_recovery_.ConsumeKeyFrameRequest()) {
-      if (!SendControl(R"({"type":"keyframe","protocol":5,"reason":"loss_flush_or_session_start","requireCodecConfig":true})")) {
+      if (!SendControl(R"({"type":"keyframe","protocol":6,"reason":"loss_flush_or_session_start","requireCodecConfig":true})")) {
         OH_LOG_Print(LOG_APP, LOG_WARN, kLogDomain, kLogTag,
                      "Receiver WebSocket keyframe request send failed");
         return false;
@@ -876,7 +942,7 @@ bool ReceiverSession::HandleControl(std::string_view json) {
     const auto at = protocol::JsonInteger(json, "at");
     if (!at) return false;
     std::ostringstream pong;
-    pong << "{\"type\":\"pong\",\"protocol\":5,\"at\":" << *at << "}";
+    pong << "{\"type\":\"pong\",\"protocol\":6,\"at\":" << *at << "}";
     return SendControl(pong.str());
   }
   return type != "close";
@@ -969,6 +1035,11 @@ bool ReceiverSession::CreateDecoderLocked() {
     fail("Surface", AV_ERR_INVALID_VAL);
     return false;
   }
+  const protocol::MediaContract mediaContract = decoder_media_contract_;
+  if (!protocol::IsValidMediaContract(mediaContract)) {
+    decoder_callback_gate_.SetState(DecoderLifecycleState::kStopped);
+    return false;
+  }
   decoder_callback_gate_.SetState(DecoderLifecycleState::kStarting);
   OH_AVCodec* decoder = OH_VideoDecoder_CreateByMime(OH_AVCODEC_MIMETYPE_VIDEO_AVC);
   if (decoder == nullptr) {
@@ -985,7 +1056,10 @@ bool ReceiverSession::CreateDecoderLocked() {
     decoder_callback_gate_.SetState(DecoderLifecycleState::kStopped);
     return false;
   }
-  OH_AVFormat* format = OH_AVFormat_CreateVideoFormat(OH_AVCODEC_MIMETYPE_VIDEO_AVC, 1280, 720);
+  OH_AVFormat* format = OH_AVFormat_CreateVideoFormat(
+      OH_AVCODEC_MIMETYPE_VIDEO_AVC,
+      static_cast<int32_t>(mediaContract.width),
+      static_cast<int32_t>(mediaContract.height));
   if (format == nullptr) {
     fail("CreateVideoFormat", AV_ERR_NO_MEMORY);
     OH_VideoDecoder_Destroy(decoder);
@@ -1075,12 +1149,34 @@ bool ReceiverSession::FlushDecoder() {
     } else {
       decoder_callback_gate_.BeginFlush([this] { ClearDecoderQueues(); });
       decoder_callback_gate_.SetState(DecoderLifecycleState::kStopped);
+      recovered = !lifecycle_state_.DecoderShouldRun() ||
+                  CreateDecoderLocked();
     }
     decoder_recovery_.RequireCodecData();
   }
   ++decoder_resync_events_;
   RequestKeyframe();
   return recovered;
+}
+
+bool ReceiverSession::ReconfigureDecoder(protocol::MediaContract contract) {
+  if (!protocol::IsValidMediaContract(contract)) return false;
+  bool prepared = false;
+  {
+    std::scoped_lock lifecycleLock(decoder_lifecycle_mutex_);
+    const protocol::MediaContract previous = decoder_media_contract_;
+    DestroyDecoderLocked();
+    decoder_media_contract_ = contract;
+    prepared = !lifecycle_state_.DecoderShouldRun() ||
+               CreateDecoderLocked();
+    if (!prepared) {
+      decoder_media_contract_ = previous;
+    }
+    decoder_recovery_.RequireCodecData();
+  }
+  ++decoder_resync_events_;
+  RequestKeyframe();
+  return prepared;
 }
 
 void ReceiverSession::SubmitFrame(DecodedInput frame) {
@@ -1200,7 +1296,7 @@ void ReceiverSession::DecoderOutput(OH_AVCodec* decoder, std::uint32_t index,
         SetState("displaying", "正在播放电脑发送的画面", true, true);
       }
       std::ostringstream telemetry;
-      telemetry << "{\"type\":\"telemetry\",\"protocol\":5,\"captureUs\":" << attributes.pts
+      telemetry << "{\"type\":\"telemetry\",\"protocol\":6,\"captureUs\":" << attributes.pts
                 << ",\"displayUs\":" << ClockMicroseconds()
                 << ",\"receivedFrames\":" << received_frames_.load()
                 << ",\"receivedBytes\":" << received_bytes_.load()

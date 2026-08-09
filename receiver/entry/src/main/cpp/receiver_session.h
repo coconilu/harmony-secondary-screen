@@ -37,6 +37,9 @@ struct StatusSnapshot {
   std::uint64_t framesDecoded = 0;
   std::uint64_t framesDropped = 0;
   std::uint64_t receivedFrames = 0;
+  std::uint32_t mediaWidth = 0;
+  std::uint32_t mediaHeight = 0;
+  std::uint32_t mediaMaxFps = 0;
 };
 
 struct PairingRecord {
@@ -103,6 +106,7 @@ class ReceiverSession final {
   void DestroyDecoderLocked();
   void ClearDecoderQueues();
   bool FlushDecoder();
+  bool ReconfigureDecoder(protocol::MediaContract contract);
   void SubmitFrame(DecodedInput frame);
   bool SubmitRecovery(DecodedInput codecData, DecodedInput syncFrame);
   void PumpDecoderLocked(OH_AVCodec* decoder);
@@ -136,6 +140,7 @@ class ReceiverSession final {
   std::chrono::system_clock::time_point pairing_expires_at_;
   std::uint32_t latest_source_epoch_ = 0;
   std::uint32_t active_source_epoch_ = 0;
+  protocol::MediaContract active_media_contract_;
   std::atomic<bool> desired_{false};
   std::thread worker_;
   std::atomic<int> listener_socket_{-1};
@@ -153,6 +158,7 @@ class ReceiverSession final {
   std::mutex decoder_queue_mutex_;
   DecoderCallbackGate decoder_callback_gate_;
   std::atomic<OH_AVCodec*> decoder_{nullptr};
+  protocol::MediaContract decoder_media_contract_;
   DecoderRecoveryCoordinator decoder_recovery_;
   ReceiverLifecycleState lifecycle_state_;
   std::deque<InputSlot> input_slots_;

@@ -76,10 +76,10 @@ void ExtensionWireVectorTest(const char* fixturePath) {
   auto invalidHeaderSize = message;
   invalidHeaderSize[7] = std::byte{31};
   CHECK(!DecodeVideoHeader(invalidHeaderSize.data(), invalidHeaderSize.size()));
-  auto legacyHwc3 = message;
-  legacyHwc3[3] = std::byte{0x33};
-  legacyHwc3[4] = std::byte{3};
-  CHECK(!DecodeVideoHeader(legacyHwc3.data(), legacyHwc3.size()));
+  auto legacyHwc5 = message;
+  legacyHwc5[3] = std::byte{0x35};
+  legacyHwc5[4] = std::byte{5};
+  CHECK(!DecodeVideoHeader(legacyHwc5.data(), legacyHwc5.size()));
   auto invalidFlags = message;
   invalidFlags[5] = std::byte{0x80};
   CHECK(!DecodeVideoHeader(invalidFlags.data(), invalidFlags.size()));
@@ -194,7 +194,7 @@ void PairingAuthorizationNegativeTest() {
         PairingAuthorizationResult::kMismatch);
 }
 
-void Hwc5ProofVectorTest() {
+void Hwc6ProofVectorTest() {
   using namespace hss::receiver::protocol;
   const std::string token(64, '0');
   const std::string credential(64, '1');
@@ -204,23 +204,47 @@ void Hwc5ProofVectorTest() {
       "0123456789abcdef0123456789abcdef";
   const std::string device = "ffeeddccbbaa99887766554433221100";
   const std::string sender = "019fa3cf-75c7-7000-8000-000000000001";
+  const MediaContract contract{1920U, 1080U, 60U};
   CHECK(ComputePairProof(token, "qr", session, sender, nonce, device) ==
-        "e4da9d38094ddbee44ba4c26bac44afb"
-        "562fdd22df65f25245a103441475bdc5");
+        "255416f246c0c7a7a1d375dd8eab7487"
+        "749063eaec6abd37c90e6b93ff38b28e");
   CHECK(ComputePairProof("000000", "short", session, sender, nonce, device)
             .empty());
   CHECK(ComputePairProof(token, "qr", session, std::string(32, 'f'),
                          nonce, device) !=
         ComputePairProof(token, "qr", session, sender, nonce, device));
-  CHECK(ComputeAuthProof(credential, sender, device, 9U, nonce) ==
-        "7453800320a532c293b9678cf1641fd5"
-        "03c92d005f8fe63e136e5d367e50997a");
+  CHECK(ComputeAuthProof(credential, sender, device, 9U, nonce, contract) ==
+        "8a1f2c95db4b433f2107eda6f6bee314"
+        "0a4e4f8f8a9a7714faadf23e93cf6b3d");
   CHECK(ConstantTimeEqual(std::string(64, 'a'), std::string(64, 'a')));
   CHECK(!ConstantTimeEqual(std::string(64, 'a'), std::string(64, 'b')));
   CHECK(!ConstantTimeEqual(std::string(63, 'a'), std::string(63, 'a')));
   CHECK(ComputePairProof(token, "qr", session, sender,
                          std::string(64, 'x'), device).empty());
-  CHECK(ComputeAuthProof(credential, sender, device, 0U, nonce).empty());
+  CHECK(ComputeAuthProof(credential, sender, device, 0U, nonce, contract)
+            .empty());
+  CHECK(IsValidMediaContract(contract));
+  CHECK(IsValidMediaContract({1080U, 1920U, 60U}));
+  CHECK(!IsValidMediaContract({0U, 720U, 60U}));
+  CHECK(!IsValidMediaContract({1279U, 720U, 60U}));
+  CHECK(!IsValidMediaContract({1922U, 1080U, 60U}));
+  CHECK(!IsValidMediaContract({1920U, 1082U, 60U}));
+  CHECK(!IsValidMediaContract({1920U, 1080U, 61U}));
+  CHECK(EvaluateSourceContract(9U, contract, 9U, contract) ==
+        SourceContractDecision::kAccepted);
+  CHECK(EvaluateSourceContract(10U, MediaContract{1280U, 720U, 30U},
+                               9U, contract) ==
+        SourceContractDecision::kAccepted);
+  CHECK(EvaluateSourceContract(8U, contract, 9U, contract) ==
+        SourceContractDecision::kEpochStale);
+  CHECK(EvaluateSourceContract(9U, MediaContract{1280U, 720U, 30U},
+                               9U, contract) ==
+        SourceContractDecision::kEpochContractMismatch);
+
+  CHECK(JsonInteger(R"({"width":1280})", "width") == 1280);
+  CHECK(!JsonInteger(R"({"width":1280.5})", "width"));
+  CHECK(!JsonInteger(R"({"width":1280e9})", "width"));
+  CHECK(!JsonInteger(R"({"width":1280x})", "width"));
 }
 
 #ifdef _WIN32
@@ -378,7 +402,7 @@ int main(int argc, char** argv) {
   WebSocketDecoderTest();
   WebSocketHandshakeTest();
   PairingAuthorizationNegativeTest();
-  Hwc5ProofVectorTest();
+  Hwc6ProofVectorTest();
   SilentUpgradeDeadlineTest();
   if (failures != 0) {
     std::cerr << failures << " receiver protocol check(s) failed\n";

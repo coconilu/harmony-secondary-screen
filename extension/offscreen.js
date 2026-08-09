@@ -1,13 +1,6 @@
 import { FrameMonitor } from "./frame-monitor.js";
 import { EncoderMonitor } from "./encoder-monitor.js";
 import {
-  DIRECT_VIDEO_BITRATE,
-  DIRECT_VIDEO_CODEC,
-  DIRECT_VIDEO_FRAMERATE,
-  DIRECT_VIDEO_HEIGHT,
-  DIRECT_VIDEO_WIDTH
-} from "./direct-protocol.js";
-import {
   DIRECT_RECOVERY_CONNECT_TIMEOUT_MS,
   DIRECT_RECOVERY_RETRY_DELAYS_MS,
   DirectReceiverConnection,
@@ -15,25 +8,23 @@ import {
 } from "./direct-client.js";
 import { DirectDeliveryOrchestrator } from "./direct-delivery-orchestrator.js";
 import { shouldRequestPeriodicKeyFrame } from "./keyframe-policy.js";
+import {
+  buildAutoVideoContractCandidates,
+  configureAutoVideoEncoder,
+  createEncoderBinding,
+  isCurrentEncoderBinding,
+  MaxFrameRateGate,
+  StableFrameSizeTracker,
+  validateMediaContract,
+  VIDEO_MAX_FPS
+} from "./video-contract.js";
 
 const TELEMETRY_INTERVAL_MS = 500;
 const MAX_ENCODE_QUEUE_SIZE = 2;
-const H264_CONFIG = {
-  codec: DIRECT_VIDEO_CODEC,
-  width: DIRECT_VIDEO_WIDTH,
-  height: DIRECT_VIDEO_HEIGHT,
-  bitrate: DIRECT_VIDEO_BITRATE,
-  framerate: DIRECT_VIDEO_FRAMERATE,
-  hardwareAcceleration: "prefer-hardware",
-  latencyMode: "realtime",
-  alpha: "discard",
-  avc: {
-    format: "annexb"
-  }
-};
 
 let mediaStream = null;
 let videoTrack = null;
+let captureSettings = null;
 let frameReader = null;
 let frameLoopPromise = null;
 let telemetryTimer = null;
@@ -41,6 +32,11 @@ let monitor = null;
 let encoderMonitor = null;
 let videoEncoder = null;
 let encoderConfig = null;
+let mediaContract = null;
+let sourceDimensions = null;
+let frameRateGate = null;
+let dimensionTracker = null;
+let activeEncoderGeneration = 0;
 let encodeCanvas = null;
 let encodeContext = null;
 let receiverConnection = null;
@@ -48,11 +44,13 @@ let receiverRecoveryGeneration = 0;
 let receiverRecoveryPromise = null;
 let receiverRecoveryAbortController = null;
 let sourceEpoch = 0;
+let trustedDevice = null;
 let directTelemetry = createDirectTelemetry();
 const directDelivery = new DirectDeliveryOrchestrator();
 let lastKeyFrameTimestampUs = Number.NaN;
 let running = false;
 let stopping = false;
+let reconfiguring = false;
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.target !== "offscreen") {
@@ -91,59 +89,110 @@ async function startCapture(streamId, directInfo) {
   }
 
   await stopCapture();
-  stopping = false;
-  directTelemetry = createDirectTelemetry();
-  directDelivery.reset();
-  lastKeyFrameTimestampUs = Number.NaN;
-  await connectReceiver(directInfo);
-
-  mediaStream = await navigator.mediaDevices.getUserMedia({
-    audio: false,
-    video: {
-      mandatory: {
-        chromeMediaSource: "tab",
-        chromeMediaSourceId: streamId,
-        maxFrameRate: DIRECT_VIDEO_FRAMERATE
-      }
-    }
-  });
-
-  const tracks = mediaStream.getVideoTracks();
-  if (tracks.length !== 1) {
-    throw new Error(`预期 1 条视频轨，实际得到 ${tracks.length} 条`);
-  }
-  if (mediaStream.getAudioTracks().length !== 0) {
-    throw new Error("捕获流意外包含音频轨");
-  }
-  if (typeof MediaStreamTrackProcessor !== "function") {
-    throw new Error("当前 Edge 不支持 MediaStreamTrackProcessor");
-  }
-  if (typeof VideoEncoder !== "function") {
-    throw new Error("当前 Edge 不支持 WebCodecs VideoEncoder");
-  }
-
-  videoTrack = tracks[0];
   try {
-    await videoTrack.applyConstraints({
-      frameRate: DIRECT_VIDEO_FRAMERATE
+    stopping = false;
+    reconfiguring = false;
+    directTelemetry = createDirectTelemetry();
+    directDelivery.reset();
+    lastKeyFrameTimestampUs = Number.NaN;
+    if (
+      !directInfo ||
+      !Number.isInteger(directInfo.sourceEpoch) ||
+      directInfo.sourceEpoch <= 0
+    ) {
+      throw new Error("平板连接信息无效");
+    }
+    sourceEpoch = directInfo.sourceEpoch;
+    trustedDevice = directInfo.trustedDevice;
+
+    mediaStream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: {
+        mandatory: {
+          chromeMediaSource: "tab",
+          chromeMediaSourceId: streamId,
+          maxFrameRate: VIDEO_MAX_FPS
+        }
+      }
     });
-  } catch {
-    // 部分 Edge/Chromium 版本只识别上面的 legacy maxFrameRate。
-    // 监控面板仍显示实测帧率，不把配置目标误报成已达到的帧率。
+
+    const tracks = mediaStream.getVideoTracks();
+    if (tracks.length !== 1) {
+      throw new Error(`预期 1 条视频轨，实际得到 ${tracks.length} 条`);
+    }
+    if (mediaStream.getAudioTracks().length !== 0) {
+      throw new Error("捕获流意外包含音频轨");
+    }
+    if (typeof MediaStreamTrackProcessor !== "function") {
+      throw new Error("当前 Edge 不支持 MediaStreamTrackProcessor");
+    }
+    if (typeof VideoEncoder !== "function") {
+      throw new Error("当前 Edge 不支持 WebCodecs VideoEncoder");
+    }
+
+    videoTrack = tracks[0];
+    try {
+      await videoTrack.applyConstraints({
+        frameRate: { max: VIDEO_MAX_FPS }
+      });
+    } catch {
+      // legacy maxFrameRate remains the fallback constraint.
+    }
+    captureSettings = videoTrack.getSettings();
+    videoTrack.addEventListener("ended", handleTrackEnded, { once: true });
+    const processor = new MediaStreamTrackProcessor({ track: videoTrack });
+    frameReader = processor.readable.getReader();
+    const first = await frameReader.read();
+    if (first.done || !first.value) {
+      throw new Error("Edge 捕获轨没有产生可确认尺寸的视频帧");
+    }
+    let firstWidth;
+    let firstHeight;
+    try {
+      firstWidth = frameWidth(first.value);
+      firstHeight = frameHeight(first.value);
+    } finally {
+      // Never retain a picture while capability probing or authentication waits.
+      first.value.close();
+    }
+    try {
+      await frameReader.cancel();
+    } catch {
+      // The one-frame sizing processor may already have closed itself.
+    }
+    frameReader = null;
+    sourceDimensions = { width: firstWidth, height: firstHeight };
+    dimensionTracker = new StableFrameSizeTracker(firstWidth, firstHeight);
+    encoderMonitor = new EncoderMonitor();
+    directTelemetry.captureSettingsWidth =
+      positiveIntegerOrNull(captureSettings.width);
+    directTelemetry.captureSettingsHeight =
+      positiveIntegerOrNull(captureSettings.height);
+    directTelemetry.initialFrameMatchedSettings =
+      directTelemetry.captureSettingsWidth === null ||
+      directTelemetry.captureSettingsHeight === null
+        ? null
+        : directTelemetry.captureSettingsWidth === firstWidth &&
+          directTelemetry.captureSettingsHeight === firstHeight;
+
+    await createVideoEncoder(firstWidth, firstHeight);
+    await connectReceiver({
+      trustedDevice,
+      sourceEpoch
+    }, mediaContract);
+    const activeProcessor = new MediaStreamTrackProcessor({
+      track: videoTrack
+    });
+    frameReader = activeProcessor.readable.getReader();
+    monitor = new FrameMonitor();
+    running = true;
+    frameLoopPromise = consumeFrames();
+    telemetryTimer = setInterval(publishTelemetry, TELEMETRY_INTERVAL_MS);
+    return collectTelemetry();
+  } catch (error) {
+    await stopCapture();
+    throw error;
   }
-  videoTrack.addEventListener("ended", handleTrackEnded, { once: true });
-
-  await createVideoEncoder();
-  const processor = new MediaStreamTrackProcessor({ track: videoTrack });
-  frameReader = processor.readable.getReader();
-  monitor = new FrameMonitor();
-  encoderMonitor = new EncoderMonitor();
-  running = true;
-
-  frameLoopPromise = consumeFrames();
-  telemetryTimer = setInterval(publishTelemetry, TELEMETRY_INTERVAL_MS);
-  const telemetry = collectTelemetry();
-  return telemetry;
 }
 
 async function consumeFrames() {
@@ -155,13 +204,33 @@ async function consumeFrames() {
       }
 
       monitor?.onFrame();
+      const width = frameWidth(frame);
+      const height = frameHeight(frame);
+      const stableChange = dimensionTracker?.observe(width, height) ?? null;
+      if (stableChange) {
+        frame.close();
+        await reconfigureForSource(stableChange.width, stableChange.height);
+        continue;
+      }
+      if (
+        sourceDimensions &&
+        (width !== sourceDimensions.width || height !== sourceDimensions.height)
+      ) {
+        encoderMonitor?.onDropped();
+        frame.close();
+        continue;
+      }
       encodeFrame(frame);
     }
   } catch (error) {
     if (!stopping) {
+      running = false;
       await sendToServiceWorker("CAPTURE_FAILURE", {
         error: normalizeError(error),
         telemetry: collectTelemetry()
+      });
+      queueMicrotask(() => {
+        void stopCapture();
       });
     }
   } finally {
@@ -170,6 +239,9 @@ async function consumeFrames() {
       await sendToServiceWorker("CAPTURE_ENDED", {
         reason: "video_track_ended",
         telemetry: collectTelemetry()
+      });
+      queueMicrotask(() => {
+        void stopCapture();
       });
     }
   }
@@ -186,7 +258,13 @@ function publishTelemetry() {
 }
 
 async function stopCapture() {
-  if (!running && !mediaStream && !frameReader && !receiverConnection) {
+  if (
+    !running &&
+    !mediaStream &&
+    !frameReader &&
+    !receiverConnection &&
+    !videoEncoder
+  ) {
     return monitor?.sample() ?? null;
   }
 
@@ -215,6 +293,7 @@ async function stopCapture() {
   }
   mediaStream = null;
   videoTrack = null;
+  captureSettings = null;
 
   try {
     await frameLoopPromise;
@@ -225,6 +304,12 @@ async function stopCapture() {
 
   await stopVideoEncoder();
   await closeReceiver();
+  mediaContract = null;
+  sourceDimensions = null;
+  frameRateGate = null;
+  dimensionTracker = null;
+  trustedDevice = null;
+  reconfiguring = false;
   const telemetry = collectTelemetry();
   stopping = false;
   return telemetry;
@@ -239,36 +324,64 @@ async function handleTrackEnded() {
     reason: "video_track_ended",
     telemetry: collectTelemetry()
   });
+  queueMicrotask(() => {
+    void stopCapture();
+  });
 }
 
-async function createVideoEncoder() {
-  const support = await VideoEncoder.isConfigSupported(H264_CONFIG);
-  if (!support.supported) {
-    throw new Error(
-      `当前 Edge 不支持 ${DIRECT_VIDEO_WIDTH}×${DIRECT_VIDEO_HEIGHT} @ ` +
-      `${DIRECT_VIDEO_FRAMERATE} fps 的 H.264 编码`
-    );
-  }
-
-  encoderConfig = normalizeEncoderConfig(support.config ?? H264_CONFIG);
-  videoEncoder = new VideoEncoder({
-    output: (chunk) => {
-      handleEncodedChunk(chunk);
-    },
-    error: (error) => {
-      encoderMonitor?.onError();
-      if (!stopping) {
-        running = false;
-        void sendToServiceWorker("CAPTURE_FAILURE", {
-          error: `H.264 编码失败：${normalizeError(error)}`,
-          telemetry: collectTelemetry()
-        });
-      }
+async function createVideoEncoder(sourceWidth, sourceHeight) {
+  const candidates = buildAutoVideoContractCandidates({
+    sourceWidth,
+    sourceHeight,
+    settingsFrameRate: captureSettings?.frameRate
+  });
+  const result = await configureAutoVideoEncoder({
+    candidates,
+    isConfigSupported: (config) => VideoEncoder.isConfigSupported(config),
+    createEncoder: ({ contract }) => {
+      const binding = createEncoderBinding(
+        ++activeEncoderGeneration,
+        sourceEpoch,
+        contract
+      );
+      return new VideoEncoder({
+        output: (chunk) => {
+          handleEncodedChunk(chunk, binding);
+        },
+        error: (error) => {
+          if (binding.generation !== activeEncoderGeneration) {
+            return;
+          }
+          encoderMonitor?.onError();
+          if (!stopping) {
+            running = false;
+            void sendToServiceWorker("CAPTURE_FAILURE", {
+              error: `H.264 编码失败：${normalizeError(error)}`,
+              telemetry: collectTelemetry()
+            });
+            queueMicrotask(() => {
+              void stopCapture();
+            });
+          }
+        }
+      });
     }
   });
-  videoEncoder.configure(support.config ?? H264_CONFIG);
-
-  encodeCanvas = new OffscreenCanvas(DIRECT_VIDEO_WIDTH, DIRECT_VIDEO_HEIGHT);
+  videoEncoder = result.encoder;
+  mediaContract = validateMediaContract(result.contract);
+  encoderConfig = {
+    ...normalizeEncoderConfig(result.config),
+    selectionMode: "auto",
+    selection: result.contract.selection,
+    maxFps: result.contract.maxFps,
+    sourceWidth,
+    sourceHeight
+  };
+  frameRateGate = new MaxFrameRateGate(mediaContract.maxFps);
+  encodeCanvas = new OffscreenCanvas(
+    mediaContract.width,
+    mediaContract.height
+  );
   encodeContext = encodeCanvas.getContext("2d", {
     alpha: false,
     desynchronized: true
@@ -289,38 +402,30 @@ function encodeFrame(sourceFrame) {
       return;
     }
 
-    const sourceWidth = sourceFrame.displayWidth || sourceFrame.codedWidth;
-    const sourceHeight = sourceFrame.displayHeight || sourceFrame.codedHeight;
-    if (!sourceWidth || !sourceHeight) {
-      throw new Error("捕获帧尺寸无效");
+    const sourceWidth = frameWidth(sourceFrame);
+    const sourceHeight = frameHeight(sourceFrame);
+    if (
+      !sourceDimensions ||
+      sourceWidth !== sourceDimensions.width ||
+      sourceHeight !== sourceDimensions.height
+    ) {
+      throw new Error("捕获帧尺寸与当前自动视频合同不一致");
     }
-
-    const scale = Math.min(
-      DIRECT_VIDEO_WIDTH / sourceWidth,
-      DIRECT_VIDEO_HEIGHT / sourceHeight
-    );
-    const targetWidth = Math.max(1, Math.round(sourceWidth * scale));
-    const targetHeight = Math.max(1, Math.round(sourceHeight * scale));
-    const targetX = Math.floor((DIRECT_VIDEO_WIDTH - targetWidth) / 2);
-    const targetY = Math.floor((DIRECT_VIDEO_HEIGHT - targetHeight) / 2);
-
-    encodeContext.fillStyle = "#000";
-    encodeContext.fillRect(
-      0,
-      0,
-      DIRECT_VIDEO_WIDTH,
-      DIRECT_VIDEO_HEIGHT
-    );
-    encodeContext.drawImage(
-      sourceFrame,
-      targetX,
-      targetY,
-      targetWidth,
-      targetHeight
-    );
 
     const timestamp =
       sourceFrame.timestamp ?? Math.round(performance.now() * 1000);
+    if (!frameRateGate?.shouldSubmit(timestamp)) {
+      encoderMonitor.onDropped();
+      return;
+    }
+    encodeContext.drawImage(
+      sourceFrame,
+      0,
+      0,
+      mediaContract.width,
+      mediaContract.height
+    );
+
     const encodeFrame = new VideoFrame(encodeCanvas, { timestamp });
     const keyFrame = directDelivery.shouldEncodeKeyFrame(
       shouldRequestPeriodicKeyFrame(timestamp, lastKeyFrameTimestampUs)
@@ -340,14 +445,14 @@ function encodeFrame(sourceFrame) {
   }
 }
 
-async function stopVideoEncoder() {
+async function stopVideoEncoder({ flush = true } = {}) {
   const encoder = videoEncoder;
   videoEncoder = null;
   if (!encoder) {
     return;
   }
 
-  if (encoder.state === "configured") {
+  if (flush && encoder.state === "configured") {
     try {
       await encoder.flush();
     } catch {
@@ -357,6 +462,7 @@ async function stopVideoEncoder() {
   if (encoder.state !== "closed") {
     encoder.close();
   }
+  activeEncoderGeneration += 1;
   encodeCanvas = null;
   encodeContext = null;
 }
@@ -377,6 +483,8 @@ function collectTelemetry() {
     ...(monitor?.sample() ?? {}),
     ...(encoderMonitor?.sample(videoEncoder?.encodeQueueSize ?? 0) ?? {}),
     encoderConfig,
+    mediaContract,
+    sourceDimensions,
     ...directTelemetry,
     directRecoveryElapsedMs,
     directConnected: receiverConnection?.connected ?? false,
@@ -397,13 +505,24 @@ function normalizeEncoderConfig(config) {
   };
 }
 
-function handleEncodedChunk(chunk) {
+function handleEncodedChunk(chunk, binding) {
+  if (
+    !isCurrentEncoderBinding(
+      binding,
+      activeEncoderGeneration,
+      sourceEpoch,
+      mediaContract
+    )
+  ) {
+    directTelemetry.directDroppedFrames += 1;
+    return;
+  }
   encoderMonitor?.onChunk(chunk);
   try {
     directDelivery.deliver(
       chunk,
       receiverConnection,
-      sourceEpoch,
+      binding.sourceEpoch,
       directTelemetry
     );
   } catch (error) {
@@ -414,11 +533,14 @@ function handleEncodedChunk(chunk) {
         error: `发送到平板失败：${normalizeError(error)}`,
         telemetry: collectTelemetry()
       });
+      queueMicrotask(() => {
+        void stopCapture();
+      });
     }
   }
 }
 
-async function connectReceiver(directInfo) {
+async function connectReceiver(directInfo, contract) {
   if (
     !directInfo ||
     !Number.isInteger(directInfo.sourceEpoch) ||
@@ -427,9 +549,11 @@ async function connectReceiver(directInfo) {
     throw new Error("平板连接信息无效");
   }
   sourceEpoch = directInfo.sourceEpoch;
+  const normalizedContract = validateMediaContract(contract);
   const connection = new DirectReceiverConnection({
     trustedDevice: directInfo.trustedDevice,
-    sourceEpoch
+    sourceEpoch,
+    mediaContract: normalizedContract
   });
   connection.onControl = applyReceiverControl;
   connection.onClose = (event) => {
@@ -441,7 +565,7 @@ async function connectReceiver(directInfo) {
       Number.isInteger(event?.code) ? event.code : null;
     directTelemetry.directLastCloseWasClean =
       typeof event?.wasClean === "boolean" ? event.wasClean : null;
-    if (!stopping && running) {
+    if (!stopping && !reconfiguring && running) {
       directTelemetry.directErrors += 1;
       beginReceiverRecovery(connection);
     }
@@ -456,6 +580,55 @@ async function connectReceiver(directInfo) {
     throw error;
   }
   directTelemetry.directConnected = true;
+}
+
+async function reconfigureForSource(width, height) {
+  if (reconfiguring || stopping || !running) {
+    return;
+  }
+  reconfiguring = true;
+  directTelemetry.videoReconfigurationState = "reconfiguring";
+  directTelemetry.videoReconfigurationCount += 1;
+  void publishTelemetry();
+  try {
+    const nextEpoch = await allocateNextSourceEpoch();
+    await closeReceiver();
+    await stopVideoEncoder({ flush: false });
+    sourceEpoch = nextEpoch;
+    captureSettings = videoTrack?.getSettings() ?? captureSettings;
+    directDelivery.reset();
+    lastKeyFrameTimestampUs = Number.NaN;
+    await createVideoEncoder(width, height);
+    await connectReceiver({
+      trustedDevice,
+      sourceEpoch
+    }, mediaContract);
+    sourceDimensions = { width, height };
+    dimensionTracker?.commit(width, height);
+    directTelemetry.videoReconfigurationState = "connected";
+    directDelivery.requireKeyFrame(directTelemetry);
+    void publishTelemetry();
+  } catch (error) {
+    directTelemetry.videoReconfigurationState = "failed";
+    throw new Error(`自动画面尺寸重配失败：${normalizeError(error)}`);
+  } finally {
+    reconfiguring = false;
+  }
+}
+
+async function allocateNextSourceEpoch() {
+  const response = await chrome.runtime.sendMessage({
+    target: "service-worker",
+    type: "ALLOCATE_SOURCE_EPOCH"
+  });
+  if (
+    !response?.ok ||
+    !Number.isInteger(response.sourceEpoch) ||
+    response.sourceEpoch <= sourceEpoch
+  ) {
+    throw new Error(response?.error || "无法持久化新的来源 epoch");
+  }
+  return response.sourceEpoch;
 }
 
 function beginReceiverRecovery(connection) {
@@ -552,6 +725,9 @@ function beginReceiverRecovery(connection) {
       error: `平板连接恢复失败：${normalizeError(error)}`,
       telemetry: collectTelemetry()
     });
+    queueMicrotask(() => {
+      void stopCapture();
+    });
   }).finally(() => {
     if (generation === receiverRecoveryGeneration) {
       receiverRecoveryPromise = null;
@@ -581,6 +757,9 @@ function applyReceiverControl(message) {
       void sendToServiceWorker("CAPTURE_FAILURE", {
         error: `平板拒绝接收画面（${String(message.code ?? "unknown").slice(0, 64)}）`,
         telemetry: collectTelemetry()
+      });
+      queueMicrotask(() => {
+        void stopCapture();
       });
     }
   }
@@ -677,9 +856,35 @@ function createDirectTelemetry() {
     receiverDecodedFrames: 0,
     receiverDroppedFrames: 0,
     receiverResyncEvents: 0,
-    receiverKeyframeRequests: 0
+    receiverKeyframeRequests: 0,
+    captureSettingsWidth: null,
+    captureSettingsHeight: null,
+    initialFrameMatchedSettings: null,
+    videoReconfigurationCount: 0,
+    videoReconfigurationState: "idle"
   };
 }
+
+function frameWidth(frame) {
+  const width = frame?.displayWidth || frame?.codedWidth;
+  if (!Number.isInteger(width) || width < 2) {
+    throw new Error("捕获帧宽度无效");
+  }
+  return width;
+}
+
+function frameHeight(frame) {
+  const height = frame?.displayHeight || frame?.codedHeight;
+  if (!Number.isInteger(height) || height < 2) {
+    throw new Error("捕获帧高度无效");
+  }
+  return height;
+}
+
+function positiveIntegerOrNull(value) {
+  return Number.isInteger(value) && value > 0 ? value : null;
+}
+
 
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));

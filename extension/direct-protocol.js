@@ -1,15 +1,12 @@
-export const DIRECT_PROTOCOL = 5;
+import { validateMediaContract } from "./video-contract.js";
+
+export const DIRECT_PROTOCOL = 6;
 export const DIRECT_PORT = 44000;
 export const DEFAULT_RECEIVER_HOST = "harmony-web-companion.local";
-export const DIRECT_VIDEO_MAGIC = 0x48574335;
+export const DIRECT_VIDEO_MAGIC = 0x48574336;
 export const DIRECT_VIDEO_HEADER_SIZE = 32;
 export const DIRECT_VIDEO_MAX_PAYLOAD_BYTES = 8 * 1024 * 1024;
 export const DIRECT_MAX_BUFFERED_BYTES = 4 * 1024 * 1024;
-export const DIRECT_VIDEO_CODEC = "avc1.420028";
-export const DIRECT_VIDEO_WIDTH = 1280;
-export const DIRECT_VIDEO_HEIGHT = 720;
-export const DIRECT_VIDEO_FRAMERATE = 60;
-export const DIRECT_VIDEO_BITRATE = 8_000_000;
 export const PAIRING_TTL_MS = 60_000;
 export const DIRECT_PROOF_NONCE_BYTES = 32;
 
@@ -114,7 +111,7 @@ export function createPairProofMessage({
     throw new Error("配对挑战字段无效");
   }
   return [
-    "HWC5-PAIR-PROOF",
+    "HWC6-PAIR-PROOF",
     proofMode,
     sessionId,
     senderId,
@@ -130,10 +127,16 @@ export function createAuthProofMessage({
   nonce,
   codec = "video/avc",
   avcFormat = "annexb",
-  width = DIRECT_VIDEO_WIDTH,
-  height = DIRECT_VIDEO_HEIGHT,
-  fps = DIRECT_VIDEO_FRAMERATE
+  width,
+  height,
+  maxFps
 }) {
+  let mediaContract;
+  try {
+    mediaContract = validateMediaContract({ width, height, maxFps });
+  } catch {
+    throw new Error("鉴权挑战字段无效");
+  }
   if (
     !/^[0-9a-f-]{16,64}$/.test(senderId ?? "") ||
     !/^[0-9a-f]{32}$/.test(deviceId ?? "") ||
@@ -142,24 +145,21 @@ export function createAuthProofMessage({
     sourceEpoch > 0xffffffff ||
     !isProofNonce(nonce) ||
     codec !== "video/avc" ||
-    avcFormat !== "annexb" ||
-    width !== DIRECT_VIDEO_WIDTH ||
-    height !== DIRECT_VIDEO_HEIGHT ||
-    fps !== DIRECT_VIDEO_FRAMERATE
+    avcFormat !== "annexb"
   ) {
     throw new Error("鉴权挑战字段无效");
   }
   return [
-    "HWC5-AUTH-PROOF",
+    "HWC6-AUTH-PROOF",
     senderId,
     deviceId,
     String(sourceEpoch),
     nonce,
     codec,
     avcFormat,
-    String(width),
-    String(height),
-    String(fps)
+    String(mediaContract.width),
+    String(mediaContract.height),
+    String(mediaContract.maxFps)
   ].join("\n");
 }
 
@@ -193,9 +193,9 @@ export async function computeAuthProof({
   nonce,
   codec = "video/avc",
   avcFormat = "annexb",
-  width = DIRECT_VIDEO_WIDTH,
-  height = DIRECT_VIDEO_HEIGHT,
-  fps = DIRECT_VIDEO_FRAMERATE
+  width,
+  height,
+  maxFps
 }, subtle = crypto.subtle) {
   return hmacSha256Hex(
     hexToBytes(credential, 32, "长期凭据格式无效"),
@@ -208,7 +208,7 @@ export async function computeAuthProof({
       avcFormat,
       width,
       height,
-      fps
+      maxFps
     }),
     subtle
   );

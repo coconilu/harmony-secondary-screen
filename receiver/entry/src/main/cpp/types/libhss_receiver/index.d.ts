@@ -13,6 +13,9 @@ export interface ReceiverStatus {
   framesDecoded: number;
   framesDropped: number;
   receivedFrames: number;
+  mediaWidth: number;
+  mediaHeight: number;
+  mediaMaxFps: number;
 }
 
 export interface PairingRecord {
@@ -40,6 +43,12 @@ export const forgetDevice: () => void;
 export const getStatus: () => ReceiverStatus;
 export const getPairing: () => PairingRecord;
 export const getWifiAddresses: () => string[];
+export const shouldFitVideoByWidth: (
+  mediaWidth: number,
+  mediaHeight: number,
+  containerWidth: number,
+  containerHeight: number
+) => boolean;
 export const onAppForeground: () => void;
 export const onAppBackground: () => void;
 
@@ -53,6 +62,7 @@ declare const receiver: {
   getStatus: typeof getStatus;
   getPairing: typeof getPairing;
   getWifiAddresses: typeof getWifiAddresses;
+  shouldFitVideoByWidth: typeof shouldFitVideoByWidth;
   onAppForeground: typeof onAppForeground;
   onAppBackground: typeof onAppBackground;
 };

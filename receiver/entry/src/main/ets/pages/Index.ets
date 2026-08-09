@@ -12,7 +12,7 @@ const SENDER_ID_KEY: string = 'senderId';
 const CREDENTIAL_KEY: string = 'credential';
 const PAIRING_VERSION_KEY: string = 'pairingVersion';
 const THEME_MODE_KEY: string = 'themeMode';
-const DIRECT_PROTOCOL_VERSION: number = 5;
+const DIRECT_PROTOCOL_VERSION: number = 6;
 const DIRECT_PORT: number = 44000;
 const FULLSCREEN_CONTROLS_TIMEOUT_MS: number = 5000;
 
@@ -31,6 +31,14 @@ struct Index {
   @State framesDecoded: number = 0;
   @State framesDropped: number = 0;
   @State receivedFrames: number = 0;
+  @State mediaWidth: number = 0;
+  @State mediaHeight: number = 0;
+  @State mediaMaxFps: number = 0;
+  @State videoAspectRatio: number = 16 / 9;
+  @State fullscreenContainerWidth: number = 16;
+  @State fullscreenContainerHeight: number = 10;
+  @State embeddedContainerWidth: number = 16;
+  @State embeddedContainerHeight: number = 9;
   @State isFullscreen: boolean = false;
   @State fullscreenControlsVisible: boolean = false;
   @State themeMode: string = 'system';
@@ -52,6 +60,35 @@ struct Index {
       throw new Error('应用窗口上下文不可用');
     }
     return context as common.UIAbilityContext;
+  }
+
+  private fitVideoByWidth(containerWidth: number, containerHeight: number): boolean {
+    const mediaWidth: number = this.mediaWidth > 0 ? this.mediaWidth : 16;
+    const mediaHeight: number = this.mediaHeight > 0 ? this.mediaHeight : 9;
+    return hssReceiver.shouldFitVideoByWidth(
+      mediaWidth,
+      mediaHeight,
+      containerWidth,
+      containerHeight
+    );
+  }
+
+  private updateVideoContainerSize(
+    fullscreen: boolean,
+    width: number,
+    height: number
+  ): void {
+    if (!Number.isFinite(width) || !Number.isFinite(height) ||
+      width <= 0 || height <= 0) {
+      return;
+    }
+    if (fullscreen) {
+      this.fullscreenContainerWidth = width;
+      this.fullscreenContainerHeight = height;
+    } else {
+      this.embeddedContainerWidth = width;
+      this.embeddedContainerHeight = height;
+    }
   }
 
   async aboutToAppear(): Promise<void> {
@@ -127,6 +164,12 @@ struct Index {
     this.framesDecoded = status.framesDecoded;
     this.framesDropped = status.framesDropped;
     this.receivedFrames = status.receivedFrames;
+    this.mediaWidth = status.mediaWidth;
+    this.mediaHeight = status.mediaHeight;
+    this.mediaMaxFps = status.mediaMaxFps;
+    if (status.mediaWidth > 0 && status.mediaHeight > 0) {
+      this.videoAspectRatio = status.mediaWidth / status.mediaHeight;
+    }
     this.updatePlaybackActive(status.connected);
     if ((wasListening || status.state === 'error') &&
       !status.listening && this.receivingRequested) {
@@ -411,13 +454,26 @@ struct Index {
   build() {
     if (this.isFullscreen) {
       Stack({ alignContent: Alignment.Center }) {
-        XComponent({
-          id: 'hssVideoSurface',
-          type: XComponentType.SURFACE,
-          libraryname: 'hss_receiver'
-        })
-          .width('100%')
-          .aspectRatio(16 / 9)
+        if (this.fitVideoByWidth(
+          this.fullscreenContainerWidth,
+          this.fullscreenContainerHeight
+        )) {
+          XComponent({
+            id: 'hssVideoSurface',
+            type: XComponentType.SURFACE,
+            libraryname: 'hss_receiver'
+          })
+            .width('100%')
+            .aspectRatio(this.videoAspectRatio)
+        } else {
+          XComponent({
+            id: 'hssVideoSurface',
+            type: XComponentType.SURFACE,
+            libraryname: 'hss_receiver'
+          })
+            .height('100%')
+            .aspectRatio(this.videoAspectRatio)
+        }
 
         if (!this.isConnected) {
           Text(this.isListening ? '等待电脑发送画面' : '电脑画面已断开，请退出全屏后重新连接')
@@ -459,6 +515,13 @@ struct Index {
       .width('100%')
       .height('100%')
       .backgroundColor('#000000')
+      .onAreaChange((_oldArea: Area, newArea: Area) => {
+        this.updateVideoContainerSize(
+          true,
+          Number(newArea.width),
+          Number(newArea.height)
+        );
+      })
     } else {
       Column({ space: 16 }) {
       Row() {
@@ -538,15 +601,30 @@ struct Index {
           .width('100%')
 
           Stack({ alignContent: Alignment.Center }) {
-            XComponent({
-              id: 'hssVideoSurface',
-              type: XComponentType.SURFACE,
-              libraryname: 'hss_receiver'
-            })
-            .width('100%')
-            .height('100%')
-            .borderRadius(16)
-            .visibility(this.isConnected ? Visibility.Visible : Visibility.Hidden)
+            if (this.fitVideoByWidth(
+              this.embeddedContainerWidth,
+              this.embeddedContainerHeight
+            )) {
+              XComponent({
+                id: 'hssVideoSurface',
+                type: XComponentType.SURFACE,
+                libraryname: 'hss_receiver'
+              })
+                .width('100%')
+                .aspectRatio(this.videoAspectRatio)
+                .borderRadius(16)
+                .visibility(this.isConnected ? Visibility.Visible : Visibility.Hidden)
+            } else {
+              XComponent({
+                id: 'hssVideoSurface',
+                type: XComponentType.SURFACE,
+                libraryname: 'hss_receiver'
+              })
+                .height('100%')
+                .aspectRatio(this.videoAspectRatio)
+                .borderRadius(16)
+                .visibility(this.isConnected ? Visibility.Visible : Visibility.Hidden)
+            }
 
             if (!this.isConnected) {
               Column() {
@@ -566,6 +644,13 @@ struct Index {
           .backgroundColor(this.isConnected ? '#000000' :
             $r('sys.color.ohos_id_color_component_normal'))
           .borderRadius(16)
+          .onAreaChange((_oldArea: Area, newArea: Area) => {
+            this.updateVideoContainerSize(
+              false,
+              Number(newArea.width),
+              Number(newArea.height)
+            );
+          })
           .clip(true)
           .border({ width: 1, color: $r('sys.color.ohos_id_color_list_separator') })
 
@@ -699,6 +784,12 @@ struct Index {
               .fontSize(12)
               .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
               .lineHeight(18)
+            if (this.mediaWidth > 0 && this.mediaHeight > 0) {
+              Text(`自动视频 ${this.mediaWidth}×${this.mediaHeight} · 最高 ${this.mediaMaxFps} fps`)
+                .fontSize(12)
+                .fontColor($r('sys.color.ohos_id_color_text_tertiary'))
+                .lineHeight(18)
+            }
             }
             .alignItems(HorizontalAlign.Start)
             .width('100%')

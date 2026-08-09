@@ -13,7 +13,7 @@
 1. 平板打开 HarmonyOS Receiver，确认当前私网 Wi-Fi IPv4并开始接收。
 2. 点击扩展，显示 60 秒一次性二维码。
 3. 平板点击“扫码配对”，扫描二维码。
-4. 扩展点击“已扫码，连接平板”；默认 `.local` 路径先验证 Receiver 的 HWC5 QR proof，再发送 token。
+4. 扩展点击“已扫码，连接平板”；默认 `.local` 路径先验证 Receiver 的 HWC6 QR proof，再发送 token。
 5. 配对成功后，进入普通 HTTP/HTTPS 标签页，点击“发送当前标签页”。
 
 摄像头不可用时，在平板输入扩展显示的六位短码，并把扩展“平板地址”改为 Receiver 显示的数字
@@ -50,14 +50,18 @@ nonce、proof 与 challenge 状态不写入 storage、日志、监控或导出�
 
 ## 编码与隐私
 
-- H.264 Annex-B `1280×720 @ 60 fps`，目标 8 Mbps；不复制源帧，实际帧率以监控页为准；
+- H.264 Annex-B 自动合同：保持源方向和比例、偶数尺寸、不放大，长边 ≤1920、短边 ≤1080、
+  像素数 ≤2073600、`maxFps` ≤60；码率自动限界，不提供手动质量选择；
+- 优先探测 AVC Level 4.2；不支持或配置失败时自动降级到 ≤720p 的 Level 4.0；
+- 不复制、不插值源帧，实际捕获/编码帧率与目标 `maxFps` 在监控页分开显示；
 - 关键帧最长约 2 秒，并响应 Receiver 请求；断线或 WebSocket 背压丢 AU 后，下一帧强制为关键帧；
 - `audio: false`，声音留在 PC；
 - QR token/短码仅在当前浏览器内存会话的 `chrome.storage.session` 暂存 60 秒；成功、主动刷新或
   过期时清除或替换，不写入 `storage.local`、日志或测试导出；
 - 不记录 URL、标题、正文、Cookie 或视频帧；
 - 单活动捕获轨、编码器和媒体流；
-- source epoch 防止旧来源迟到帧。
+- source epoch 防止旧来源迟到帧；稳定尺寸变化会分配新 epoch、重新鉴权、重建两端编码/解码，
+  并等待 SPS/PPS + IDR 后恢复。
 
 ## 自动化
 
