@@ -1,6 +1,6 @@
-# Harmony Web Companion
+# 网页投屏 / TabReach
 
-把用户明确选择的 Microsoft Edge 标签页画面发送到 HarmonyOS 6.1+ 平板，作为“网页伴随屏”使用。
+把用户明确选择的 Microsoft Edge 标签页画面发送到 HarmonyOS 6.1+ 平板，作为网页内容的伴随显示。
 音频不采集、不传输，继续由 Windows 输出到用户原有耳机。
 
 它不是 Windows 扩展屏、虚拟显示器、远程桌面或桌面镜像。
@@ -23,7 +23,7 @@
 Edge 扩展
   → 显示 60 秒、单次使用二维码
 平板扫描二维码
-  → Edge 解析固定 harmony-web-companion.local
+  → Edge 解析固定 tabreach.local
   → Receiver 用二维码高熵 token 完成 HWC6 挑战证明
   → 两端保存与 IP 无关的 deviceId / 设备凭据
 
@@ -36,8 +36,8 @@ Edge 扩展
 - 两端均可“忘记设备”。
 - 不扫描局域网，不连接公网。
 
-Receiver 在用户确认的当前 `wlan*` 地址上同时注册 `_hwc._tcp` DNS-SD 服务实例，并用受限
-mDNS A 响应器发布固定 `harmony-web-companion.local`。两者是不同层次：服务注册成功不等于
+Receiver 在用户确认的当前 `wlan*` 地址上同时注册 `_tabreach._tcp` DNS-SD 服务实例，并用受限
+mDNS A 响应器发布固定 `tabreach.local`。两者是不同层次：服务注册成功不等于
 裸主机名可解析。关闭接收或 Wi-Fi 地址失效时会停止响应并发送旧 A 记录的 TTL 0 goodbye；
 名称冲突时拒绝自动选择，统一回退到 Receiver 显示的数字 IPv4。
 
@@ -72,6 +72,9 @@ Edge tabCapture（video only）
 | 30 分钟、时延、丢包与恢复 | 由 #3 继续验收 |
 
 旧 `relay/`、`host/` 和相关脚本只保留为历史取证/开发对照，不属于构建、安装或运行依赖。
+
+从旧开发版升级时，扩展会把仅等于 `harmony-web-companion.local` 的已保存默认地址迁移为
+`tabreach.local`，保留原有设备身份与长期凭据；用户手动保存的数字私网 IPv4 不会被改写。
 
 ## 构建与测试
 

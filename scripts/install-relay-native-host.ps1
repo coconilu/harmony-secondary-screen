@@ -54,7 +54,7 @@ if ($PSCmdlet.ShouldProcess($installRoot, 'Install Relay Native Host for the cur
 
   $manifest = [ordered]@{
     name = $hostName
-    description = 'Harmony Web Companion loopback Relay'
+    description = 'TabReach loopback Relay'
     path = $installedExecutable
     type = 'stdio'
     allowed_origins = @("chrome-extension://$ExtensionId/")

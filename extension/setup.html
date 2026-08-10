@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>网页伴随屏</title>
+    <title>网页投屏 · TabReach</title>
     <link rel="icon" href="data:,">
     <link rel="stylesheet" href="setup.css">
   </head>
@@ -12,7 +12,7 @@
       <header>
         <span class="mark" aria-hidden="true">↗</span>
         <div>
-          <h1>网页伴随屏</h1>
+          <h1>网页投屏</h1>
           <p>发送当前 Edge 标签页</p>
         </div>
       </header>
@@ -34,14 +34,14 @@
         <div class="qr-wrap">
           <canvas id="pairing-qr" width="224" height="224" aria-label="一次性配对二维码"></canvas>
         </div>
-        <p class="muted">在平板的“网页伴随屏”中点击“连接电脑”，然后扫描此二维码。二维码 60 秒内有效。</p>
+        <p class="muted">在平板的“网页投屏”中点击“连接电脑”，然后扫描此二维码。二维码 60 秒内有效。</p>
 
         <label for="receiver-address">平板地址</label>
         <input
           id="receiver-address"
           name="receiver-address"
           autocomplete="off"
-          value="harmony-web-companion.local"
+          value="tabreach.local"
           required>
 
         <p id="short-code" class="short-code"></p>

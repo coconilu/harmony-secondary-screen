@@ -12,7 +12,7 @@ namespace hss::receiver::mdns {
 
 using Ipv4Address = std::array<std::byte, 4>;
 
-inline constexpr char kHostname[] = "harmony-web-companion.local";
+inline constexpr char kHostname[] = "tabreach.local";
 inline constexpr std::uint32_t kRecordTtlSeconds = 120;
 inline constexpr std::size_t kMaximumQueryBytes = 512;
 inline constexpr std::size_t kMaximumResponseBytes = 64;

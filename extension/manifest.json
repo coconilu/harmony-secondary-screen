@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "网页伴随屏",
+  "name": "网页投屏",
   "version": "0.7.0",
-  "description": "把用户选择的 Edge 标签页画面发送到 HarmonyOS 原生接收端；不采集音频。",
+  "description": "TabReach 把用户选择的 Edge 标签页画面发送到 HarmonyOS 原生接收端；不采集音频。",
   "minimum_chrome_version": "116",
   "permissions": [
     "activeTab",
@@ -11,7 +11,7 @@
     "tabCapture"
   ],
   "host_permissions": [
-    "http://harmony-web-companion.local/*"
+    "http://tabreach.local/*"
   ],
   "optional_host_permissions": [
     "http://*/*"

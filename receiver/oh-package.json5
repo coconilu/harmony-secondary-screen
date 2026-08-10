@@ -1,6 +1,6 @@
 {
   "modelVersion": "6.1.1",
-  "description": "HarmonyOS native receiver for Harmony Secondary Screen",
+  "description": "TabReach HarmonyOS native receiver",
   "dependencies": {},
   "devDependencies": {}
 }

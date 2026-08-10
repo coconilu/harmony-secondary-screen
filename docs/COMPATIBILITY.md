@@ -13,7 +13,7 @@
 
 ## 地址与 Local Network Access
 
-扩展持久 host permission 仅包含 `http://harmony-web-companion.local/*`。手动 IP 回退使用
+扩展持久 host permission 仅包含 `http://tabreach.local/*`。手动 IP 回退使用
 `http://*/*` 的 optional host 声明，但只在用户输入并确认具体私网 IPv4 后请求该单一 origin。
 真实 Edge 不会稳定向扩展公开 WebSocket 的远端 IP，因此 HWC6 不申请 `webRequest`，也不把
 浏览器未公开的地址观测当作身份信任。默认 `.local` 首次配对只接受高熵 QR token
@@ -30,7 +30,7 @@ HarmonyOS DNS-SD 服务实例注册、最小 mDNS A 响应和裸 `.local` 主机
 
 1. DNS-SD 服务实例注册是否成功；
 2. Receiver 固定 A 响应器是否显示“已发布”，是否有名称冲突；
-3. Windows 是否把 `harmony-web-companion.local` 解析为 Receiver 显示的同一私网 IPv4；
+3. Windows 是否把 `tabreach.local` 解析为 Receiver 显示的同一私网 IPv4；
 4. Edge 默认 `.local` 是否在发送秘密前验证 Receiver 的 HWC6 QR proof；
 5. 手动私网 IPv4 是否成功，且只有该路径允许六位短码。
 

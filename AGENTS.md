@@ -1,7 +1,7 @@
 # Project instructions
 
 - 默认使用中文维护产品文档与 Issue，代码标识符使用英文。
-- 产品定位是“网页伴随屏”：把用户明确选择的 Edge 标签页画面发送到 HarmonyOS 平板；不得称为
+- 产品定位是“网页投屏 / TabReach”：把用户明确选择的 Edge 标签页画面发送到 HarmonyOS 平板；不得称为
   Windows 扩展屏、虚拟显示器或远程桌面。
 - 平板端必须是 HarmonyOS 原生实现，不允许引入 HTML5 接收页、WebView Viewer 或 Android APK
   兼容层。

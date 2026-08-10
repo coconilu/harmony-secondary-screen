@@ -20,15 +20,21 @@ export async function getOrCreateSenderId(storage = chrome.storage.local) {
 
 export async function getTrustedReceiver(storage = chrome.storage.local) {
   const result = await storage.get(PAIRING_STORAGE_KEY);
-  if (!result[PAIRING_STORAGE_KEY]) {
+  const stored = result[PAIRING_STORAGE_KEY];
+  if (!stored) {
     return null;
   }
+  let normalized;
   try {
-    return validateTrustedDevice(result[PAIRING_STORAGE_KEY]);
+    normalized = validateTrustedDevice(stored);
   } catch {
     await storage.remove(PAIRING_STORAGE_KEY);
     return null;
   }
+  if (stored.host !== normalized.host) {
+    await storage.set({ [PAIRING_STORAGE_KEY]: normalized });
+  }
+  return normalized;
 }
 
 export async function saveTrustedReceiver(

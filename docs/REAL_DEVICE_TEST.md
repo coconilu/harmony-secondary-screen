@@ -64,7 +64,7 @@ credential、URL、标题、Cookie、正文或视频内容。
 ### `.local` → 手动 IP
 
 1. 记录 DNS-SD 服务注册结果。
-2. 记录 Windows `harmony-web-companion.local` 是否解析。
+2. 记录 Windows `tabreach.local` 是否解析。
 3. 若解析或 Edge WebSocket 失败，在已配对面板输入 Receiver 显示的私网 IPv4。
 4. 点击“更新地址（不重新配对）”，再次发送页面。
 5. 必须连接成功且 deviceId 不变；公网、回环和通配地址必须被扩展与 Receiver 拒绝。
@@ -124,7 +124,7 @@ DNS-SD 注册成功、单元测试或 TCP 端口可达均不能替代 Windows �
 | --- | --- | --- |
 | 默认自动地址 | Receiver 开始接收后，Windows 将固定 `.local` 解析为且仅解析为 1 个私网 IPv4；媒体连接建立前，TCP 44000 可达 | PASS |
 | 清除数据后首次配对 | 安装 HWC5 exact-head Receiver，扩展保留默认 `.local`；只扫描一轮新二维码，未输入数字 IPv4，完成配对 | PASS |
-| 默认 `.local` + 六位短码 | 使用 `harmony-web-companion.local`，在平板输入六位短码；扩展按设计拒绝并显示 `短码连接需在“平板地址”填写平板显示的数字私网 IPv4` | PASS（真实 UI 证明安全分流） |
+| 历史 HWC5 默认 `.local` + 六位短码 | 当时使用 `harmony-web-companion.local`，在平板输入六位短码；扩展按设计拒绝并显示 `短码连接需在“平板地址”填写平板显示的数字私网 IPv4` | PASS（2026-07-30 历史证据；当前默认地址已迁移为 `tabreach.local`） |
 | 数字 IPv4 + 六位短码 | 随后填写 Receiver 显示的数字私网 IPv4，使用新鲜六位短码并授权精确 origin；配对成功且动态播放正常 | PASS |
 | 默认 `.local` + 新二维码 | 再次使用默认 `.local` 和一轮新二维码完成配对；用户可见界面几乎立即完成，人工估计小于 0.1 秒，但低于手工计时的可信分辨率 | PASS（功能结果，不作性能指标） |
 | 动态画面 | 播放画面正常，未观察到花屏 | PASS |

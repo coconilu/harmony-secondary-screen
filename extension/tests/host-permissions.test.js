@@ -66,7 +66,7 @@ test("failed pairing rolls back only the permission acquired for that attempt", 
   ]);
 });
 
-test("cleanup enumerates grants and removes every unused manual private origin", async () => {
+test("cleanup removes the legacy default and every unused manual private origin", async () => {
   const permissions = createPermissions([
     "http://harmony-web-companion.local/*",
     "http://192.168.1.8/*",
@@ -78,12 +78,12 @@ test("cleanup enumerates grants and removes every unused manual private origin",
     permissions
   );
   assert.deepEqual(removed, [
+    "http://harmony-web-companion.local/*",
     "http://192.168.1.8/*",
     "http://10.0.0.2/*"
   ]);
   assert.deepEqual((await permissions.getAll()).origins.sort(), [
-    "http://192.168.1.9/*",
-    "http://harmony-web-companion.local/*"
+    "http://192.168.1.9/*"
   ]);
 });
 

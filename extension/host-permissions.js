@@ -1,7 +1,11 @@
 import {
   DEFAULT_RECEIVER_HOST,
+  LEGACY_DEFAULT_RECEIVER_HOST,
   normalizeReceiverHost
 } from "./direct-protocol.js";
+
+const LEGACY_DEFAULT_RECEIVER_ORIGIN =
+  `http://${LEGACY_DEFAULT_RECEIVER_HOST}/*`;
 
 function permissionApiOrDefault(permissions) {
   return permissions ?? chrome.permissions;
@@ -85,7 +89,8 @@ export async function cleanupUnusedManualHostPermissions(
   const granted = await api.getAll();
   const unused = (granted.origins ?? []).filter(
     (origin) =>
-      isManualPrivateIpv4Origin(origin) && !usedOrigins.has(origin)
+      origin === LEGACY_DEFAULT_RECEIVER_ORIGIN ||
+      (isManualPrivateIpv4Origin(origin) && !usedOrigins.has(origin))
   );
   for (const origin of unused) {
     await revokeHostPermission(origin, api);
