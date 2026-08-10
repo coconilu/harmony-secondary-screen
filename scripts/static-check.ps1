@@ -18,6 +18,18 @@ try {
 
   $manifest = Get-Content -Raw -Encoding UTF8 extension\manifest.json | ConvertFrom-Json
   if ($manifest.manifest_version -ne 3) { throw 'Edge extension must use Manifest V3.' }
+  $expectedExtensionName = -join @(
+    [char]0x7f51, [char]0x9875, [char]0x6295, [char]0x5c4f
+  )
+  if ($manifest.name -ne $expectedExtensionName) {
+    throw 'Extension brand does not match the TabReach Chinese product name.'
+  }
+  $appStrings = Get-Content -Raw -Encoding UTF8 `
+    receiver\AppScope\resources\base\element\string.json | ConvertFrom-Json
+  $appName = @($appStrings.string | Where-Object { $_.name -eq 'app_name' }).value
+  if ($appName -ne $expectedExtensionName) {
+    throw 'HarmonyOS app brand does not match the TabReach Chinese product name.'
+  }
   $permissions = @($manifest.permissions)
   foreach ($required in @('activeTab', 'offscreen', 'storage', 'tabCapture')) {
     if ($permissions -notcontains $required) { throw "Extension is missing permission: $required" }
@@ -27,13 +39,25 @@ try {
     if ($permissions -contains $forbidden) { throw "Extension requests forbidden permission: $forbidden" }
   }
   if (@($manifest.host_permissions).Count -ne 1 -or
-      @($manifest.host_permissions)[0] -ne 'http://harmony-web-companion.local/*') {
-    throw 'Persistent host permission must be limited to harmony-web-companion.local.'
+      @($manifest.host_permissions)[0] -ne 'http://tabreach.local/*') {
+    throw 'Persistent host permission must be limited to tabreach.local.'
   }
   if (@($manifest.optional_host_permissions).Count -ne 1 -or
       @($manifest.optional_host_permissions)[0] -ne 'http://*/*') {
     throw 'Manual IPv4 fallback must use one optional HTTP origin declaration.'
   }
+
+  $legacyChineseBrand = [regex]::Escape((-join @(
+    [char]0x7f51, [char]0x9875, [char]0x4f34, [char]0x968f, [char]0x5c4f
+  )))
+  $legacyRuntimeBrand = & rg -n `
+    "$legacyChineseBrand|Harmony Web Companion|Harmony Secondary Screen|_hwc\._tcp" `
+    extension receiver\AppScope receiver\entry\src\main receiver\oh-package.json5 `
+    -g '*.js' -g '*.json' -g '*.html' -g '*.ets' -g '*.cpp' -g '*.h' -g '*.json5' 2>$null
+  if ($LASTEXITCODE -eq 0) {
+    throw "Active runtime still contains the retired product brand or DNS-SD type:`n$legacyRuntimeBrand"
+  }
+  if ($LASTEXITCODE -ne 1) { throw "Runtime brand scan failed: $LASTEXITCODE" }
 
   $legacyRuntime = & rg -n 'connectNative|127\.0\.0\.1.*capture|startLocalRelay|connectLocalRelay' `
     extension scripts\test.ps1 README.md docs\ARCHITECTURE.md docs\PROTOCOL.md extension\README.md 2>$null
@@ -80,6 +104,7 @@ try {
     @{ Path = 'extension\offscreen.js'; Pattern = 'directDelivery.deliver' },
     @{ Path = 'extension\tests\direct-websocket.integration.test.js'; Pattern = 'reconnect repeats the proof gate and keeps the same source epoch' },
     @{ Path = 'extension\direct-protocol.js'; Pattern = 'PAIRING_TTL_MS = 60_000' },
+    @{ Path = 'extension\direct-protocol.js'; Pattern = 'LEGACY_DEFAULT_RECEIVER_HOST' },
     @{ Path = 'extension\direct-protocol.js'; Pattern = 'sourceEpoch' },
     @{ Path = 'extension\pending-pairing-store.js'; Pattern = 'chrome.storage.session' },
     @{ Path = 'extension\setup.js'; Pattern = 'await updatePendingHost(host)' },
@@ -145,6 +170,9 @@ try {
     @{ Path = 'receiver\entry\src\main\cpp\receiver_session.cpp'; Pattern = 'decoder_recovery_.Admit' },
     @{ Path = 'receiver\entry\src\main\ets\pages\Index.ets'; Pattern = 'scanBarcode.startScanForResult' },
     @{ Path = 'receiver\entry\src\main\ets\pages\Index.ets'; Pattern = 'mdns.addLocalService' },
+    @{ Path = 'receiver\entry\src\main\ets\pages\Index.ets'; Pattern = "serviceType: '_tabreach._tcp'" },
+    @{ Path = 'receiver\entry\src\main\ets\pages\Index.ets'; Pattern = "serviceName: 'tabreach'" },
+    @{ Path = 'receiver\entry\src\main\cpp\mdns_protocol.h'; Pattern = 'tabreach.local' },
     @{ Path = 'receiver\entry\src\main\ets\pages\Index.ets'; Pattern = 'preferences.getPreferences' },
     @{ Path = 'receiver\entry\src\main\ets\pages\Index.ets'; Pattern = 'PLAYBACK_ACTIVE_EVENT' },
     @{ Path = 'receiver\entry\src\main\ets\pages\Index.ets'; Pattern = 'Scroll()' },

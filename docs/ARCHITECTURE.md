@@ -51,8 +51,8 @@ Receiver 只绑定 `wlan*` 上由用户确认的 RFC1918 或 IPv4 link-local 地
 
 | 层 | 当前实现 | 不代表 |
 | --- | --- | --- |
-| 固定主机名地址 | Receiver 在已确认 `wlan*` 接口上只响应 `harmony-web-companion.local` 的 mDNS A 查询 | 设备身份或长期信任 |
-| DNS-SD 服务实例 | HarmonyOS `mdns.addLocalService` 注册 `_hwc._tcp` | 裸 `.local` 一定可解析 |
+| 固定主机名地址 | Receiver 在已确认 `wlan*` 接口上只响应 `tabreach.local` 的 mDNS A 查询 | 设备身份或长期信任 |
+| DNS-SD 服务实例 | HarmonyOS `mdns.addLocalService` 注册 `_tabreach._tcp` | 裸 `.local` 一定可解析 |
 | 身份鉴权 | 一次性 QR 后保存 `deviceId`、senderId、credential | IP 或主机名永久不变 |
 
 mDNS 响应器不浏览服务、不枚举邻居、不扫描子网，不回答其他名称或记录类型。Receiver 在用户确认
@@ -92,7 +92,8 @@ Receiver 将协商宽高暴露给 ArkUI；普通页和全屏容器都读取自�
 | 可选 `http://*/*` 声明 | Chrome match pattern 无法枚举所有 RFC1918；仅在用户输入并确认具体 IP 时请求该精确 origin |
 
 扩展只保留当前可信设备实际使用的手动私网 origin；配对/保存失败回滚新授权，更新地址和忘记设备时
-枚举并撤销其余手动 origin，且不得把 `permissions.remove()` 的失败当成成功。
+枚举并撤销其余手动 origin，同时清理旧开发版的默认 origin；不得把 `permissions.remove()` 的失败
+当成成功。旧默认 host 只迁移为 `tabreach.local`，手动数字私网 IPv4 保持原值。
 
 Edge 不会稳定向扩展公开 WebSocket 的真实远端 IP。默认 `.local` 配对使用高熵 QR token 的
 HWC6 challenge/proof，扩展验证 proof 和全部绑定字段后才发送 token；长期 credential 鉴权还

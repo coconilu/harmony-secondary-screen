@@ -1,4 +1,4 @@
-# v0.1：HarmonyOS 网页伴随屏 MVP
+# v0.1：网页投屏 / TabReach MVP
 
 ## Outcome
 
@@ -32,7 +32,7 @@ Windows 11 与 HarmonyOS 平板处于同一可信 Wi-Fi 时，用户首次由平
 
 ## Risks
 
-- DNS-SD 服务注册不能证明裸 `harmony-web-companion.local` 一定可解析；
+- DNS-SD 服务注册不能证明裸 `tabreach.local` 一定可解析；
 - Edge Local Network Access 对 WebSocket 的版本行为需真机验证；
 - WebSocket/TCP 在丢包时可能出现队头阻塞；
 - `ws://` 只适用于可信 LAN，不支持公网或对抗同网段窃听。

@@ -67,7 +67,7 @@ test("valid QR proof releases the token and completes pairing", async (context) 
     });
   });
   const trusted = await pairReceiver({
-    host: "harmony-web-companion.local",
+    host: "tabreach.local",
     authorization: { sessionId: SESSION_ID, token: TOKEN },
     senderId: SENDER_ID,
     socketFactory: () => new WebSocket(url)
@@ -118,7 +118,7 @@ test("automatic address refuses short-code proof mode and releases zero token", 
     });
   });
   await assert.rejects(pairReceiver({
-    host: "harmony-web-companion.local",
+    host: "tabreach.local",
     authorization: { sessionId: SESSION_ID, token: TOKEN },
     senderId: SENDER_ID,
     socketFactory: () => new WebSocket(url)
@@ -144,7 +144,7 @@ test("oversized pair proof is rejected before JSON parsing or HMAC and releases 
     });
   });
   await assert.rejects(pairReceiver({
-    host: "harmony-web-companion.local",
+    host: "tabreach.local",
     authorization: { sessionId: SESSION_ID, token: TOKEN },
     senderId: SENDER_ID,
     socketFactory: () => new WebSocket(url)
@@ -166,7 +166,7 @@ test("expired authorization is distinct and releases no token", async (context) 
     })));
   });
   await assert.rejects(pairReceiver({
-    host: "harmony-web-companion.local",
+    host: "tabreach.local",
     authorization: { sessionId: SESSION_ID, token: TOKEN },
     senderId: SENDER_ID,
     socketFactory: () => new WebSocket(url)
@@ -218,7 +218,7 @@ test("forged, replayed, mismatched and premature pair proofs release zero token"
       });
     });
     await assert.rejects(pairReceiver({
-      host: "harmony-web-companion.local",
+      host: "tabreach.local",
       authorization: { sessionId: SESSION_ID, token: TOKEN },
       senderId: SENDER_ID,
       socketFactory: () => new WebSocket(url)
@@ -348,7 +348,7 @@ test("connection failure before proof has a network category and releases no sec
   });
   assert.equal(connection.connected, false);
   await assert.rejects(pairReceiver({
-    host: "harmony-web-companion.local",
+    host: "tabreach.local",
     authorization: { sessionId: SESSION_ID, token: TOKEN },
     senderId: SENDER_ID,
     socketFactory: () => new WebSocket("ws://127.0.0.1:1")

@@ -2,7 +2,9 @@ import { validateMediaContract } from "./video-contract.js";
 
 export const DIRECT_PROTOCOL = 6;
 export const DIRECT_PORT = 44000;
-export const DEFAULT_RECEIVER_HOST = "harmony-web-companion.local";
+export const DEFAULT_RECEIVER_HOST = "tabreach.local";
+// Kept only to migrate pre-release pairing records without discarding trust.
+export const LEGACY_DEFAULT_RECEIVER_HOST = "harmony-web-companion.local";
 export const DIRECT_VIDEO_MAGIC = 0x48574336;
 export const DIRECT_VIDEO_HEADER_SIZE = 32;
 export const DIRECT_VIDEO_MAX_PAYLOAD_BYTES = 8 * 1024 * 1024;
@@ -13,7 +15,10 @@ export const DIRECT_PROOF_NONCE_BYTES = 32;
 const PRIVATE_IPV4_ERROR = "v0.1 只允许可信局域网 IPv4 地址";
 
 export function normalizeReceiverHost(value) {
-  const host = String(value ?? "").trim().toLowerCase();
+  let host = String(value ?? "").trim().toLowerCase();
+  if (host === LEGACY_DEFAULT_RECEIVER_HOST) {
+    host = DEFAULT_RECEIVER_HOST;
+  }
   if (host === DEFAULT_RECEIVER_HOST) {
     return host;
   }

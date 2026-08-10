@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.24)
 project(HarmonyWebCompanionRelay LANGUAGES CXX)
 
 if(NOT WIN32)
-  message(FATAL_ERROR "Harmony Web Companion Relay only supports Windows 11")
+  message(FATAL_ERROR "TabReach Relay only supports Windows 11")
 endif()
 
 set(CMAKE_CXX_STANDARD 20)

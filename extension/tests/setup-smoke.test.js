@@ -61,7 +61,7 @@ function createPopupEnvironment({
     ["#pairing-form", new FakeElement()],
     ["#paired-panel", new FakeElement({ hidden: true })],
     ["#receiver-address", new FakeElement({
-      value: "harmony-web-companion.local"
+      value: "tabreach.local"
     })],
     ["#pairing-qr", new FakeElement()],
     ["#paired-address", new FakeElement()],
@@ -166,7 +166,7 @@ test("fresh install renders the pairing form and initializes a QR code", async (
   assert.equal(environment.elements.get("#paired-panel").hidden, true);
   assert.equal(
     environment.elements.get("#paired-host").value,
-    "harmony-web-companion.local"
+    "tabreach.local"
   );
   assert.match(
     environment.elements.get("#short-code").textContent,
@@ -188,7 +188,7 @@ test("forgetting a device renders the unpaired state without a reference error",
   assert.equal(environment.elements.get("#pairing-form").hidden, false);
   assert.equal(
     environment.elements.get("#paired-host").value,
-    "harmony-web-companion.local"
+    "tabreach.local"
   );
   assert.equal(environment.elements.get("#error-message").hidden, true);
 });

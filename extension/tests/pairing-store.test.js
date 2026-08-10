@@ -45,7 +45,7 @@ test("trusted identity survives address changes until explicitly forgotten", asy
   assert.equal(await getTrustedReceiver(storage), null);
 });
 
-test("an HWC5-era credential record migrates to HWC6 without rescanning", async () => {
+test("a legacy default host migrates without rescanning or changing trust", async () => {
   const storage = createStorage();
   const legacyRecord = {
     senderId: "019fa3cf-75c7-7000-8000-000000000001",
@@ -55,7 +55,40 @@ test("an HWC5-era credential record migrates to HWC6 without rescanning", async 
     pairedAt: 456
   };
   await storage.set({ trustedReceiver: legacyRecord });
-  assert.deepEqual(await getTrustedReceiver(storage), legacyRecord);
+  const migrated = {
+    ...legacyRecord,
+    host: "tabreach.local"
+  };
+  assert.deepEqual(await getTrustedReceiver(storage), migrated);
+  assert.deepEqual((await storage.get("trustedReceiver")).trustedReceiver, migrated);
+});
+
+test("a migration write failure never deletes the saved trusted identity", async () => {
+  const legacyRecord = {
+    senderId: "019fa3cf-75c7-7000-8000-000000000001",
+    deviceId: "00112233445566778899aabbccddeeff",
+    credential: "c".repeat(64),
+    host: "harmony-web-companion.local",
+    pairedAt: 789
+  };
+  let removed = false;
+  const storage = {
+    async get(key) {
+      return { [key]: legacyRecord };
+    },
+    async set() {
+      throw new Error("storage write failed");
+    },
+    async remove() {
+      removed = true;
+    }
+  };
+
+  await assert.rejects(
+    getTrustedReceiver(storage),
+    /storage write failed/
+  );
+  assert.equal(removed, false);
 });
 
 test("source epoch increases monotonically across capture starts", async () => {

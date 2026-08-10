@@ -342,8 +342,8 @@ struct Index {
   private async registerMdnsService(): Promise<void> {
     const generation: number = ++this.discoveryGeneration;
     const service: mdns.LocalServiceInfo = {
-      serviceType: '_hwc._tcp',
-      serviceName: 'harmony-web-companion',
+      serviceType: '_tabreach._tcp',
+      serviceName: 'tabreach',
       port: DIRECT_PORT,
       host: {
         address: this.listenAddress,
@@ -526,7 +526,7 @@ struct Index {
       Column({ space: 16 }) {
       Row() {
         Column({ space: 4 }) {
-          Text('网页伴随屏')
+          Text('网页投屏')
             .fontSize(28)
             .fontWeight(FontWeight.Bold)
             .fontColor($r('sys.color.ohos_id_color_text_primary'))
@@ -757,7 +757,7 @@ struct Index {
               .fontWeight(FontWeight.Medium)
               .fontColor('#22C55E')
 
-            Text('在电脑浏览器中打开“网页伴随屏”，发送当前页面即可。')
+            Text('在电脑浏览器中打开“网页投屏”，发送当前页面即可。')
               .fontSize(13)
               .fontColor($r('sys.color.ohos_id_color_text_secondary'))
               .lineHeight(20)

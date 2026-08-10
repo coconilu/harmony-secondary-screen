@@ -12,7 +12,7 @@ HWC5 时代的配对记录可直接用于 HWC6 challenge/proof，无需重新扫
 ## 连接
 
 ```text
-ws://harmony-web-companion.local:44000/direct
+ws://tabreach.local:44000/direct
 ```
 
 `.local` 失败时，用户可把 host 改为 Receiver 显示的私网 IPv4。Receiver 只在用户确认的具体
@@ -21,6 +21,10 @@ ws://harmony-web-companion.local:44000/direct
 因此 HWC6 不依赖 `webRequest` 或地址观测判定身份。默认 `.local` 必须通过下面的高熵
 challenge-response；用户手抄数字 IPv4 的短码例外在后文单独定义。Receiver 的具体 Wi-Fi 私网
 绑定仍是网络边界，QR/长期 credential proof 是自动路径的秘密释放边界。
+
+品牌迁移不改变 HWC6、端口或证明消息。扩展读取旧开发版的可信设备记录时，仅把 host 恰好等于
+旧默认值的记录迁移到 `tabreach.local` 并原地保存；deviceId、senderId、credential 与 pairedAt
+保持不变。手动数字私网 IPv4 不迁移，旧默认 origin 若仍存在于权限集合中会被撤销。
 
 所有控制消息是 UTF-8 JSON text message；H.264 是 binary message。客户端 frame 必须 mask，
 Receiver 支持合法 continuation frame，单消息上限为 8 MiB + 32 字节头。
@@ -353,8 +357,8 @@ Receiver 同时维护两个互不等价的发布层：
 
 | 层 | 名称 / 记录 | 用途 |
 | --- | --- | --- |
-| DNS-SD | `_hwc._tcp` / `harmony-web-companion` | 公共 API 服务实例；当前扩展不浏览服务列表 |
-| 固定 mDNS A | `harmony-web-companion.local` → 当前确认的 Wi-Fi IPv4 | 供 Edge 默认 WebSocket 地址解析 |
+| DNS-SD | `_tabreach._tcp` / `tabreach` | 公共 API 服务实例；当前扩展不浏览服务列表 |
+| 固定 mDNS A | `tabreach.local` → 当前确认的 Wi-Fi IPv4 | 供 Edge 默认 WebSocket 地址解析 |
 
 最小 mDNS A 响应器使用 UDP multicast `224.0.0.251:5353`，只加入用户确认的当前 `wlan*`
 RFC1918 或 IPv4 link-local 接口。确认地址时同时保存 interface index；生产 socket 开启

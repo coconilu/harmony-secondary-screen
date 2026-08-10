@@ -115,7 +115,7 @@ int wmain(const int argc, wchar_t* argv[]) {
     server.Stop();
     return 0;
   } catch (const std::exception& error) {
-    std::cerr << "Harmony Web Companion Relay failed: "
+    std::cerr << "TabReach Relay failed: "
               << error.what() << '\n';
     return 1;
   }

@@ -5,8 +5,10 @@ import {
   computeAuthProof,
   computePairProof,
   constantTimeEqualProof,
+  createDirectWebSocketUrl,
   createDirectVideoMessage,
   createPairingAuthorization,
+  DEFAULT_RECEIVER_HOST,
   DIRECT_PROTOCOL,
   DIRECT_VIDEO_HEADER_SIZE,
   DIRECT_VIDEO_MAGIC,
@@ -121,11 +123,19 @@ test("HWC6 proof vectors bind the dynamic media contract byte-for-byte", async (
 });
 
 test("manual address accepts only private or link-local IPv4", () => {
+  assert.equal(
+    createDirectWebSocketUrl(DEFAULT_RECEIVER_HOST),
+    "ws://tabreach.local:44000/direct"
+  );
   assert.equal(normalizeReceiverHost("192.168.1.8"), "192.168.1.8");
   assert.equal(normalizeReceiverHost("172.20.0.3"), "172.20.0.3");
   assert.equal(
+    normalizeReceiverHost("tabreach.local"),
+    "tabreach.local"
+  );
+  assert.equal(
     normalizeReceiverHost("harmony-web-companion.local"),
-    "harmony-web-companion.local"
+    "tabreach.local"
   );
   for (const value of ["0.0.0.0", "127.0.0.1", "8.8.8.8", "224.0.0.1"]) {
     assert.throws(() => normalizeReceiverHost(value));
