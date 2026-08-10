@@ -44,13 +44,24 @@ export async function getPendingPairing(
   now = Date.now()
 ) {
   const result = await storage.get(PENDING_PAIRING_STORAGE_KEY);
-  if (!result[PENDING_PAIRING_STORAGE_KEY]) return null;
+  const stored = result[PENDING_PAIRING_STORAGE_KEY];
+  if (!stored) return null;
+  let normalized;
   try {
-    return normalizePendingPairing(result[PENDING_PAIRING_STORAGE_KEY], now);
+    normalized = normalizePendingPairing(stored, now);
   } catch {
     await storage.remove(PENDING_PAIRING_STORAGE_KEY);
     return null;
   }
+  if (stored.host !== normalized.host) {
+    await storage.set({
+      [PENDING_PAIRING_STORAGE_KEY]: {
+        ...stored,
+        host: normalized.host
+      }
+    });
+  }
+  return normalized;
 }
 
 export async function savePendingPairing(

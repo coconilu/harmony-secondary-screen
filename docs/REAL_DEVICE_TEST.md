@@ -169,7 +169,7 @@ DNS-SD 注册成功、单元测试或 TCP 端口可达均不能替代 Windows �
 
 1. 开始发送标签页 A。
 2. 停止后从标签页 B 开始新的捕获。
-3. 抓取 HWC5 binary header，B 的 `sourceEpoch` 必须大于 A。
+3. 抓取 HWC6 binary header，B 的 `sourceEpoch` 必须大于 A。
 4. 人工注入旧 epoch AU，Receiver dropped 增加且画面不回退。
 5. 确认同一时刻只有一个 video track、VideoEncoder、WebSocket 媒体流。
 
